@@ -5,47 +5,48 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.1.0] - 2026-05-02
 
-### Added
+First public release on PyPI as `feather-os`.
 
-- Distribution rename to **`feather-os`** on PyPI; import name stays `feather`.
-- `hatchling` build backend with `hatch-vcs` for git-tag-driven versioning.
-- `feather.paths.FeatherPaths`: single chokepoint for global vs project
-  path resolution. Walk-up project detection with `~` as the stop boundary.
-- `feather.resources`: `importlib.resources` accessors for the bundled
-  config / agents / built-in skills.
-- Layered config + agent loaders: packaged → project-staged → user-global
-  override (deep-merged for `app.yaml`, first-hit-wins for agent YAML).
-- Multi-source `SkillCatalog`: packaged + global + project sources, with
-  override-by-name semantics and source-aware ref resolution.
-- New CLI subcommands: `feather init`, `feather init-memory`,
-  `feather stop-memory`, `feather remove-memory [--purge]`. Plus
-  `--version`, `--project`, and `FEATHER_HOME` / `FEATHER_PROJECT_ROOT`
+### Highlights
+
+- Single lead agent driving the OpenAI Responses API or OpenRouter
+  Chat Completions, with streaming, prompt caching, reasoning effort
+  control, and per-agent provider overrides.
+- Textual TUI as the default chat surface, plus a Rich streaming CLI
+  for plain terminals.
+- Built-in tools: `read_file`, `read_pdf`, `write_file`, `grep`,
+  `bash`, `ask_user`, `load_skill`, `web_search`, `web_fetch`,
+  `recall_memory`, `manage_memory`, `user_info`, cron tools,
+  sub-agent tools, task tools, and MCP discovery tools.
+- Background sub-agents (`explore`, `research`, `validate`, plus your
+  own custom ones) dispatched as Python subprocesses with a SQLite
+  inter-agent mailbox.
+- Optional long-term memory backed by Qdrant and Gemini embeddings,
+  with a separate provider call for fact extraction and classification.
+- Optional MCP server integration (stdio and HTTP), activated on
+  demand per session.
+- Optional messaging integrations for Telegram, LINE, and WhatsApp.
+- Cron-style scheduled prompts that fire back into the lead session.
+- Skill catalog with progressive loading from packaged, global, and
+  project sources; later sources override by name.
+- Layered configuration: packaged defaults, user-global overrides at
+  `~/.feather/config/app.yaml`, and per-project agent overrides.
+- Hybrid state layout: personal config and skills live in `~/.feather/`,
+  per-project sessions and artifacts live in `./.feather/`. Walk-up
+  detection chooses one automatically.
+- CLI subcommands: `feather init`, `feather init-memory`,
+  `feather stop-memory`, `feather remove-memory`, `feather onboard`,
+  `feather cli`, `feather tui`, plus `--version`, `--project`,
+  `--session-id`, and `FEATHER_HOME` / `FEATHER_PROJECT_ROOT`
   environment overrides.
-- Onboarding wizard now skips memory questions when run with
-  `feather_paths`: presence of the global memory marker is the opt-in.
-- `WriteFileTool` extends its writable whitelist with the global config
-  + skills directories when constructed with a `FeatherPaths`.
-- PEP 561 `py.typed` marker; PEP 639 SPDX license expression.
+- Onboarding wizard for first-run setup of identity and API keys.
+- PEP 561 typed package (`py.typed`); Python 3.12 and 3.13 supported.
 
-### Changed
+### Build and release
 
-- Bundled assets (`config/`, built-in skills) moved into
-  `src/feather/_resources/` so editable installs and built wheels see
-  identical layouts via `importlib.resources`.
-
-### Removed
-
-- `Dockerfile`, `compose.yaml`, `.dockerignore`. The new
-  `feather init-memory` shells out to `docker run` directly when
-  long-term memory is requested.
-
-### Migration notes
-
-- The previous "clone the repo and run `uv run feather`" workflow still
-  works for development. Production users should `pip install feather-os`.
-- `feather init-memory` writes `~/.feather/state/memory.json`; the
-  onboarding wizard reads that marker. Re-running `feather onboard` no
-  longer asks "Enable long-term memory?" — that decision is now the
-  init-memory step itself.
+- Hatchling build backend with `hatch-vcs` for git-tag-driven
+  versioning.
+- GitHub Actions release workflow publishes to PyPI via OIDC
+  Trusted Publisher; no API tokens stored.
