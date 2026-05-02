@@ -1,0 +1,36 @@
+# DeepSeek V3.2 — best raw cost/quality reasoner on OpenRouter today.
+# 131K-163K context, tools + reasoning + structured outputs.
+# ~$0.26 / M input, ~$0.38 / M output — an order of magnitude cheaper than
+# frontier closed models for comparable agentic quality on tool-using tasks.
+# Multi-provider: Baidu, SiliconFlow, DeepInfra, AtlasCloud, Novita, Chutes.
+#
+# Use deepseek/deepseek-v4-pro (1M ctx, ~$0.44/$0.87) when you need a longer
+# context window or v4-tier output quality. Use deepseek/deepseek-v4-flash
+# for cheap-but-fast classifier / extractor agents.
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: deepseek/deepseek-v3.2
+  max_output_tokens: 32000             # DeepSeek hybrid-reasoner can spend 5K+ tokens on reasoning before it answers
+  temperature: 0.6
+  parallel_tool_calls: false           # no DeepSeek-V3.2 endpoint advertises parallel_tool_calls; pairing with require_parameters:true would 404
+  stream_idle_timeout_seconds: 120     # reasoning streams can be quiet during the think step
+  request_timeout_seconds: 180
+  max_attempts: 3
+  reasoning:
+    effort: medium                     # bump to "high" for hard analytic turns; "low" for routine chat
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    require_parameters: true
+    allow_fallbacks: true
+    sort: price                        # this model class is cheap enough that price-sort makes sense
+    # Stricter cost-bound pinning:
+    # only: ["Baidu", "SiliconFlow"]
+    # quantizations: ["fp8"]
+
+  fallback_models:
+    - deepseek/deepseek-v3.2-exp
+    - z-ai/glm-4.7

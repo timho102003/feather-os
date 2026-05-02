@@ -1,0 +1,84 @@
+# ============================================================================
+# Scenario 05 — Cross-provider showcase: Claude conversation + OpenAI memory
+# ============================================================================
+#
+# The clearest demonstration of the per-op `provider` override: the
+# conversation runs on Anthropic's Claude Sonnet 4.6 (via OpenRouter,
+# which forwards Anthropic-style ephemeral cache breakpoints), while
+# every memory operation runs on a dedicated OpenAI gpt-5.4-nano client.
+#
+# Why split:
+#   - Claude Sonnet 4.6 is a top-tier conversation model with first-class
+#     tool use and ~5-min ephemeral prompt cache via the
+#     `cache_strategy: anthropic_breakpoint` hint we already emit.
+#   - Memory extraction wants a fast, cheap structured-output model. OpenAI
+#     gpt-5.4-nano fits that role exactly. Going through OpenAI directly
+#     also avoids paying OpenRouter's mark-up on a high-volume op.
+#   - The split is invisible to the agent code: it just calls
+#     `provider.complete()`. Per-op provider routing is resolved at
+#     `build_memory_stack` time and the memory pipeline holds a separate
+#     httpx client for the OpenAI runs.
+#
+# This scenario does NOT require any agent-yaml changes — every agent
+# inherits Claude on OpenRouter from the app-level default.
+
+active_provider: openrouter
+
+openai:
+  # Memory-only OpenAI client. Tighter budget than the conversation
+  # default, plus a memory-specific prompt cache key so memory traffic
+  # doesn't poison the lead-conversation cache.
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5.4-nano
+  max_output_tokens: 4000
+  temperature: 0.1
+  parallel_tool_calls: true
+  prompt_cache_key: feather-memory
+  prompt_cache_retention: in_memory
+  store: true
+  reasoning:
+    effort: minimal
+    summary: auto
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: anthropic/claude-sonnet-4.6
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  stream_idle_timeout_seconds: 90
+  request_timeout_seconds: 120
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  # The anthropic_breakpoint cache_strategy wraps the system prompt in a
+  # `cache_control: {type: "ephemeral"}` block. Claude honours this on
+  # OpenRouter and reports cache reads on `usage.prompt_tokens_details`.
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    require_parameters: true
+    allow_fallbacks: true
+    sort: throughput
+
+memory:
+  # Cross-provider override — these three ops route to the dedicated OpenAI
+  # client even though active_provider is openrouter. Three ops sharing
+  # `provider: openai` reuse one cached httpx instance.
+  extraction:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 2000
+    temperature: 0.1
+  classification:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 400
+    temperature: 0.0
+  query_builder:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 200
+    temperature: 0.0

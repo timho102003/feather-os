@@ -1,0 +1,32 @@
+# MiniMax M2.7 — explicitly agentic-tuned, 196K context.
+# Tools + reasoning + structured outputs.
+# Multi-provider: Fireworks, Together, Minimax (native).
+#
+# MiniMax M-series is trained specifically for tool-loop / multi-step
+# agent workflows; it tends to handle long tool transcripts and
+# back-to-back tool calls more cleanly than general-purpose models at
+# the same price tier.
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: minimax/minimax-m2.7
+  max_output_tokens: 32000
+  temperature: 0.7
+  parallel_tool_calls: false           # MiniMax M2.7 endpoints don't advertise parallel_tool_calls; pairing with require_parameters:true would 404
+  stream_idle_timeout_seconds: 90
+  request_timeout_seconds: 120
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    require_parameters: true
+    allow_fallbacks: true
+    sort: throughput
+
+  fallback_models:
+    - minimax/minimax-m2.5
+    - z-ai/glm-4.7

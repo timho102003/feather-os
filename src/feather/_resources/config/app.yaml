@@ -1,0 +1,189 @@
+database:
+  path: .feather/db/feather.db
+
+storage:
+  temp_directory: .feather/tmp
+
+logging:
+  path: .feather/logs/feather.log
+  level: INFO
+
+compaction:
+  enabled: true
+  trigger_ratio: 0.8
+  context_window_tokens: 400000
+  model:
+  max_output_tokens: 2000
+  temperature: 0.2
+
+skills:
+  directory: .feather/skills
+
+scheduler:
+  enabled: true
+  poll_interval_seconds: 2
+  failure_retry_seconds: 30
+  max_due_jobs_per_tick: 10
+
+active_provider: openrouter          # openai or openrouter. flip to "openrouter" to route every agent via OpenRouter
+
+openai:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini
+  max_output_tokens: 16000           # upper bound per turn; gpt-5-mini reasoning can consume thousands of tokens before the synthesis starts, so 4k was too tight for research/explore turns and the stream ended with response.incomplete
+  temperature: 1.0
+  parallel_tool_calls: true
+  prompt_cache_key: feather-lead
+  prompt_cache_retention: in_memory
+  store: true
+  reasoning:
+    effort: low
+    summary: auto
+  stream_idle_timeout_seconds: 90
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: qwen/qwen3.6-plus
+  max_output_tokens: 32000
+  temperature: 0.7                     # Qwen3 thinking-mode team-recommended range is 0.6-0.7
+  parallel_tool_calls: false           # Alibaba doesn't advertise parallel_tool_calls; pairing with require_parameters:true would 404
+  stream_idle_timeout_seconds: 120
+  request_timeout_seconds: 180
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    # Alibaba is the only upstream — `only:` makes the route deterministic
+    # and avoids OpenRouter trying to fall back to a different model family
+    # mid-session if Alibaba 503s. Pair with a `fallback_models` for that.
+    only: ["Alibaba"]
+    require_parameters: true
+    allow_fallbacks: false             # strict pin: surface 503 instead of silent re-route
+
+  fallback_models:
+    - qwen/qwen3.5-plus-02-15
+    - qwen/qwen3.5-397b-a17b
+
+parallel:
+  api_key_env: PARALLEL_API_KEY
+  default_search_mode: fast
+  max_results: 5
+  inline_full_content_threshold: 4000
+
+mcp:
+  enabled: false
+  servers:
+    # MCP servers are progressive: agents see `list_mcp_servers` and
+    # `register_mcp_server`, then activate only the server needed for the
+    # current session. Leave this block disabled until you want MCPs available.
+    #
+    # Example HTTP MCP. OpenAI can receive HTTP MCP servers natively; OpenRouter
+    # uses Feather's proxy tool after session registration.
+    # docs:
+    #   url: https://developers.openai.com/mcp
+    #   description: OpenAI developer documentation
+    #   providers: [openai, openrouter]
+    #   agents: [Lead]
+    #   allowed_tools: [search_openai_docs, fetch_openai_doc]
+    #   require_approval: never
+    #
+    # Example stdio MCP. Feather starts this command only when the session
+    # registers the server; the user does not need to start a separate server.
+    # playwright:
+    #   command: npx
+    #   args: ["-y", "@playwright/mcp@latest"]
+    #   description: Browser automation through Playwright
+    #   providers: [openai, openrouter]
+    #   agents: [Lead]
+    #   require_approval: never
+    #
+    # Example private HTTP MCP with an auth header sourced from the environment.
+    # Put the complete header value in PRIVATE_DOCS_AUTH_HEADER, e.g.
+    # "Bearer <token>". Do not paste secrets directly into this YAML file.
+    # private_docs:
+    #   url: https://example.com/mcp
+    #   description: Private company documentation
+    #   providers: [openai]
+    #   agents: [Lead]
+    #   header_envs:
+    #     Authorization: PRIVATE_DOCS_AUTH_HEADER
+    #   require_approval: never
+
+memory:
+  enabled: true                  # global gate — lead agent further opts in via memory_enabled
+  qdrant:
+    url: http://qdrant:6333                       # env QDRANT_URL wins if set
+    api_key_env: QDRANT_API_KEY
+    collection_name: feather_memory_v2
+    embedding_dims: 3072    
+    hnsw_m: 32
+    hnsw_ef_construct: 256
+    hnsw_ef_search: 128
+    hnsw_full_scan_threshold: 10000
+    indexing_threshold: 20000
+    default_segment_number: 2
+    on_disk_vectors: false
+    on_disk_payload: false
+    prefer_grpc: false
+    request_timeout_s: 15.0
+    quantization: ~
+  embedding:
+    provider: gemini
+    model: gemini-embedding-2-preview
+    output_dimensionality: 3072
+    task_type_document: RETRIEVAL_DOCUMENT
+    task_type_query: RETRIEVAL_QUERY
+    normalize_reduced_dims: true
+    request_timeout_s: 30.0
+    max_retries: 3
+    retry_backoff_s: 1.5
+  chunking:
+    chunk_size_tokens: 1000
+    chunk_overlap_tokens: 100
+    tokenizer: tiktoken
+    tokenizer_encoding: o200k_base
+  retrieval:
+    enabled: true
+    top_k_prompt_injection: 5
+    top_k_tool: 10
+    score_threshold: 0.5
+    classifier_top_k: 3
+    classifier_score_threshold: 0.75
+    retrieval_timeout_s: 15.0          # bumped for reasoning models (gpt-5-mini)
+    query_builder_enabled: true
+    query_builder_recent_messages: 8
+  trigger:
+    enabled: true
+    trigger_turns: 10
+    skip_compact_messages: true
+    background: true
+    shutdown_timeout_s: 120.0          # bumped to let extraction LLM + classifier finish
+    max_concurrent_extractions_per_session: 1
+  # Per-op provider/model overrides. Both fields default to ~ (inherit):
+  #   provider: ~        → use the app-default provider (active_provider above)
+  #   provider: openai   → build/reuse a dedicated OpenAI client for this op
+  #   provider: openrouter → build/reuse a dedicated OpenRouter client (requires `openrouter:` block)
+  #   model: ~ + provider:~       → resolve at call-time to the agent's conversation model
+  #   model: ~ + provider:override → fall back to that provider's configured default model
+  #                                  (NOT the agent's model — would mis-route slugs across providers)
+  #   model: <string>             → pin this exact model for the op
+  # Multiple ops overriding to the same provider share one cached httpx client.
+  extraction:
+    provider: openai                  # null = inherit app.active_provider
+    model: gpt-5.4-nano                     # null = inherit agent's current conversation model
+    max_output_tokens: 2000
+    temperature: 0.1
+  classification:
+    provider: openai                  # null = inherit; override e.g. "openai" to pin
+    model: gpt-5.4-nano                     # null = inherit; override e.g. "gpt-5-mini"
+    max_output_tokens: 400
+    temperature: 0.0
+  query_builder:
+    provider: openai             # pinned: gpt-5.4-nano is OpenAI-only; cross-provider override
+    model: gpt-5.4-nano
+    max_output_tokens: 200
+    temperature: 0.0

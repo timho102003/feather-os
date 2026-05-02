@@ -1,0 +1,60 @@
+name: release
+
+# Triggers on every annotated tag matching v*. Pushing `git tag v0.2.0
+# && git push --tags` is enough to ship — no API tokens, OIDC handles
+# auth via the PyPI Trusted Publisher (configured one-off on PyPI).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # hatch-vcs needs the full history to derive the version.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Build
+        run: uv build
+
+      - name: Smoke-check the wheel
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install --upgrade pip
+          /tmp/smoke/bin/pip install dist/*.whl
+          /tmp/smoke/bin/feather --version
+          /tmp/smoke/bin/feather --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI (OIDC)
+    needs: build
+    runs-on: ubuntu-latest
+    # Bind to a GitHub environment so manual approval can gate releases
+    # to PyPI (configured under Settings → Environments → pypi).
+    environment:
+      name: pypi
+      url: https://pypi.org/p/feather-os
+    permissions:
+      id-token: write   # required for OIDC trusted-publisher auth
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1

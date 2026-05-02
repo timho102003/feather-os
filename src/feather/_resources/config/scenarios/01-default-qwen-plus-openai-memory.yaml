@@ -1,0 +1,81 @@
+# ============================================================================
+# Scenario 01 — Default: Qwen3.6-plus conversation + OpenAI memory
+# ============================================================================
+#
+# This is the shipped default in `config/app.yaml`. Reproduced here for
+# reference and to show the per-op provider override in action.
+#
+# Conversation:
+#   - Lead and all sub-agents run on Alibaba's Qwen3.6-plus via OpenRouter
+#     (1M ctx, multimodal text+image+video in, $0.33/M in, $1.95/M out).
+#   - Pinned to Alibaba (only Alibaba serves this slug on OpenRouter today),
+#     `allow_fallbacks: false` so a 503 surfaces instead of silent re-route.
+#
+# Memory:
+#   - Extraction, classification, and query_builder all override
+#     `provider: openai` so they run on a dedicated OpenAI client with
+#     gpt-5.4-nano — cheap, fast structured-output extractor that does NOT
+#     burn the lead's prompt cache or its 1M-token context budget.
+#   - Three ops sharing `provider: openai` reuse one cached httpx client.
+#
+# Agent yamls: no overrides needed — every agent inherits the openrouter
+# conversation default.
+
+active_provider: openrouter
+
+openai:
+  # The OpenAI block here is dedicated to the memory pipeline. Tighter
+  # token budget, minimal reasoning, and a memory-specific cache key
+  # so the conversation cache (under feather-lead) doesn't collide.
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5.4-nano
+  max_output_tokens: 4000
+  temperature: 0.1
+  parallel_tool_calls: true
+  prompt_cache_key: feather-memory
+  prompt_cache_retention: in_memory
+  store: true
+  reasoning:
+    effort: minimal
+    summary: auto
+  stream_idle_timeout_seconds: 60
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: qwen/qwen3.6-plus
+  max_output_tokens: 32000
+  temperature: 0.7                # Qwen3 thinking-mode team-recommended 0.6-0.7
+  parallel_tool_calls: false      # Alibaba doesn't advertise this param
+  stream_idle_timeout_seconds: 120
+  request_timeout_seconds: 180
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    only: ["Alibaba"]
+    require_parameters: true
+    allow_fallbacks: false
+  fallback_models:
+    - qwen/qwen3.5-plus-02-15
+    - qwen/qwen3.5-397b-a17b
+
+memory:
+  extraction:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 2000
+    temperature: 0.1
+  classification:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 400
+    temperature: 0.0
+  query_builder:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 200
+    temperature: 0.0

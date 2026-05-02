@@ -1,0 +1,47 @@
+# Scenario configs — copy/paste recipes that showcase what the
+# Feather config can do across the merged knobs:
+#
+#   * active_provider                              (openai | openrouter)
+#   * openai.model / openrouter.model              (provider default)
+#   * openai.reasoning / openrouter.reasoning      (effort + summary)
+#   * config/agents/<role>.yaml `provider:`        (per-agent provider override)
+#   * config/agents/<role>.yaml `model:`           (per-agent model override)
+#   * config/agents/<role>.yaml `reasoning:`       (per-agent reasoning override)
+#   * memory.{extraction,classification,query_builder}.provider  (per-op provider override)
+#   * memory.{extraction,classification,query_builder}.model     (per-op model override)
+#
+# How to use a scenario:
+#
+#   1. Open the scenario file and read the header — it describes the use
+#      case, the trade-offs, and exactly which sections to merge.
+#   2. Each scenario is a YAML *fragment*, not a complete `app.yaml`.
+#      Merge the shown sections into your `config/app.yaml` (and/or the
+#      named agent yamls under `config/agents/`).
+#   3. Static sections (`database`, `storage`, `logging`, `compaction`,
+#      `skills`, `scheduler`, `parallel`, full `memory.qdrant` /
+#      `memory.embedding` / etc.) are unchanged from the shipped
+#      `app.yaml` and intentionally omitted.
+#
+# The scenarios:
+#
+#   01 — default-qwen-plus-openai-memory.yaml
+#        Shipped default. Qwen3.6-plus on OpenRouter for conversation,
+#        cheap dedicated OpenAI client for memory ops.
+#
+#   02 — all-openai-tiered-reasoning.yaml
+#        Pure OpenAI shop. Lead and Research run gpt-5 with high reasoning;
+#        Explore + Validate stay on gpt-5-mini at lower effort.
+#
+#   03 — cost-optimized-mixed-providers.yaml
+#        One agent per use case. DeepSeek for the lead loop, Qwen 1M ctx
+#        for big-corpus research, OpenAI for strict-discipline validate.
+#
+#   04 — latency-2M-context-grok.yaml
+#        Single fast model (Grok-4.1-fast, 2M ctx, low TTFT) for every
+#        agent. Memory ops still on cheap OpenAI nano.
+#
+#   05 — anthropic-conversation-openai-memory.yaml
+#        Claude Sonnet 4.6 for conversation via OpenRouter (full
+#        Anthropic-style tool use + ephemeral cache), with the structured-
+#        output memory pipeline pinned to OpenAI gpt-5.4-nano. Clearest
+#        cross-provider showcase.

@@ -1,0 +1,76 @@
+# OpenRouter best-practice example configs.
+#
+# Each sibling file is a drop-in replacement for the `openrouter:` block in
+# `config/app.yaml`. To use one, copy its YAML mapping over the existing
+# `openrouter:` mapping and set `active_provider: openrouter` at the top of
+# `app.yaml`.
+#
+# All examples were validated against `/api/v1/models` and
+# `/api/v1/models/{slug}/endpoints` on 2026-04-26. Live data, not folklore.
+#
+# Selection rationale (top picks per provider on 2026-04-26):
+#   - moonshotai/kimi-k2.6      — 256K ctx, tools+reasoning+structured-out,
+#                                  agentic-tuned, served on 6+ providers.
+#   - z-ai/glm-4.7              — newer revision of the proven GLM-4.6 line,
+#                                  202K ctx, ~$0.39/M in / ~$1.74/M out.
+#   - deepseek/deepseek-v3.2    — best cost/quality reasoning model in its
+#                                  class (~$0.26/M in, $0.38/M out, 163K ctx).
+#   - qwen/qwen3.6-plus         — 1M ctx, Alibaba-served (single endpoint),
+#                                  multimodal in (text+image+video).
+#   - x-ai/grok-4.1-fast        — 2M ctx, fastest reasoning at this price
+#                                  point, xAI-served only.
+#   - minimax/minimax-m2.7      — explicitly agentic-tuned, 196K ctx,
+#                                  multi-provider routing.
+#
+# Cross-cutting best practices (apply to every config below):
+#
+#   `require_parameters: true`   Filters out OpenRouter sub-providers that
+#                                silently drop `tools` / `response_format`.
+#                                Mandatory whenever an agent uses tools.
+#
+#   `allow_fallbacks: true`      Default to true for resilience. Flip to
+#                                false (and pin via `only:`) when you need
+#                                deterministic provider selection — e.g.
+#                                replays, A/B benchmarks, regulated routes.
+#
+#   `cache_strategy:             Wraps the system prompt in a content block
+#     anthropic_breakpoint`      with `cache_control:{type:"ephemeral"}`.
+#                                Anthropic / Z.ai / DeepSeek / Moonshot
+#                                providers honour this and report cache
+#                                reads on `/usage`. Non-caching upstreams
+#                                ignore the hint — safe to leave on.
+#                                Set `off` only if a specific provider
+#                                rejects list-shape system content.
+#
+#   `reasoning.effort: medium`   Reasoning-class models default to "medium".
+#                                Use "low" for cheap classifiers, "high"
+#                                for hard planning tasks. Always pair with
+#                                generous `max_output_tokens` (>=16K) so
+#                                the synthesis step doesn't get truncated
+#                                after the model burns thousands of
+#                                reasoning tokens.
+#
+#   `parallel_tool_calls: false` Most open-weight model endpoints on
+#                                OpenRouter do NOT advertise
+#                                `parallel_tool_calls` in
+#                                `supported_parameters`, so combining
+#                                `parallel_tool_calls: true` with
+#                                `require_parameters: true` returns
+#                                404 ("No endpoints found that can
+#                                handle the requested parameters").
+#                                The merged BaseAgent already dispatches
+#                                tool_calls concurrently when the model
+#                                emits more than one in a single turn —
+#                                that doesn't depend on the request hint,
+#                                so leaving this off costs nothing.
+#                                Set `true` only when the pinned upstream
+#                                advertises the parameter (e.g. OpenAI /
+#                                Anthropic / Inceptron-served Kimi-K2.6).
+#
+#   `provider_preferences.sort:` "throughput" for general use, "price"
+#                                for cost-bound workloads, "latency" for
+#                                interactive UX. Mutually exclusive with
+#                                `only:`.
+#
+# All examples set `http_referer` and `app_title` per OpenRouter's
+# attribution best-practice (helps with rate-limit allowances).

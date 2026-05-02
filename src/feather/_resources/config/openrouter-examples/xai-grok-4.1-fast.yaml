@@ -1,0 +1,37 @@
+# xAI Grok-4.1-fast — 2,000,000 token context, very low latency for its size.
+# Tools + reasoning + structured outputs.
+# Single endpoint: xAI.
+#
+# Use when you need:
+#   - extreme context (2M tokens, e.g. dumping a whole monorepo into one turn),
+#   - low time-to-first-token for interactive UX,
+#   - cheaper-than-frontier-closed pricing ($0.20/M in, $0.50/M out).
+#
+# For maximum quality at higher cost: switch model -> x-ai/grok-4.20
+# ($2/M in, $6/M out, same 2M ctx). For coding-specific work:
+# x-ai/grok-code-fast-1 (256K ctx, $0.20/$1.50, optimized for tool-using
+# coding agents).
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: x-ai/grok-4.1-fast
+  max_output_tokens: 32000
+  temperature: 0.7
+  parallel_tool_calls: false           # xAI doesn't advertise parallel_tool_calls; pairing with require_parameters:true would 404
+  stream_idle_timeout_seconds: 90
+  request_timeout_seconds: 120
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    only: ["xAI"]                      # xAI is the only upstream; pin to make routing deterministic
+    require_parameters: true
+    allow_fallbacks: false
+
+  fallback_models:
+    - x-ai/grok-4-fast
+    - x-ai/grok-3-mini

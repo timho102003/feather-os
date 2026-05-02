@@ -1,0 +1,94 @@
+# ============================================================================
+# Scenario 04 — Latency-optimized: single fast model, 2M context
+# ============================================================================
+#
+# When time-to-first-token matters more than per-token cost, and your
+# loops occasionally need to dump enormous context into a turn:
+#
+#   - Every agent runs Grok-4.1-fast via OpenRouter (xAI-served).
+#     2M token context window. Low TTFT. Multimodal in. Strict-schema
+#     tool calls. $0.20/M in, $0.50/M out.
+#   - Single-provider pin (`only: ["xAI"]`) makes routing deterministic;
+#     no risk of OpenRouter silently re-routing mid-session.
+#   - `allow_fallbacks: false` keeps a 503 surfacing as an error rather
+#     than landing on a different model family.
+#
+# Memory pipeline still on OpenAI gpt-5.4-nano — extraction quality
+# matters more than latency for memory, and the dedicated client doesn't
+# steal Grok's connection pool during long-context turns.
+#
+# Trade-off: higher per-turn cost than DeepSeek/Qwen alternatives, but
+# the 2M ctx + xAI's fast first-token can dominate UX in interactive use.
+
+active_provider: openrouter
+
+openai:
+  # Memory-only.
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5.4-nano
+  max_output_tokens: 4000
+  temperature: 0.1
+  parallel_tool_calls: true
+  prompt_cache_key: feather-memory
+  prompt_cache_retention: in_memory
+  store: true
+  reasoning:
+    effort: minimal
+    summary: auto
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: x-ai/grok-4.1-fast
+  max_output_tokens: 32000
+  temperature: 0.7
+  parallel_tool_calls: false
+  stream_idle_timeout_seconds: 60       # Grok-fast is fast — tighter idle ok
+  request_timeout_seconds: 120
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    only: ["xAI"]
+    require_parameters: true
+    allow_fallbacks: false
+  fallback_models:
+    - x-ai/grok-4-fast
+    - x-ai/grok-3-mini
+
+memory:
+  extraction:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 2000
+    temperature: 0.1
+  classification:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 400
+    temperature: 0.0
+  query_builder:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 200
+    temperature: 0.0
+
+# ---------------------------------------------------------------------------
+# Agent yamls
+# ---------------------------------------------------------------------------
+#
+# Every agent inherits Grok-4.1-fast via active_provider+openrouter.model.
+# No per-agent provider/model overrides needed.
+#
+# Optional reasoning tiering if you want different effort per role:
+#
+#   lead.yaml      → reasoning: { effort: high,   summary: detailed }
+#   research.yaml  → reasoning: { effort: high,   summary: detailed }
+#   explore.yaml   → reasoning: { effort: low,    summary: auto }
+#   validate.yaml  → reasoning: { effort: medium, summary: auto }
+#
+# (current shipped defaults are medium/auto for all four — leave as-is
+#  if you don't have a specific reason to tier.)

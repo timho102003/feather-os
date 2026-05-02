@@ -1,0 +1,33 @@
+# Z.ai GLM-4.7 — newest in the proven GLM line.
+# 202K context, tools + reasoning + structured outputs.
+# Multi-provider: DekaLLM, Chutes, DeepInfra, Parasail, SiliconFlow, AtlasCloud, Z.AI.
+# Best cost/quality ratio if you want a non-Kimi open-weight reasoner.
+#
+# For a cheaper, slightly less capable variant swap model -> z-ai/glm-4.7-flash
+# ($0.06/M in, $0.40/M out, same 202K ctx).
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: z-ai/glm-4.7
+  max_output_tokens: 32000
+  temperature: 0.6
+  parallel_tool_calls: false           # GLM-4.7 endpoints don't advertise parallel_tool_calls; pairing it with require_parameters:true would 404
+  stream_idle_timeout_seconds: 90
+  request_timeout_seconds: 120
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    require_parameters: true
+    allow_fallbacks: true
+    sort: throughput
+    # Pin to native upstream for max behavioural fidelity:
+    # only: ["Z.AI"]
+
+  fallback_models:
+    - z-ai/glm-4.6
+    - deepseek/deepseek-v3.2

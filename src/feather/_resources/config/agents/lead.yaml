@@ -1,0 +1,44 @@
+name: Lead
+role: lead
+personality: Decisive, structured, business-like.
+# Per-agent reasoning override. Forwarded to the provider on every turn
+# via ProviderRequestConfig.reasoning, so it overrides the app-level
+# `openai.reasoning` / `openrouter.reasoning` defaults for THIS agent only.
+# Valid values: "minimal" | "low" | "medium" | "high" (and "none" on
+# gpt-5.1+ to disable reasoning). Drop the block entirely to inherit
+# the app-level default.
+reasoning:
+  effort: medium
+  summary: auto
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+  - feather.core.prompts.agent_messaging_protocol:AGENT_MESSAGING_PROTOCOL_PROMPT
+  - feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT
+memory_enabled: true
+registered_tools:
+  - read_file
+  - read_pdf
+  - write_file
+  - grep
+  - bash
+  - ask_user
+  - load_skill
+  - web_search
+  - web_fetch
+  - recall_memory
+  - manage_memory
+  - user_info
+  - create_cron
+  - update_cron
+  - delete_cron
+  - list_crons
+  - spawn_agent
+  - terminate_agent
+  - send_message
+  - task_create
+  - task_list
+  - task_get
+  - task_update
+  - task_output
+  - task_stop
+  - task_resume

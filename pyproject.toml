@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
+build-backend = "hatchling.build"
+
+[project]
+name = "feather-os"
+dynamic = ["version"]
+description = "A lightweight personal AI agent operating system"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Tim Ho", email = "timho102003@gmail.com" }]
+keywords = ["agent", "ai", "cli", "llm", "openai", "operating-system"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "aiohttp>=3.10.0",
+    "aiosqlite>=0.22.1",
+    "google-genai>=0.8.0",
+    "croniter>=6.2.2",
+    "httpx>=0.27.0",
+    "openai>=2.31.0",
+    "opendataloader-pdf>=2.2.1",
+    "parallel-web>=0.4.0",
+    "pydantic>=2.8.0",
+    "pypdf>=6.0.0",
+    "pyyaml>=6.0.3",
+    "qdrant-client>=1.12.0",
+    "rich>=15.0.0",
+    "tiktoken>=0.8.0",
+    "textual>=8.2.4",
+]
+
+[project.optional-dependencies]
+pdf-hybrid = [
+    "opendataloader-pdf[hybrid]>=2.2.1",
+]
+
+[project.scripts]
+feather = "feather.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/timho102003/feather-os"
+Issues = "https://github.com/timho102003/feather-os/issues"
+Changelog = "https://github.com/timho102003/feather-os/blob/master/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-asyncio>=1.3.0",
+    "respx>=0.21.0",
+]
+
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0+unknown"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/feather/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/feather"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/feather",
+    "tests",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "live: Opt-in tests hitting real network services (e.g. OpenRouter); require RUN_LIVE_TESTS=1",
+]

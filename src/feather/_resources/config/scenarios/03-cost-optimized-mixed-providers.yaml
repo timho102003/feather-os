@@ -1,0 +1,120 @@
+# ============================================================================
+# Scenario 03 — Cost-optimized: pick the right model per agent
+# ============================================================================
+#
+# Showcases per-agent provider AND model overrides side by side. Each
+# agent runs on the model best suited to its role:
+#
+#   Lead     — DeepSeek V3.2 via OpenRouter ($0.26/$0.38 per M tokens)
+#              Cheap reasoner, 163K ctx, more than enough for the loop.
+#   Explore  — DeepSeek V4-flash via OpenRouter ($0.14/$0.28)
+#              Cheapest viable structured-tool model in the catalog —
+#              high-throughput file/web reads don't need a frontier model.
+#   Research — Qwen3.6-plus via OpenRouter ($0.33/$1.95, 1M ctx)
+#              1M ctx lets research dump entire corpora into a single turn.
+#   Validate — gpt-5-mini via OpenAI
+#              Premium tool-call discipline + cheap structured output.
+#              Crosses provider boundaries — that's the point.
+#
+# Memory ops pinned to OpenAI gpt-5.4-nano so structured extraction stays
+# reliable regardless of which OpenRouter upstream a given agent's
+# conversation is on.
+
+active_provider: openrouter
+
+openai:
+  # Used by Validate agent (per-agent override) and all memory ops.
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini
+  max_output_tokens: 8000
+  temperature: 1.0
+  parallel_tool_calls: true
+  prompt_cache_key: feather-validate-and-memory
+  prompt_cache_retention: in_memory
+  store: true
+  reasoning:
+    effort: medium
+    summary: auto
+
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  base_url: https://openrouter.ai/api/v1
+  http_referer: https://github.com/timho102003/feather
+  app_title: Feather
+  model: deepseek/deepseek-v3.2        # default for Lead (and any agent without override)
+  max_output_tokens: 32000
+  temperature: 0.6
+  parallel_tool_calls: false
+  stream_idle_timeout_seconds: 120
+  request_timeout_seconds: 180
+  max_attempts: 3
+  reasoning:
+    effort: medium
+  cache_strategy: anthropic_breakpoint
+  provider_preferences:
+    require_parameters: true
+    allow_fallbacks: true
+    sort: price                        # cheapest viable upstream first
+
+memory:
+  extraction:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 2000
+    temperature: 0.1
+  classification:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 400
+    temperature: 0.0
+  query_builder:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 200
+    temperature: 0.0
+
+# ---------------------------------------------------------------------------
+# config/agents/explore.yaml — cheapest viable model
+# ---------------------------------------------------------------------------
+#
+# name: Explore
+# role: explore
+# personality: Precise, curious, grounded in concrete file references.
+# # provider inherits openrouter; model overridden to v4-flash.
+# model: deepseek/deepseek-v4-flash
+# reasoning:
+#   effort: low
+#   summary: auto
+#
+# ---------------------------------------------------------------------------
+# config/agents/research.yaml — 1M ctx for big-corpus sourcing
+# ---------------------------------------------------------------------------
+#
+# name: Research
+# role: research
+# personality: Rigorous, cautious about sourcing, direct about uncertainty.
+# model: qwen/qwen3.6-plus
+# reasoning:
+#   effort: high
+#   summary: detailed
+#
+# ---------------------------------------------------------------------------
+# config/agents/validate.yaml — cross-provider for stricter tool discipline
+# ---------------------------------------------------------------------------
+#
+# name: Validate
+# role: validate
+# personality: Skeptical, evidence-first, refuses irreversible actions.
+# provider: openai                     # cross-provider — uses dedicated OpenAI client
+# model: gpt-5-mini
+# reasoning:
+#   effort: high
+#   summary: detailed
+#
+# ---------------------------------------------------------------------------
+# config/agents/lead.yaml — inherits openrouter / deepseek-v3.2
+# ---------------------------------------------------------------------------
+#
+# (no provider/model override needed — inherits app default)
+# Keep the shipped reasoning block (medium / auto) or raise to high for
+# planning-heavy turns.

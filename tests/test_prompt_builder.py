@@ -1,0 +1,221 @@
+"""Tests for prompt assembly."""
+
+from pathlib import Path
+
+from feather.core.prompt_builder import PromptBuilder
+from feather.models import AgentConfig, MCPServerConfig
+from feather.skills.catalog import SkillCatalog
+from feather.tools.ask_user_tool import AskUserTool
+from feather.tools.registry import ToolRegistry
+
+
+def test_prompt_builder_includes_tools_skill_catalog_and_loaded_skill(tmp_path: Path) -> None:
+    """Prompt assembly should include tool prompts, skill metadata, and loaded skill content."""
+
+    skill_dir = tmp_path / ".feather" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: demo-skill
+description: Demo skill
+---
+
+# Demo Skill
+
+Loaded skill body.
+""",
+        encoding="utf-8",
+    )
+
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    builder = PromptBuilder(skill_catalog, tool_registry)
+    agent_config = AgentConfig(
+        name="Lead",
+        role="lead",
+        personality="Decisive",
+        prompt_modules=[
+            "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+            "feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT",
+        ],
+        registered_tools=["ask_user"],
+    )
+
+    sections = builder.build_sections(agent_config, loaded_skill_names=["demo-skill"])
+    prompt = sections.render()
+
+    assert prompt.startswith('<feather_system_prompt version="3">')
+    assert "<static_cached_prefix>" in prompt
+    assert "<dynamic_prompt_extensions>" in prompt
+    assert "<base_prompt>" in prompt
+    assert "<agent_prompt>" in prompt
+    assert "<lead_agent_identity>" in prompt
+    assert "You are Feather's lead agent." in prompt
+    assert "You are a Feather agent." in prompt
+    assert "use `read_file` when available to inspect it" in prompt
+    assert "Use `list_mcp_servers`" in prompt
+    assert "register only the MCP servers needed for the current task" in prompt
+    assert "`ask_user`" in prompt
+    assert "demo-skill: Demo skill" in prompt
+    assert '<skill name="demo-skill">' in prompt
+    assert "Loaded skill body." in prompt
+
+
+def test_prompt_builder_keeps_cacheable_prefix_stable_when_loaded_skills_change(tmp_path: Path) -> None:
+    """Loaded skill bodies should live in the dynamic suffix, not the cacheable prefix."""
+
+    skill_dir = tmp_path / ".feather" / "skills" / "demo"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: demo-skill
+description: Demo skill
+---
+
+# Demo Skill
+
+Loaded skill body.
+""",
+        encoding="utf-8",
+    )
+
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    builder = PromptBuilder(skill_catalog, tool_registry)
+    agent_config = AgentConfig(
+        name="Lead",
+        role="lead",
+        personality="Decisive",
+        prompt_modules=[
+            "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+            "feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT",
+        ],
+        registered_tools=["ask_user"],
+    )
+
+    without_skill = builder.build_sections(agent_config, loaded_skill_names=[])
+    with_skill = builder.build_sections(agent_config, loaded_skill_names=["demo-skill"])
+
+    assert without_skill.cached_prefix == with_skill.cached_prefix
+    assert "Loaded skill body." not in with_skill.cached_prefix
+    assert "Loaded skill body." in with_skill.dynamic_suffix
+
+
+def test_prompt_builder_includes_mcp_catalog_metadata_without_connection_details(
+    tmp_path: Path,
+) -> None:
+    """Agents should see assigned MCP metadata without eager remote tool schemas."""
+
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    builder = PromptBuilder(skill_catalog, tool_registry)
+    agent_config = AgentConfig(
+        name="Lead",
+        role="lead",
+        personality="Decisive",
+        prompt_modules=[
+            "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+            "feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT",
+        ],
+        registered_tools=["ask_user"],
+        mcp_servers=(
+            MCPServerConfig(
+                label="docs",
+                server_url="https://example.internal/mcp",
+                server_description="Private documentation search",
+                allowed_tools=("search", "fetch"),
+                headers={"Authorization": "Bearer secret"},
+            ),
+            MCPServerConfig(
+                label="playwright",
+                transport="stdio",
+                command="npx",
+                args=("-y", "@playwright/mcp@latest"),
+                server_description="Browser automation",
+            ),
+        ),
+    )
+
+    prompt = builder.build(agent_config, loaded_skill_names=[])
+
+    assert "<available_mcp_servers>" in prompt
+    assert "docs: Private documentation search" in prompt
+    assert "allowed_tools: search, fetch" in prompt
+    assert "playwright: Browser automation" in prompt
+    assert "https://example.internal/mcp" not in prompt
+    assert "Bearer secret" not in prompt
+    assert "@playwright/mcp" not in prompt
+
+
+def test_prompt_builder_includes_user_profile_block_in_cached_prefix(tmp_path: Path) -> None:
+    """When provided, the user profile renders inside the cached prefix."""
+
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    builder = PromptBuilder(skill_catalog, tool_registry)
+    agent_config = AgentConfig(
+        name="Lead",
+        role="lead",
+        personality="Decisive",
+        prompt_modules=[
+            "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+            "feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT",
+        ],
+        registered_tools=["ask_user"],
+    )
+
+    sections = builder.build_sections(
+        agent_config,
+        loaded_skill_names=[],
+        user_profile_block="---\nname: Tim\n---\n\n## About\nHi.",
+    )
+
+    assert "<user_profile>" in sections.cached_prefix
+    assert "name: Tim" in sections.cached_prefix
+    assert "name: Tim" not in sections.dynamic_suffix
+
+
+def test_prompt_builder_renders_placeholder_when_profile_absent(tmp_path: Path) -> None:
+    """When no profile is supplied, a clear placeholder is rendered."""
+
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    builder = PromptBuilder(skill_catalog, tool_registry)
+    agent_config = AgentConfig(
+        name="Lead",
+        role="lead",
+        personality="Decisive",
+        prompt_modules=[
+            "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+            "feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT",
+        ],
+        registered_tools=["ask_user"],
+    )
+
+    prompt = builder.build(agent_config, loaded_skill_names=[])
+    assert "<user_profile>" in prompt
+    assert "No user profile available yet" in prompt
+
+
+def test_prompt_builder_supports_additional_static_prompt_modules(tmp_path: Path) -> None:
+    """Additional prompt modules should render after base and agent prompt sections."""
+
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    builder = PromptBuilder(skill_catalog, tool_registry)
+    agent_config = AgentConfig(
+        name="Lead",
+        role="lead",
+        personality="Decisive",
+        prompt_modules=[
+            "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+            "feather.core.prompts.lead_agent_prompt:LEAD_AGENT_PROMPT",
+            "feather.core.prompts.default_agent_prompt:DEFAULT_AGENT_PROMPT",
+        ],
+        registered_tools=["ask_user"],
+    )
+
+    prompt = builder.build(agent_config, loaded_skill_names=[])
+
+    assert "<additional_static_prompts>" in prompt
+    assert '<prompt_module index="3">' in prompt

@@ -1,0 +1,23 @@
+name: Research
+role: research
+personality: Rigorous, cautious about sourcing, direct about uncertainty.
+reasoning:
+  effort: medium
+  summary: auto
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+  - feather.core.prompts.agent_messaging_protocol:AGENT_MESSAGING_PROTOCOL_PROMPT
+  - feather.core.prompts.research_agent_prompt:RESEARCH_AGENT_PROMPT
+memory_enabled: false
+registered_tools:
+  - web_search
+  - web_fetch
+  - read_file
+  - read_pdf
+  - write_file
+  - load_skill
+  - send_message
+  - task_get
+  - task_update
+  - task_output
+  - request_input

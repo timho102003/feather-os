@@ -1,0 +1,108 @@
+# ============================================================================
+# Scenario 02 — All-OpenAI shop with tiered per-agent reasoning
+# ============================================================================
+#
+# Single-provider deployment on OpenAI. Demonstrates that the same
+# conversation model (gpt-5-mini) can be tuned per-agent via the
+# `reasoning.effort` knob, and that one or two agents can be promoted
+# to a heavier model where the workload justifies it.
+#
+# Reasoning depth tiering:
+#   Lead     — gpt-5            high     (planning, decomposition)
+#   Research — gpt-5            high     (sourcing + analytic synthesis)
+#   Explore  — gpt-5-mini       low      (cheap throughput, file/web reads)
+#   Validate — gpt-5-mini       medium   (default — strict tool discipline)
+#
+# Memory ops inherit the app-default provider (openai) and run on
+# gpt-5.4-nano regardless of which agent triggered them — this is the
+# `model: ~ + provider: ~` "use app default at call time" path with
+# explicit pins for cost predictability.
+#
+# Apply:
+#   1. Replace your `app.yaml` `active_provider:` and `openai:` blocks below.
+#   2. Apply the agent yaml snippets to `config/agents/{lead,research}.yaml`.
+
+active_provider: openai
+
+openai:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini                    # default for agents that don't override
+  max_output_tokens: 16000
+  temperature: 1.0
+  parallel_tool_calls: true
+  prompt_cache_key: feather-lead
+  prompt_cache_retention: in_memory
+  store: true
+  reasoning:
+    effort: low                        # provider default; agents override below
+    summary: auto
+  stream_idle_timeout_seconds: 90
+
+memory:
+  extraction:
+    provider: ~
+    model: gpt-5.4-nano
+    max_output_tokens: 2000
+    temperature: 0.1
+  classification:
+    provider: ~
+    model: gpt-5.4-nano
+    max_output_tokens: 400
+    temperature: 0.0
+  query_builder:
+    provider: ~
+    model: gpt-5.4-nano
+    max_output_tokens: 200
+    temperature: 0.0
+
+# ---------------------------------------------------------------------------
+# config/agents/lead.yaml — heavier model, deeper reasoning
+# ---------------------------------------------------------------------------
+#
+# name: Lead
+# role: lead
+# personality: Decisive, structured, business-like.
+# model: gpt-5
+# reasoning:
+#   effort: high
+#   summary: detailed
+# memory_enabled: true
+# prompt_modules: [...]                  # unchanged
+# registered_tools: [...]                # unchanged
+#
+# ---------------------------------------------------------------------------
+# config/agents/research.yaml — heavier model for sourcing analysis
+# ---------------------------------------------------------------------------
+#
+# name: Research
+# role: research
+# personality: Rigorous, cautious about sourcing, direct about uncertainty.
+# model: gpt-5
+# reasoning:
+#   effort: high
+#   summary: detailed
+# memory_enabled: false
+# prompt_modules: [...]                  # unchanged
+# registered_tools: [...]                # unchanged
+#
+# ---------------------------------------------------------------------------
+# config/agents/explore.yaml — cheap, shallow, high-throughput
+# ---------------------------------------------------------------------------
+#
+# name: Explore
+# role: explore
+# personality: Precise, curious, grounded in concrete file references.
+# # No model override → inherits gpt-5-mini.
+# reasoning:
+#   effort: low
+#   summary: auto
+# memory_enabled: false
+# prompt_modules: [...]                  # unchanged
+# registered_tools: [...]                # unchanged
+#
+# ---------------------------------------------------------------------------
+# config/agents/validate.yaml — leave at the medium default we ship
+# ---------------------------------------------------------------------------
+#
+# (no override needed — current shipped yaml already sets
+#  reasoning.effort: medium)
