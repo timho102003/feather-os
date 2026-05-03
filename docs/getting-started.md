@@ -22,15 +22,15 @@ Pick the install method that matches how you usually install Python
 tools.
 
 ```bash
-pip install feather-os
+pip install feather-agent-os
 ```
 
 ```bash
-pipx install feather-os
+pipx install feather-agent-os
 ```
 
 ```bash
-uv tool install feather-os
+uv tool install feather-agent-os
 ```
 
 Any of those puts a `feather` command on your `PATH`. Verify with:

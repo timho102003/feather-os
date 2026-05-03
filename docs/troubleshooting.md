@@ -4,7 +4,7 @@ Common things that break, and how to fix them.
 
 ## "command not found: feather"
 
-The `pip install feather-os` step worked but the `feather` command is
+The `pip install feather-agent-os` step worked but the `feather` command is
 not on your `PATH`. Three usual culprits:
 
 * You used `pip install --user` and your user-bin directory is not on
@@ -19,7 +19,7 @@ not on your `PATH`. Three usual culprits:
 The cleanest install for a casual user is:
 
 ```bash
-pipx install feather-os
+pipx install feather-agent-os
 ```
 
 `pipx` puts the entry on your PATH and isolates dependencies.
@@ -222,7 +222,7 @@ If `/skills` shows fewer than five skills, the packaged set isn't
 loading. That usually means the install is broken; reinstall:
 
 ```bash
-pip install --upgrade --force-reinstall feather-os
+pip install --upgrade --force-reinstall feather-agent-os
 ```
 
 ## Still stuck

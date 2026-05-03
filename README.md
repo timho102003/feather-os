@@ -4,7 +4,7 @@ Feather is a personal AI agent that lives in your terminal. You talk to it,
 it talks back, and it can use tools (read your files, run shell commands,
 search the web, remember things across sessions) to help you get work done.
 
-The package is published on PyPI as **`feather-os`**. The command you type
+The package is published on PyPI as **`feather-agent-os`**. The command you type
 is just `feather`.
 
 ## What it does
@@ -81,8 +81,8 @@ in [docs/architecture.md](docs/architecture.md).
 ## 60-second quickstart
 
 ```bash
-pip install feather-os                    # or: pipx install feather-os
-                                          # or: uv tool install feather-os
+pip install feather-agent-os                    # or: pipx install feather-agent-os
+                                          # or: uv tool install feather-agent-os
 feather init-memory                       # optional: start Qdrant so the
                                           # agent remembers things across
                                           # chats (needs Docker)

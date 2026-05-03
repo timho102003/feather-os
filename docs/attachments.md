@@ -82,13 +82,13 @@ The three modes:
 To install the hybrid extras:
 
 ```bash
-pip install 'feather-os[pdf-hybrid]'
+pip install 'feather-agent-os[pdf-hybrid]'
 ```
 
 Or if you already installed Feather, add the extra:
 
 ```bash
-pip install --upgrade 'feather-os[pdf-hybrid]'
+pip install --upgrade 'feather-agent-os[pdf-hybrid]'
 ```
 
 Then ask the agent: "use the opendataloader hybrid mode to read
