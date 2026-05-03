@@ -754,7 +754,7 @@ wheels = [
 ]
 
 [[package]]
-name = "feather-os"
+name = "feather-agent-os"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
