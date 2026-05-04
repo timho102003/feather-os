@@ -701,9 +701,17 @@ async def test_base_agent_omits_reasoning_when_agent_has_no_override(
         )
         session_id = await agent.create_session()
         await agent.run(session_id, "hello")
-        # No agent-level override → provider call sees request_config=None,
+        # No agent-level override → provider call's reasoning stays None,
         # so the provider's own default reasoning continues to apply.
-        assert provider.calls[0]["request_config"] is None
+        # request_config itself is always constructed so it can carry the
+        # per-turn trace context (consumed by tracing-aware providers).
+        request_config = provider.calls[0]["request_config"]
+        assert request_config is not None
+        assert request_config.reasoning is None
+        assert request_config.mcp_servers == ()
+        assert request_config.trace_context is not None
+        assert request_config.trace_context.session_id == session_id
+        assert request_config.trace_context.agent_name == "Plain"
     finally:
         await session_store.close()
 

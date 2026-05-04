@@ -79,6 +79,58 @@ openrouter:
     assert or_cfg.supports_multimodal is False
 
 
+def test_app_config_parses_openrouter_tracing_block(tmp_path: Path) -> None:
+    """The optional ``openrouter.tracing`` block populates OpenRouterTracingConfig."""
+
+    (tmp_path / "config").mkdir(parents=True)
+    (tmp_path / "config" / "app.yaml").write_text(
+        _MIN_APP_YAML + """active_provider: openrouter
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  model: anthropic/claude-sonnet-4.6
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  tracing:
+    enabled: true
+    user: ops@example.com
+    metadata:
+      deployment: prod
+      build_sha: abc123
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_app_config(tmp_path)
+    assert cfg.openrouter is not None
+    tracing = cfg.openrouter.tracing
+    assert tracing is not None
+    assert tracing.enabled is True
+    assert tracing.user == "ops@example.com"
+    assert tracing.metadata == {"deployment": "prod", "build_sha": "abc123"}
+
+
+def test_app_config_openrouter_tracing_omitted_defaults_to_none(tmp_path: Path) -> None:
+    """When ``openrouter.tracing`` is absent the field stays None (back-compat)."""
+
+    (tmp_path / "config").mkdir(parents=True)
+    (tmp_path / "config" / "app.yaml").write_text(
+        _MIN_APP_YAML + """active_provider: openrouter
+openrouter:
+  api_key_env: OPEN_ROUTER_API_KEY
+  model: anthropic/claude-sonnet-4.6
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_app_config(tmp_path)
+    assert cfg.openrouter is not None
+    assert cfg.openrouter.tracing is None
+
+
 def test_agent_config_parses_provider_override(tmp_path: Path) -> None:
     """Agent YAML ``provider`` and ``model`` fields land on AgentConfig."""
 

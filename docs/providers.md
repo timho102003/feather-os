@@ -96,6 +96,46 @@ Anthropic-style providers (Claude, Z.ai GLM, DeepSeek, Moonshot). It is
 ignored by providers that don't support caching, so it's safe to keep
 on always.
 
+### Sending traces to Comet Opik (and other observability platforms)
+
+OpenRouter can broadcast every request to one or more observability
+backends: Comet Opik, Langfuse, OTel collectors, W&B Weave, Sentry,
+Grafana Cloud, generic webhooks. Set this up once on the OpenRouter
+dashboard under **Settings → Observability**, then turn on tracing in
+Feather so every turn carries the metadata your dashboard needs to
+group sessions cleanly.
+
+Enable it under the `openrouter:` block:
+
+```yaml
+openrouter:
+  # ... your existing settings ...
+  tracing:
+    enabled: true
+    user: ops@example.com           # optional, identifies you in the UI
+    metadata:                       # optional static fields, merged into trace
+      deployment: prod
+      build_sha: abc123
+```
+
+When this is on, Feather adds three things to every OpenRouter request:
+
+* `session_id`: the Feather session UUID, so all turns of one chat
+  cluster together.
+* `user`: the operator-supplied identifier (only if you set it).
+* `trace`: a small object carrying `trace_name = "feather/<agent>"`,
+  `generation_name = <model>`, `feather_app`, `feather_agent_name`,
+  `feather_agent_role`, `feather_session_id`, plus any static metadata
+  you put in the YAML.
+
+OpenRouter forwards all of that to every observability destination you
+have configured. In Comet Opik the trace will be named
+`feather/<agent_name>` and grouped by `session_id`; the `feather_*` keys
+appear as searchable metadata.
+
+Tracing is opt-in. With no `tracing:` block, the request body is
+identical to what Feather sent before this feature existed.
+
 ### Ready-made OpenRouter examples
 
 The package ships drop-in `openrouter:` blocks for popular models. Look

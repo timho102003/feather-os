@@ -47,6 +47,7 @@ from feather.models import (
     TaskStatus,
     ToolCall,
     ToolExecutionContext,
+    TraceContext,
 )
 from feather.profile import UserProfileStore
 from feather.providers.base import BaseLLMProvider
@@ -380,15 +381,21 @@ class BaseAgent(ABC):
                 else:
                     effective_input_items = input_items
                     effective_cursor = session.last_response_id
-                request_config = None
-                if (
-                    self._agent_config.reasoning is not None
-                    or native_mcp_servers
-                ):
-                    request_config = ProviderRequestConfig(
-                        reasoning=self._agent_config.reasoning,
-                        mcp_servers=native_mcp_servers,
-                    )
+                # ``trace_context`` is cheap and always-on: providers that
+                # consume it (OpenRouter → Opik etc.) gate on their own
+                # tracing config; providers that don't (OpenAI Responses
+                # API) ignore it. Threading it unconditionally keeps the
+                # provider boundary clean.
+                trace_context = TraceContext(
+                    session_id=session_id,
+                    agent_name=self._agent_config.name,
+                    agent_role=self._agent_config.role or None,
+                )
+                request_config = ProviderRequestConfig(
+                    reasoning=self._agent_config.reasoning,
+                    mcp_servers=native_mcp_servers,
+                    trace_context=trace_context,
+                )
                 turn = await self._provider.complete(
                     instructions=instructions,
                     input_items=effective_input_items,
