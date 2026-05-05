@@ -42,6 +42,7 @@ must not appear in a sub-agent YAML.
 |---------------|--------------------------------------------------------------------|
 | `read_file`   | reading local files                                                |
 | `grep`        | searching the local repo                                           |
+| `write_file`  | writing deliverables / artifacts inside the workspace; prefer over `bash` heredocs because writes are atomic and shell-free |
 | `bash`        | running local commands — tests, lint, git, small scripts           |
 | `web_search`  | Parallel AI Search for quick/iterative external lookups            |
 | `web_fetch`   | Parallel AI Extract for pulling one specific authoritative page    |
@@ -98,11 +99,33 @@ Fill every `<…>` placeholder. Do not ship template placeholders.
 
 ## 5. Write the file
 
-You will write the YAML through the `bash` tool (Feather has no dedicated
-`write_file` tool). The `bash` tool passes the `command` argument to
-`/bin/bash` as a single string — there is **no outer shell** pre-parsing it.
-That means you must write the command so bash itself does zero substitution
-inside the file content.
+### Preferred: the `write_file` tool
+
+`write_file` writes the YAML atomically with no shell layer, so backticks,
+`$variables`, and `$()` in your prose pass through as literals — no
+quoting hazards at all. The global agents directory
+(`~/.feather/config/agents/`) is on its whitelist, so an absolute path
+works directly:
+
+```
+write_file(
+  path="~/.feather/config/agents/git-log-summarizer-custom.yaml",
+  content="name: GitLogSummarizer\nrole: custom\n... (the rest of the YAML)\n",
+  overwrite=False,
+  create_parents=True,
+)
+```
+
+Use this path unless you specifically need to validate the YAML inline
+before persisting (in which case use the Python alternative below).
+
+### Fallback: bash heredoc
+
+If you must use `bash` (e.g. you want to chain a parse-check in the same
+call), the rules below apply. The `bash` tool passes the `command`
+argument to `/bin/bash` as a single string — there is **no outer shell**
+pre-parsing it. That means you must write the command so bash itself
+does zero substitution inside the file content.
 
 ### The safe pattern — single-quoted heredoc, no `bash -c` wrapper
 
