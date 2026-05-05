@@ -37,11 +37,18 @@ SESSIONS_TABLE = TableSchema(
         active_mcp_servers TEXT NOT NULL DEFAULT '[]',
         pending_inputs TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        restart_requested_at TEXT,
+        restart_reason TEXT
     )
     """,
     required_columns=(
         ColumnSchema(name="active_mcp_servers", definition="TEXT NOT NULL DEFAULT '[]'"),
+        # Self-repair flag: written by request_restart tool (worker side),
+        # polled by the supervisor to trigger a graceful worker restart
+        # on the same session_id. NULL when no restart is pending.
+        ColumnSchema(name="restart_requested_at", definition="TEXT"),
+        ColumnSchema(name="restart_reason", definition="TEXT"),
     ),
 )
 

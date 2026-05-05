@@ -307,6 +307,17 @@ class FeatherRuntime:
         return self._agent_message_store
 
     @property
+    def session_store(self) -> SessionStore:
+        """Return the shared session store.
+
+        Used by the supervisor-side ``RestartWatcher`` to poll the
+        ``restart_requested_at`` flag set by the worker's
+        ``request_restart`` tool.
+        """
+
+        return self._session_store
+
+    @property
     def subagent_registry(self) -> SubagentRegistry:
         """Return the live sub-agent subprocess registry."""
 

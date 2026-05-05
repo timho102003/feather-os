@@ -225,6 +225,44 @@ loading. That usually means the install is broken; reinstall:
 pip install --upgrade --force-reinstall feather-agent-os
 ```
 
+## "Lead unresponsive" banner appears in worker mode
+
+You see a red `Lead unresponsive` marker mid-conversation. This means
+the supervisor (the TUI process) hasn't seen a heartbeat row from the
+lead worker subprocess for over 5 seconds. The worker is either stuck
+in a long blocking call (e.g. a `bash` tool with no timeout, an
+external HTTP call hung, the LLM provider stalled) or the worker
+crashed entirely.
+
+To recover:
+
+1. Type `/restart-lead`. The supervisor SIGTERMs the worker, then
+   SIGKILLs as a fallback after a 2 s grace, then respawns it on the
+   same `--session-id`. Conversation history is preserved.
+2. If `/restart-lead` itself fails (very rare — usually a Python
+   import error in the worker boot path), type `/exit` and relaunch
+   `feather --session-id <uuid>` (the session id is shown by
+   `/session`).
+
+The banner only appears when `FEATHER_USE_LEAD_WORKER=1` is set —
+in default in-process mode the lead and TUI share an event loop, so
+"the lead is hung" means the TUI is also hung and there's no banner
+to draw.
+
+## `request_restart` says "wheel install" — what does that mean?
+
+The lead patched a file under `site-packages/feather/`. The fix works
+for the current process and any restart, but the next
+`pip install --upgrade feather-agent-os` (or `pipx upgrade`, or any
+reinstall) will silently overwrite it. To make the fix durable:
+
+* **Recommended:** ask the lead to call `submit_github_report` with
+  `kind="issue"`. The bug + fix lands upstream and ships in the next
+  release.
+* **Alternative:** reinstall feather editable (`pip install -e .`
+  from a clone) and re-apply the patch — future patches will then
+  survive upgrades.
+
 ## Still stuck
 
 Feather's runtime log is the best clue. Find it at:

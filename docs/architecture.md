@@ -423,13 +423,47 @@ Wire shapes:
 * **Heartbeat** (`feather.storage.worker_heartbeat_store`) is one row
   keyed by `session_id`. Worker writes; supervisor reads.
 
-Why this exists today even with no user-visible feature wired to it:
-worker mode is the **substrate** for the next two roadmap steps —
-out-of-band hang detection (the supervisor's `is_stale()` already
-exists; the UI banner ships in step 2) and self-repair restart-resume
-(a `request_restart` tool + the supervisor's existing `restart()` ship
-in step 3). Default users see byte-identical behavior because the env
-flag is off.
+When the env flag is on, the supervisor process spawns three
+auxiliary tasks alongside the worker:
+
+* **Hang watcher** polls `LeadSupervisor.is_stale()` every 2 s and
+  surfaces a red `Lead unresponsive` marker (and a green `Lead
+  recovered` marker) on transitions. State machine is two-state, so
+  a sustained hang produces one alert, not one per tick.
+* **Log triage bot** tails `.feather/logs/feather.log` for ERROR-level
+  entries since its last reported high-water mark and posts a single
+  summary message into the lead's mailbox via `agent_messages`.
+  Auto-resets dedup on log rotation (inode change).
+* **Restart watcher** polls the new `sessions.restart_requested_at`
+  column once per ~1.5 s. When the lead's `request_restart` tool sets
+  the flag, the watcher cancels any in-flight run (with a 10 s cap so
+  a stuck cleanup can't block the watchdog), calls
+  `LeadSupervisor.restart()` (serialized via `_restart_lock` so it
+  can't race a concurrent `/restart-lead` slash), then drops a
+  "restart succeeded / failed" message back into the inbox.
+
+Two new tools surface to the lead in worker mode:
+
+* **`request_restart(reason)`** — self-repair primitive. The lead
+  calls this after patching `feather/*` modules and verifying the
+  change with tests. The tool itself does not kill anything; it
+  writes the flag and returns. Response carries an install-mode
+  warning (editable / wheel / read-only) so the model can advise the
+  user about upgrade durability.
+* **`submit_github_report(kind, title, body, repo?)`** — wraps
+  `gh issue create` via subprocess. Reads the `submit-github-report`
+  skill before invocation; never auto-submits; rejects PR kind for v1
+  with a clear "not yet" notice.
+
+Plus a new slash command:
+
+* **`/restart-lead`** — manual recovery hook. Same `LeadSupervisor.restart()`
+  the watcher calls; the slash command is the user-driven alternative
+  for the case where the lead can't (or won't) call `request_restart`
+  itself, e.g. after a hang banner.
+
+Default users see byte-identical behavior because the env flag is off
+and the new tools / commands are no-ops without the supervisor.
 
 Limitations enforced by the runtime when worker mode is on:
 
@@ -439,7 +473,9 @@ Limitations enforced by the runtime when worker mode is on:
   the same reason.
 
 See [configuration.md → Lead worker mode](configuration.md#lead-worker-mode-opt-in)
-for the env var and the limitations.
+for the env var and the limitations, and
+[tools-and-commands.md](tools-and-commands.md#self-repair-and-upstream-reporting)
+for the per-tool reference.
 
 ## Putting it all together
 

@@ -164,6 +164,13 @@ class LeadSupervisor:
         )
         self._reader_task: asyncio.Task[None] | None = None
         self._run_lock = asyncio.Lock()
+        # Dedicated lock for restart() so concurrent triggers (user via
+        # /restart-lead racing the RestartWatcher's poll) serialize. A
+        # separate lock from _run_lock is intentional — restart should
+        # not wait for an in-flight run to finish (that's the hang case
+        # we are trying to recover from); the caller cancels the run
+        # task first via cancel_in_flight_run.
+        self._restart_lock = asyncio.Lock()
         self._closed = False
 
     # ------------------------------------------------------------------ #
@@ -290,14 +297,23 @@ class LeadSupervisor:
             self._handle = None
 
     async def restart(self) -> None:
-        """Stop the current worker and respawn it on the same session id."""
+        """Stop the current worker and respawn it on the same session id.
 
-        if self._session_id is None:
-            raise RuntimeError("supervisor.restart() called before start()")
-        sid = self._session_id
-        await self.shutdown()
-        self._closed = False
-        await self.start(sid)
+        Serialized via ``_restart_lock`` so two concurrent triggers
+        (e.g. the user types ``/restart-lead`` within milliseconds of
+        ``RestartWatcher`` firing on a ``request_restart`` flag) do
+        not both try to ``shutdown`` + ``start`` — the second call
+        would otherwise short-circuit ``shutdown`` (``_closed`` already
+        True) and race ``start`` against an in-flight first call.
+        """
+
+        async with self._restart_lock:
+            if self._session_id is None:
+                raise RuntimeError("supervisor.restart() called before start()")
+            sid = self._session_id
+            await self.shutdown()
+            self._closed = False
+            await self.start(sid)
 
     # ------------------------------------------------------------------ #
     # BaseAgent-shaped surface

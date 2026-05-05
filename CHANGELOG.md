@@ -39,6 +39,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `BaseAgent` and would race the worker on the shared `sessions` row,
   silently corrupting `last_response_id`, `pending_inputs`, and
   `messages.sequence`.
+- Hang-detection banner. In worker mode, the TUI polls
+  `LeadSupervisor.is_stale()` every 2 s and surfaces a red
+  `Lead unresponsive` conversation marker on transition into stale
+  (heartbeat older than 5 s) and a green `Lead recovered` marker on
+  recovery. State machine fires on transitions only, so a sustained
+  hang produces one alert rather than one per tick.
+- `/restart-lead` slash command. Manual recovery hook for the hang
+  banner and for "I just patched the lead's code, please reload it."
+  Cancels any in-flight run, calls `LeadSupervisor.restart()` (which
+  does the SIGTERM → SIGKILL dance + respawns on the same
+  `--session-id`). Worker-mode only; surfaces a clear "worker mode is
+  off" notice when called against the in-process default path.
+- Error-triage bot. In worker mode, the supervisor tails
+  `.feather/logs/feather.log` for ERROR-level entries and posts a
+  single summary message into the lead's mailbox so the lead can
+  investigate. Two-layer dedup (high-water mark + bounded recency
+  set), auto-resets on log rotation (inode change), reads off-thread
+  via `asyncio.to_thread` so the supervisor's event loop stays
+  responsive.
+- `request_restart` tool. Self-repair primitive: the lead calls it
+  after patching `feather/*` modules and verifying the change. The
+  tool itself does not kill any process — it writes a new
+  `sessions.restart_requested_at` flag. The supervisor's restart
+  watcher polls the flag, calls `LeadSupervisor.restart()` (serialized
+  via a dedicated `_restart_lock` so it can't race a concurrent
+  `/restart-lead`), and posts a "restart succeeded / failed" message
+  back into the lead's inbox so the conversation continues naturally.
+- Install-mode detection. `feather.core.install_mode.detect_install_mode`
+  classifies the running install as `editable`, `wheel`, or `read_only`.
+  Surfaced in `request_restart`'s response so the model can warn the
+  user when a patch will be silently overwritten on the next
+  `pip install --upgrade`.
+- `submit_github_report` tool + skill. File an issue (PR support
+  deferred) on the upstream repo via the `gh` CLI. The
+  `submit-github-report` skill (loaded on demand) carries the issue
+  template, hard rules ("never auto-submit", "one bug per report",
+  "tests must pass first"), and the "ask the user before sending"
+  flow. Body length is checked in UTF-8 bytes (not chars) so
+  CJK/emoji-heavy bodies don't slip past Feather's check just to be
+  rejected by GitHub. The URL is extracted by scanning for the first
+  `https://github.com/*` line so a `gh` release-update warning before
+  the URL doesn't break parsing.
+- New `sessions.restart_requested_at` and `sessions.restart_reason`
+  columns (idempotent migration via `ensure_column`). Pre-existing
+  flags on launch are cleared so a SIGKILLed prior session can't
+  trigger a surprise restart of a freshly-spawned worker.
 
 ### Changed
 

@@ -88,6 +88,18 @@ See [agents.md](agents.md) for context.
 
 Visible only when `mcp.enabled: true`. See [mcp.md](mcp.md).
 
+### Self-repair and upstream reporting
+
+| Tool | What it does |
+|---|---|
+| `request_restart` | Queue a clean restart of the lead worker subprocess so patched `feather/*` modules reload. The current session continues on the new worker; conversation history is preserved. Worker mode only (`FEATHER_USE_LEAD_WORKER=1`). |
+| `submit_github_report` | File an issue (PR support deferred) on the upstream Feather repo via the `gh` CLI. Always reads the `submit-github-report` skill first; never auto-submits. |
+
+The `request_restart` tool surfaces the install mode in its response —
+in wheel installs it warns that the patch will be overwritten on the
+next `pip install --upgrade` and recommends `submit_github_report` to
+preserve the fix. See [configuration.md → Lead worker mode](configuration.md#lead-worker-mode-opt-in).
+
 ## Slash commands
 
 Type these into the input box during a chat. The TUI shows
@@ -104,6 +116,7 @@ autocomplete as you type `/`.
 | `/copy` | | Copy the transcript to the clipboard. |
 | `/queue` | | Show messages you typed while the agent was busy. |
 | `/session` | | Show the session ID, agent name, and how full the context is. |
+| `/restart-lead` | `/restart_lead` | Respawn the lead worker subprocess. Worker mode only — does nothing in default in-process mode. Use after a "Lead unresponsive" banner or to force-reload patched lead code. Conversation history is preserved across restarts. |
 
 ### Inspection
 

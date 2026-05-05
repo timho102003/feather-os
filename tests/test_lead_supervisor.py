@@ -397,6 +397,46 @@ async def test_start_with_different_session_raises(tmp_path: Path) -> None:
     await supervisor.shutdown()
 
 
+async def test_concurrent_restart_calls_are_serialized(tmp_path: Path) -> None:
+    """Two simultaneous restart() calls must not race on shutdown/start.
+
+    Pre-fix, the second call's shutdown() short-circuited (``_closed``
+    already True) and then raced start() against the first call's
+    in-flight start, producing a no-op restart and corrupting internal
+    state. The _restart_lock makes them serial.
+    """
+
+    handles: list[_FakeWorkerHandle] = []
+
+    def factory(_sid: str):
+        async def _make() -> WorkerHandle:
+            h = _FakeWorkerHandle()
+            handles.append(h)
+            h.auto_ack_shutdown()
+            return h
+
+        return _make()
+
+    supervisor = LeadSupervisor(
+        db_path=tmp_path / "feather.db",
+        project_root=tmp_path,
+        heartbeat_interval=0.05,
+        staleness_threshold=0.5,
+        shutdown_grace=0.05,
+        handle_factory=factory,
+    )
+    await supervisor.start("s1")
+    # Fire two restart()s in parallel; both must complete cleanly and
+    # the supervisor must end up running the latest (third) handle.
+    await asyncio.gather(supervisor.restart(), supervisor.restart())
+    # 1 (initial start) + 2 (one per restart, serialized) = 3 handles.
+    assert len(handles) == 3
+    assert supervisor.session_id == "s1"
+    assert supervisor.is_running is True
+
+    await supervisor.shutdown()
+
+
 async def test_supervisor_rejects_invalid_threshold(tmp_path: Path) -> None:
     """staleness_threshold must exceed heartbeat_interval; otherwise nonsense."""
 
