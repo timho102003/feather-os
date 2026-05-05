@@ -80,10 +80,17 @@ async def test_write_file_succeeds_when_global_root_lives_outside_workspace(tmp_
 
 
 async def test_write_file_still_rejects_outside_all_roots_with_paths(tmp_path):
-    home = tmp_path / "home"
-    paths = FeatherPaths(project_root=tmp_path, home=home)
+    """A path outside the workspace AND outside the global config/skills
+    dirs must still be rejected. ``home`` is placed *as a sibling* of the
+    workspace so it is genuinely outside every allowed root (otherwise it
+    would fall inside the workspace by accident)."""
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    home = tmp_path / "homedir"  # sibling, not a child of workspace
+    paths = FeatherPaths(project_root=workspace, home=home)
     paths.ensure_global_dirs()
-    tool = WriteFileTool(tmp_path, paths=paths)
+    tool = WriteFileTool(workspace, paths=paths)
 
     # ~/.feather/skills is allowed, but ~/.feather (the parent) is not
     forbidden = home / "secrets.txt"

@@ -18,9 +18,9 @@ list).
 
 | Tool | What it does |
 |---|---|
-| `read_file` | Read a text file from the workspace, optionally a slice by line range. |
+| `read_file` | Read a UTF-8 text file, optionally a slice by line range. Reads anywhere in the workspace and anywhere under `~/.feather/` (global config, agent YAMLs, skills, `user.md`, state markers). Files whose name starts with `.env` (e.g. `.env`, `.env.local`, `.envrc`) are refused — use `bash` if you genuinely need them. Paths outside every allowed root are rejected. |
 | `read_pdf` | Extract readable text from a PDF. Modes: `auto`, `text`, `opendataloader_hybrid`. |
-| `write_file` | Write a UTF-8 file. Restricted to `.feather/` and `config/` (project) plus `~/.feather/config/` and `~/.feather/skills/` (global). |
+| `write_file` | Write a UTF-8 file anywhere inside the workspace (the project root, or the working directory `feather` was launched from). Paths that escape via `..` or symlinks are rejected. Also whitelists `~/.feather/config/` and `~/.feather/skills/` for global agent / skill installs. |
 | `grep` | Regex search across the workspace, scoped by path. |
 | `bash` | Run a short bash command. Default 10 s timeout, 4000 char output cap. |
 

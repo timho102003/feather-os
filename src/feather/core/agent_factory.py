@@ -519,7 +519,7 @@ class AgentFactory:
         """Return the built-in tool builders available to agents."""
 
         builders: dict[str, ToolBuilder] = {
-            "read_file": lambda: ReadFileTool(self._root),
+            "read_file": lambda: ReadFileTool(self._root, paths=self._paths),
             "read_pdf": lambda: ReadPdfTool(self._root),
             "write_file": lambda: WriteFileTool(self._root, paths=self._paths),
             "grep": lambda: GrepTool(self._root),

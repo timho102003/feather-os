@@ -1,4 +1,4 @@
-"""Write text files into the workspace's whitelisted directories."""
+"""Write text files anywhere inside the workspace (plus opt-in global dirs)."""
 
 from __future__ import annotations
 
@@ -14,33 +14,32 @@ from feather.tools.base import BaseTool
 logger = logging.getLogger(__name__)
 
 _MAX_CONTENT_CHARS = 1_048_576
-# Project-relative whitelist still covers ``.feather`` (runtime state)
-# and ``config`` for back-compat with tests that stage a project-local
-# config tree. Production agents that want to edit YAML now point at
-# the global override paths exposed via the optional FeatherPaths arg.
-_PROJECT_WRITABLE_SUBDIRS: tuple[str, ...] = (".feather", "config")
 
 
 class WriteFileTool(BaseTool):
-    """Write text files atomically inside the writable sandbox.
+    """Write text files atomically inside the workspace.
 
-    The sandbox covers ``.feather/`` (runtime state, scratch artifacts,
-    skill files) and ``config/`` (agent + app YAML so agents can edit
-    their own configuration). When constructed with a
-    :class:`feather.paths.FeatherPaths`, the global config and skills
-    directories (``~/.feather/config``, ``~/.feather/skills``) are added
-    to the whitelist so the agent-creator skill can persist new agents
-    and skills user-globally instead of polluting the project tree.
-    Paths outside every allowed root are rejected.
+    The sandbox is the workspace root — typically the discovered project
+    root, or the directory the user launched ``feather`` from when no
+    project is detected. Any path that resolves inside the workspace
+    (including ``.feather/`` runtime state and ``config/`` YAML) is
+    writable; paths that escape the workspace via ``..`` or symlinks
+    are rejected.
+
+    When constructed with a :class:`feather.paths.FeatherPaths`, the
+    global config and skills directories (``~/.feather/config``,
+    ``~/.feather/skills``) are also whitelisted so the agent-creator
+    skill can persist new agents and skills user-globally without
+    polluting the project tree.
     """
 
     name = "write_file"
     description = (
-        "Write a UTF-8 text file. Writes are restricted to `.feather/` "
-        "(runtime state, artifacts, skills) and `config/` (app + agent "
-        "YAML). Paths outside both roots are rejected. Creates parent "
-        "directories by default. Refuses to overwrite an existing file "
-        "unless `overwrite=true`."
+        "Write a UTF-8 text file anywhere inside the workspace (the "
+        "project root, or the working directory `feather` was launched "
+        "from). Paths that escape the workspace are rejected. Creates "
+        "parent directories by default. Refuses to overwrite an "
+        "existing file unless `overwrite=true`."
     )
     parameters_schema = {
         "type": "object",
@@ -48,10 +47,10 @@ class WriteFileTool(BaseTool):
             "path": {
                 "type": "string",
                 "description": (
-                    "Workspace-relative path inside `.feather/` or `config/` "
-                    "(e.g. `.feather/artifacts/notes.md`, "
+                    "Workspace-relative path (e.g. `notes.md`, "
+                    "`src/main.py`, `.feather/artifacts/x.txt`, "
                     "`config/agents/explore.yaml`). Absolute paths are "
-                    "accepted only if they fall inside an allowed root."
+                    "accepted only if they fall inside the workspace."
                 ),
             },
             "content": {
@@ -77,10 +76,7 @@ class WriteFileTool(BaseTool):
         paths: object = None,
     ) -> None:
         self._workspace_root = workspace_root.resolve()
-        roots: list[Path] = [
-            (self._workspace_root / sub).resolve()
-            for sub in _PROJECT_WRITABLE_SUBDIRS
-        ]
+        roots: list[Path] = [self._workspace_root]
         # When a FeatherPaths is provided, also whitelist the global
         # config + skills dirs so agents can persist new YAMLs and
         # skills user-globally.
@@ -96,16 +92,15 @@ class WriteFileTool(BaseTool):
         """Describe how the write-file tool should be used."""
 
         return (
-            "- `write_file`: write a UTF-8 text file under `.feather/` "
-            "(scratch / artifacts / skills) or `config/` (app + agent YAML). "
-            "Any other path is rejected. Set `overwrite=true` to replace an "
-            "existing file."
+            "- `write_file`: write a UTF-8 text file anywhere in the "
+            "workspace (paths that escape via `..` or symlinks are "
+            "rejected). Set `overwrite=true` to replace an existing file."
         )
 
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
-        """Write `content` to `path` atomically inside the `.feather/` sandbox.
+        """Write `content` to `path` atomically inside the workspace sandbox.
 
         Args:
             arguments: Tool arguments from the model.

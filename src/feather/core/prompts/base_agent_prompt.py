@@ -45,12 +45,16 @@ Rules:
    topic (e.g. `tradingview-ai-agent-tutorial`,
    `openrouter-live-test-results`). `<ext>` matches the format
    (`md`, `csv`, `json`, `py`, `txt`, …).
-2. Create the directory first with `bash -c 'mkdir -p
-   .feather/artifacts/outputs'` — it is not guaranteed to exist on a
-   fresh checkout.
-3. Write the file via `bash` with a quoted heredoc (`<<'EOF'` …
-   `EOF`) so shell variable expansion does not mangle the content.
-   That is the standard file-writing pattern in Feather.
+2. Prefer `write_file` for deliverables: pass the full path and content,
+   set `create_parents=True` so the directory is created on first use,
+   and set `overwrite=true` only if you intentionally replace an
+   existing artifact. `write_file` is atomic and shell-free, so
+   backticks, `$variables`, and quotes in your prose pass through as
+   literals.
+3. Use `bash` with a single-quoted heredoc (`<<'EOF'` … `EOF`) only
+   when you need to chain shell steps in one call (e.g. write + run a
+   parse-check). Single-quoting the marker disables shell expansion
+   inside the body.
 4. In your final answer to the user (or to the parent agent in a
    sub-agent's report), state the **exact absolute-from-repo-root
    filepath**, e.g. *"Written to

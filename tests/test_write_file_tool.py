@@ -111,21 +111,24 @@ async def test_write_file_refuses_when_create_parents_false(tmp_path: Path) -> N
         )
 
 
-async def test_write_file_rejects_paths_outside_writable_roots(tmp_path: Path) -> None:
-    """Paths outside both `.feather/` and `config/` must be rejected."""
+async def test_write_file_allows_paths_anywhere_inside_workspace(tmp_path: Path) -> None:
+    """The workspace root itself is writable so agents can author files in
+    the working directory the user launched them from (e.g. ``abc/foo.txt``
+    when ``feather`` was started in ``abc/``)."""
 
     tool = WriteFileTool(tmp_path)
-    for forbidden in ["pyproject.toml", "src/feather/x.py", "tests/foo.py"]:
-        with pytest.raises(ValueError, match=r"may only write inside"):
-            await tool.execute(
-                {
-                    "path": forbidden,
-                    "content": "x",
-                    "overwrite": None,
-                    "create_parents": None,
-                },
-                _ctx(),
-            )
+    for path in ("notes.txt", "src/feather/x.py", "tests/foo.py"):
+        result = await tool.execute(
+            {
+                "path": path,
+                "content": "x",
+                "overwrite": None,
+                "create_parents": None,
+            },
+            _ctx(),
+        )
+        assert (tmp_path / path).read_text(encoding="utf-8") == "x"
+        assert "wrote" in result.output
 
 
 async def test_write_file_allows_config_directory(tmp_path: Path) -> None:
@@ -176,6 +179,103 @@ async def test_write_file_rejects_workspace_escape(tmp_path: Path) -> None:
             },
             _ctx(),
         )
+
+
+async def test_write_file_rejects_leaf_symlink_pointing_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    """A leaf symlink in the workspace whose target is outside must be
+    rejected — `Path.resolve()` follows the symlink so the resolved path
+    falls outside the writable roots and the membership check rejects it.
+    Locks in the docstring claim that symlink-escapes are rejected."""
+
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / "evil").symlink_to(outside / "loot.txt")
+
+    tool = WriteFileTool(workspace)
+    with pytest.raises(ValueError, match=r"may only write inside"):
+        await tool.execute(
+            {
+                "path": "evil",
+                "content": "x",
+                "overwrite": True,
+                "create_parents": None,
+            },
+            _ctx(),
+        )
+    assert not (outside / "loot.txt").exists()
+
+
+async def test_write_file_rejects_parent_symlink_pointing_outside_workspace(
+    tmp_path: Path,
+) -> None:
+    """A *parent* component that is a symlink to a directory outside the
+    workspace must also be rejected — `Path.resolve()` walks symlinks in
+    every component so the final resolved path lands outside."""
+
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    (workspace / "sub").symlink_to(outside)  # parent symlink
+
+    tool = WriteFileTool(workspace)
+    with pytest.raises(ValueError, match=r"may only write inside"):
+        await tool.execute(
+            {
+                "path": "sub/file.txt",
+                "content": "x",
+                "overwrite": None,
+                "create_parents": None,
+            },
+            _ctx(),
+        )
+    assert not (outside / "file.txt").exists()
+
+
+async def test_write_file_accepts_absolute_path_inside_workspace(
+    tmp_path: Path,
+) -> None:
+    """The schema description advertises that absolute paths inside the
+    workspace are accepted; lock that contract in."""
+
+    tool = WriteFileTool(tmp_path)
+    target = tmp_path / "abs_inside.txt"
+    await tool.execute(
+        {
+            "path": str(target),
+            "content": "x",
+            "overwrite": None,
+            "create_parents": None,
+        },
+        _ctx(),
+    )
+    assert target.read_text(encoding="utf-8") == "x"
+
+
+async def test_write_file_allows_sentinel_paths_at_workspace_root(
+    tmp_path: Path,
+) -> None:
+    """Smoke test: the user-visible promise is that the workspace itself
+    is writable, including filenames the old whitelist forbade
+    (`pyproject.toml`, `CLAUDE.md`, `.git/HEAD`). A future regression
+    that re-narrows the whitelist would fail loudly here."""
+
+    tool = WriteFileTool(tmp_path)
+    for sentinel in ("pyproject.toml", "CLAUDE.md", ".git/HEAD"):
+        await tool.execute(
+            {
+                "path": sentinel,
+                "content": "sentinel",
+                "overwrite": None,
+                "create_parents": None,
+            },
+            _ctx(),
+        )
+        assert (tmp_path / sentinel).read_text(encoding="utf-8") == "sentinel"
 
 
 async def test_write_file_rejects_overwrite_of_directory(tmp_path: Path) -> None:
@@ -254,11 +354,9 @@ def test_write_file_schema_is_openai_strict_compatible(tmp_path: Path) -> None:
 
 
 def test_write_file_prompt_describes_writable_roots(tmp_path: Path) -> None:
-    """The tool prompt must surface both whitelisted roots so the model uses valid paths."""
+    """The tool prompt must surface the workspace as the writable root so the model uses valid paths."""
 
     tool = WriteFileTool(tmp_path)
     prompt = tool.get_prompt()
-    assert ".feather" in prompt
-    assert "config" in prompt
-    assert ".feather" in tool.description
-    assert "config" in tool.description
+    assert "workspace" in prompt
+    assert "workspace" in tool.description
