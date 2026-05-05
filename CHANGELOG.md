@@ -85,6 +85,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   columns (idempotent migration via `ensure_column`). Pre-existing
   flags on launch are cleared so a SIGKILLed prior session can't
   trigger a surprise restart of a freshly-spawned worker.
+- Onboarding wizard asks once whether to enable the **self-repair
+  safety net** (the user-facing name for the lead-worker subprocess
+  feature) and writes the answer to `self_repair.enabled` in
+  `app.yaml`. New `SelfRepairConfig` dataclass + parser layer the
+  three signals: env var (`FEATHER_USE_LEAD_WORKER`) wins, then YAML
+  setting, then default-off. The env var also accepts explicit
+  falsy values (`0`, `false`, `no`, `off`) so a user with the YAML
+  setting on can disable the feature for a single launch (eg when
+  cron-driven workflows are critical for that session).
 
 ### Changed
 

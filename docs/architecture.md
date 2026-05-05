@@ -363,11 +363,13 @@ Default trigger is 80% of the context window. The active model and
 window size are configured in
 [configuration.md](configuration.md#compaction).
 
-## Lead worker mode (opt-in)
+## Self-repair safety net (opt-in)
 
 By default the lead agent runs as an `asyncio.Task` on the same event
-loop as the Textual TUI. Setting `FEATHER_USE_LEAD_WORKER=1` flips a
-two-pod layout:
+loop as the Textual TUI. Opting in to the safety net (either via the
+onboarding wizard, by setting `self_repair.enabled: true` in
+`app.yaml`, or with `FEATHER_USE_LEAD_WORKER=1` in the environment)
+flips a two-pod layout:
 
 * The TUI process becomes the **supervisor**. It pre-creates the lead
   session, spawns the worker subprocess, drains its stdout into the
@@ -472,8 +474,8 @@ Limitations enforced by the runtime when worker mode is on:
 * Messaging adapters (Telegram / LINE / WhatsApp) are not started for
   the same reason.
 
-See [configuration.md → Lead worker mode](configuration.md#lead-worker-mode-opt-in)
-for the env var and the limitations, and
+See [configuration.md → Self-repair safety net](configuration.md#self-repair-safety-net-opt-in)
+for the env var, the YAML setting, and the limitations, and
 [tools-and-commands.md](tools-and-commands.md#self-repair-and-upstream-reporting)
 for the per-tool reference.
 
@@ -493,9 +495,10 @@ If you read all six diagrams, you have the whole mental model:
 6. **MCP** servers connect on demand and survive session restarts.
 7. **Compaction** keeps long sessions alive without burning the active
    model's context.
-8. **Lead worker mode** (opt-in) splits the lead into its own
-   subprocess so the supervisor can detect hangs and (later) restart
-   it cleanly.
+8. **Self-repair safety net** (opt-in) splits the lead into its own
+   subprocess so the supervisor can detect hangs, surface a recovery
+   action, and let the agent reload its own patched code without
+   losing the conversation.
 
 Each piece is documented in its own guide. Use this page when you need
 to see how they fit.

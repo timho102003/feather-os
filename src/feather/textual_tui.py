@@ -78,19 +78,44 @@ def decide_hang_alert(prev_stale: bool, current_stale: bool) -> str | None:
     return None
 
 
-def _should_use_lead_worker() -> bool:
-    """Return True if the lead should run as a separate worker subprocess.
+def _env_says_use_lead_worker() -> bool | None:
+    """Return the env-var override or ``None`` if not set.
 
-    Opt-in for now: the worker/supervisor split (see
-    :class:`feather.core.lead_supervisor.LeadSupervisor`) is the substrate
-    needed for upcoming self-repair and out-of-band hang detection. With
-    the env var unset (the default), the TUI keeps the long-standing
-    in-process behavior — byte-identical wire calls, zero regression
-    risk for users who don't opt in.
+    Recognised truthy values: ``1`` / ``true`` / ``yes`` / ``on``.
+    Recognised falsy override: ``0`` / ``false`` / ``no`` / ``off``.
+    Anything else (including unset) returns ``None`` so the YAML wins.
     """
 
-    raw = os.environ.get(_LEAD_WORKER_ENV, "").strip().lower()
-    return raw in {"1", "true", "yes", "on"}
+    raw = os.environ.get(_LEAD_WORKER_ENV)
+    if raw is None:
+        return None
+    cleaned = raw.strip().lower()
+    if cleaned in {"1", "true", "yes", "on"}:
+        return True
+    if cleaned in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _should_use_lead_worker(yaml_enabled: bool = False) -> bool:
+    """Decide whether to run the lead in a separate worker subprocess.
+
+    Resolution order:
+
+    1. ``FEATHER_USE_LEAD_WORKER`` env var — power-user override that
+       wins over the persistent setting (handy for one-off testing
+       without flipping the YAML).
+    2. ``self_repair.enabled`` from ``app.yaml`` — the persistent
+       answer the onboarding wizard writes.
+
+    Default is False so users who never opted in get the long-standing
+    in-process behavior, byte-identical to before this feature shipped.
+    """
+
+    env_choice = _env_says_use_lead_worker()
+    if env_choice is not None:
+        return env_choice
+    return bool(yaml_enabled)
 
 
 @dataclass(slots=True, frozen=True)
@@ -651,7 +676,9 @@ class FeatherTextualApp(App[None]):
             self._active_session_id,
             self._handle_runtime_event,
         )
-        worker_mode = _should_use_lead_worker()
+        worker_mode = _should_use_lead_worker(
+            yaml_enabled=self._runtime.config.self_repair.enabled,
+        )
         if worker_mode:
             await self._start_lead_worker_supervisor()
         await self._runtime.start_background_services(

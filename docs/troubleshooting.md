@@ -225,18 +225,18 @@ loading. That usually means the install is broken; reinstall:
 pip install --upgrade --force-reinstall feather-agent-os
 ```
 
-## "Lead unresponsive" banner appears in worker mode
+## "Lead unresponsive" banner appears
 
 You see a red `Lead unresponsive` marker mid-conversation. This means
-the supervisor (the TUI process) hasn't seen a heartbeat row from the
-lead worker subprocess for over 5 seconds. The worker is either stuck
-in a long blocking call (e.g. a `bash` tool with no timeout, an
-external HTTP call hung, the LLM provider stalled) or the worker
-crashed entirely.
+the [self-repair safety net](configuration.md#self-repair-safety-net-opt-in)
+is enabled and the supervisor hasn't seen a heartbeat from the agent
+for over 5 seconds. The agent is either stuck in a long blocking call
+(e.g. a `bash` tool with no timeout, an external HTTP call hung, the
+LLM provider stalled) or it crashed entirely.
 
 To recover:
 
-1. Type `/restart-lead`. The supervisor SIGTERMs the worker, then
+1. Type `/restart-lead`. The supervisor SIGTERMs the agent, then
    SIGKILLs as a fallback after a 2 s grace, then respawns it on the
    same `--session-id`. Conversation history is preserved.
 2. If `/restart-lead` itself fails (very rare — usually a Python
@@ -244,10 +244,10 @@ To recover:
    `feather --session-id <uuid>` (the session id is shown by
    `/session`).
 
-The banner only appears when `FEATHER_USE_LEAD_WORKER=1` is set —
-in default in-process mode the lead and TUI share an event loop, so
-"the lead is hung" means the TUI is also hung and there's no banner
-to draw.
+The banner only appears when the safety net is enabled. In the default
+in-process mode the agent and TUI share an event loop, so "the agent
+is hung" means the TUI is also hung and there's no banner to draw —
+in that case use `Ctrl+C` to interrupt or quit the terminal.
 
 ## `request_restart` says "wheel install" — what does that mean?
 

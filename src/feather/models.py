@@ -169,6 +169,21 @@ class SchedulerConfig:
 
 
 @dataclass(slots=True)
+class SelfRepairConfig:
+    """Self-repair safety net configuration.
+
+    When ``enabled`` is True (set via the onboarding wizard or by
+    flipping the YAML manually), the TUI runs the lead agent in a
+    separate worker subprocess so it can detect hangs and let the
+    agent reload its own patched code. ``FEATHER_USE_LEAD_WORKER=1``
+    in the environment overrides this — handy for one-off testing
+    without flipping the persistent config.
+    """
+
+    enabled: bool = False
+
+
+@dataclass(slots=True)
 class ReasoningConfig:
     """OpenAI reasoning configuration."""
 
@@ -313,6 +328,7 @@ class AppConfig:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     active_provider: str = "openai"
     openrouter: OpenRouterConfig | None = None
+    self_repair: SelfRepairConfig = field(default_factory=SelfRepairConfig)
 
 
 @dataclass(slots=True)

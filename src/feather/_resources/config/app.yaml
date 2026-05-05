@@ -25,6 +25,15 @@ scheduler:
   failure_retry_seconds: 30
   max_due_jobs_per_tick: 10
 
+# Experimental: run the lead agent in a separate background process so
+# the TUI can detect hangs, surface a recovery action, and let the agent
+# reload its own patched code without losing the conversation.
+# Trade-off: cron and messaging integrations are paused in this mode.
+# Off by default. The onboarding wizard will offer to flip this.
+# FEATHER_USE_LEAD_WORKER=1 in the environment overrides this setting.
+self_repair:
+  enabled: false
+
 active_provider: openrouter          # openai or openrouter. flip to "openrouter" to route every agent via OpenRouter
 
 openai:
