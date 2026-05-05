@@ -33,6 +33,7 @@ from feather.models import (
     AgentOutcome,
     MessageRole,
     OpenRouterConfig,
+    OpenRouterTracingConfig,
 )
 from feather.providers.openrouter_provider import OpenRouterChatProvider
 from feather.skills.catalog import SkillCatalog
@@ -231,6 +232,139 @@ async def test_base_agent_completes_tool_loop_under_openrouter_provider(
         sys_msg = body["messages"][0]
         assert sys_msg["role"] == "system"
         assert sys_msg["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+@pytest.mark.asyncio
+async def test_base_agent_emits_opik_tracing_metadata_when_enabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """When OpenRouter tracing is enabled, every turn body carries the trace bundle.
+
+    This is the end-to-end proof that BaseAgent threads its session/agent
+    identity into the OpenRouter wire payload, where Opik (and any other
+    OpenRouter broadcast destination) can pick it up.
+    """
+
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+    captured_bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_bodies.append(json.loads(request.content.decode()))
+        return _stream_response(_final_text_turn("ok"))
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(
+            max_output_tokens=4000,
+            tracing=OpenRouterTracingConfig(
+                enabled=True,
+                user="ops@example.com",
+                metadata={"deployment": "prod", "build_sha": "abc123"},
+            ),
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+    tool_registry = ToolRegistry([])
+    prompt_builder = PromptBuilder(
+        SkillCatalog(tmp_path / ".feather" / "skills"), tool_registry
+    )
+
+    session_store = SessionStore(tmp_path / "feather.db")
+    await session_store.initialize()
+    try:
+        agent = BaseAgent(
+            agent_config=AgentConfig(
+                name="Lead",
+                role="primary lead agent",
+                personality="Direct",
+                prompt_modules=[
+                    "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+                ],
+                registered_tools=[],
+            ),
+            prompt_builder=prompt_builder,
+            provider=provider,
+            session_store=session_store,
+            tool_output_store=ToolOutputStore(tmp_path, ".feather/tmp"),
+            tool_registry=tool_registry,
+        )
+        session_id = await agent.create_session()
+        await agent.run(session_id, "ping")
+    finally:
+        await provider.aclose()
+        await session_store.close()
+
+    assert len(captured_bodies) == 1
+    body = captured_bodies[0]
+    assert body["session_id"] == session_id
+    assert body["user"] == "ops@example.com"
+    trace = body["trace"]
+    assert trace["trace_name"] == "feather/Lead"
+    assert trace["generation_name"] == "anthropic/claude-sonnet-4.6"
+    assert trace["feather_app"] == "feather-agent-os"
+    assert trace["feather_agent_name"] == "Lead"
+    assert trace["feather_agent_role"] == "primary lead agent"
+    assert trace["feather_session_id"] == session_id
+    assert trace["deployment"] == "prod"
+    assert trace["build_sha"] == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_base_agent_emits_no_tracing_fields_when_disabled(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Default config (no tracing block) ⇒ wire body free of trace fields.
+
+    Pins backwards-compatibility: anyone not opting into tracing keeps
+    the exact byte-on-the-wire they have today.
+    """
+
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+    captured_bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_bodies.append(json.loads(request.content.decode()))
+        return _stream_response(_final_text_turn("ok"))
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_output_tokens=4000),  # tracing field defaults to None
+        transport=httpx.MockTransport(handler),
+    )
+    tool_registry = ToolRegistry([])
+    prompt_builder = PromptBuilder(
+        SkillCatalog(tmp_path / ".feather" / "skills"), tool_registry
+    )
+
+    session_store = SessionStore(tmp_path / "feather.db")
+    await session_store.initialize()
+    try:
+        agent = BaseAgent(
+            agent_config=AgentConfig(
+                name="Lead",
+                role="lead",
+                personality="Direct",
+                prompt_modules=[
+                    "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+                ],
+                registered_tools=[],
+            ),
+            prompt_builder=prompt_builder,
+            provider=provider,
+            session_store=session_store,
+            tool_output_store=ToolOutputStore(tmp_path, ".feather/tmp"),
+            tool_registry=tool_registry,
+        )
+        session_id = await agent.create_session()
+        await agent.run(session_id, "ping")
+    finally:
+        await provider.aclose()
+        await session_store.close()
+
+    body = captured_bodies[0]
+    assert "user" not in body
+    assert "session_id" not in body
+    assert "trace" not in body
 
 
 async def _role_sequence(store: SessionStore, session_id: str) -> list[MessageRole]:

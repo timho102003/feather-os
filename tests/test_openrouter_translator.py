@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from feather.models import (
     OpenRouterConfig,
+    OpenRouterTracingConfig,
     ProviderRequestConfig,
     ReasoningConfig,
+    TraceContext,
 )
 from feather.providers.openrouter_translator import (
     reconstruct_tool_calls,
@@ -297,6 +299,7 @@ def _min_cfg(**overrides: object) -> OpenRouterConfig:
         provider_preferences=overrides.get("provider_preferences"),  # type: ignore[arg-type]
         fallback_models=overrides.get("fallback_models"),  # type: ignore[arg-type]
         cache_strategy=overrides.get("cache_strategy", "anthropic_breakpoint"),  # type: ignore[arg-type]
+        tracing=overrides.get("tracing"),  # type: ignore[arg-type]
     )
 
 
@@ -489,6 +492,396 @@ def test_translate_request_max_tokens_cap_ignores_context_length_alone() -> None
         model_limits={"context_length": 200000},  # no top_provider.max_completion_tokens
     )
     assert body["max_tokens"] == 32000
+
+
+# ----------------------------------------------------------- tracing metadata
+
+
+def _trace_ctx(**overrides: object) -> TraceContext:
+    return TraceContext(
+        session_id=str(overrides.get("session_id", "sess-uuid-001")),
+        agent_name=str(overrides.get("agent_name", "lead")),
+        agent_role=overrides.get("agent_role", "primary lead agent"),  # type: ignore[arg-type]
+    )
+
+
+def test_translate_request_omits_tracing_when_config_absent() -> None:
+    """No tracing block ⇒ wire body must be byte-identical to today's behaviour."""
+
+    cfg = _min_cfg()  # tracing field defaults to None
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert "user" not in body
+    assert "session_id" not in body
+    assert "trace" not in body
+
+
+def test_translate_request_omits_tracing_when_disabled() -> None:
+    """Tracing block present but disabled ⇒ no fields emitted."""
+
+    cfg = _min_cfg(tracing=OpenRouterTracingConfig(enabled=False, user="alice"))
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert "user" not in body
+    assert "session_id" not in body
+    assert "trace" not in body
+
+
+def test_translate_request_emits_session_and_trace_when_enabled() -> None:
+    cfg = _min_cfg(tracing=OpenRouterTracingConfig(enabled=True))
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(
+            trace_context=_trace_ctx(
+                session_id="sess-42",
+                agent_name="lead",
+                agent_role="primary lead agent",
+            )
+        ),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert body["session_id"] == "sess-42"
+    trace = body["trace"]
+    assert trace["trace_name"] == "feather/lead"
+    assert trace["generation_name"] == "anthropic/claude-sonnet-4.6"
+    assert trace["feather_app"] == "feather-agent-os"
+    assert trace["feather_agent_name"] == "lead"
+    assert trace["feather_agent_role"] == "primary lead agent"
+    assert trace["feather_session_id"] == "sess-42"
+    # ``user`` is opt-in; absent unless configured.
+    assert "user" not in body
+
+
+def test_translate_request_includes_user_when_configured() -> None:
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(enabled=True, user="ops@example.com")
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert body["user"] == "ops@example.com"
+
+
+def test_translate_request_merges_static_metadata_into_trace() -> None:
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            metadata={"deployment": "prod", "build_sha": "abc123"},
+        )
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert body["trace"]["deployment"] == "prod"
+    assert body["trace"]["build_sha"] == "abc123"
+    # Reserved feather_* keys still present alongside operator extras.
+    assert body["trace"]["feather_agent_name"] == "lead"
+
+
+def test_translate_request_static_metadata_does_not_overwrite_reserved_keys() -> None:
+    """Operator metadata must not silently shadow the per-turn identity bundle."""
+
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            metadata={
+                "feather_agent_name": "spoofed",
+                "trace_name": "spoofed-trace",
+                "deployment": "prod",
+            },
+        )
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert body["trace"]["feather_agent_name"] == "lead"
+    assert body["trace"]["trace_name"] == "feather/lead"
+    assert body["trace"]["deployment"] == "prod"
+
+
+def test_translate_request_clamps_oversized_metadata_value() -> None:
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            metadata={"big": "x" * 1000},
+        )
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert len(body["trace"]["big"]) == 512
+
+
+def test_translate_request_drops_excess_metadata_keys_beyond_limit() -> None:
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            metadata={f"k{i}": str(i) for i in range(40)},
+        )
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    # OpenRouter limit: 16 total kv pairs. Reserved feather_* keys must
+    # always survive; operator extras get truncated to fit.
+    trace = body["trace"]
+    assert len(trace) <= 16
+    # Reserved keys present.
+    for reserved in (
+        "trace_name",
+        "generation_name",
+        "feather_app",
+        "feather_agent_name",
+        "feather_session_id",
+    ):
+        assert reserved in trace
+
+
+def test_translate_request_clamps_user_to_128_chars() -> None:
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(enabled=True, user="u" * 500)
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert len(body["user"]) == 128
+
+
+def test_translate_request_skips_tracing_when_no_trace_context_supplied() -> None:
+    """Tracing enabled at config level but no per-turn context ⇒ no field emission.
+
+    Avoids accidentally sending the ``user`` field in isolation, which
+    would still hit Opik but with no session/agent grouping — confusing
+    rather than helpful.
+    """
+
+    cfg = _min_cfg(tracing=OpenRouterTracingConfig(enabled=True, user="alice"))
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=None),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert "user" not in body
+    assert "session_id" not in body
+    assert "trace" not in body
+
+
+def test_translate_request_uses_request_config_model_in_generation_name() -> None:
+    """Per-call model override should reflect in trace.generation_name."""
+
+    cfg = _min_cfg(tracing=OpenRouterTracingConfig(enabled=True))
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(
+            model="openai/gpt-5.2-mini",
+            trace_context=_trace_ctx(),
+        ),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert body["trace"]["generation_name"] == "openai/gpt-5.2-mini"
+
+
+def test_translate_request_clamps_oversize_reserved_trace_values() -> None:
+    """Reserved trace values must respect OpenRouter's 512-char per-value cap.
+
+    A long ``--session-id`` or a hostile model slug should never propagate
+    through to the wire body and trigger a 400.
+    """
+
+    cfg = _min_cfg(
+        model="x" * 700,  # absurd model slug → generation_name must clamp
+        tracing=OpenRouterTracingConfig(enabled=True),
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(
+            trace_context=TraceContext(
+                session_id="s" * 700,
+                agent_name="a" * 700,
+                agent_role="r" * 700,
+            )
+        ),
+        cfg=cfg,
+        model_limits=None,
+    )
+    trace = body["trace"]
+    assert len(trace["trace_name"]) == 512
+    assert len(trace["generation_name"]) == 512
+    assert len(trace["feather_agent_name"]) == 512
+    assert len(trace["feather_session_id"]) == 512
+    assert len(trace["feather_agent_role"]) == 512
+    # session_id top-level field uses the more generous 256-char cap.
+    assert len(body["session_id"]) == 256
+
+
+def test_translate_request_tracing_never_raises_on_unexpected_metadata_shape() -> None:
+    """Defense-in-depth: a contrived metadata structure must not crash the loop.
+
+    Today the coercer drops everything weird, but a future contributor
+    might add a code path that assumes shape. The outer try/except is
+    the last line of defense — verify it actually catches.
+    """
+
+    class _Bomb:
+        def __str__(self) -> str:
+            raise RuntimeError("boom")
+
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            # Mixed safe + dangerous values; a future change might call
+            # str() on whatever passes the primitive whitelist.
+            metadata={"deployment": "prod", "danger": _Bomb()},
+        )
+    )
+    # Should not raise. Trace fields may be present (with safe entries)
+    # or stripped entirely if the exception path fired — both are fine.
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    # Body must remain well-formed.
+    assert body["model"] == "anthropic/claude-sonnet-4.6"
+    assert body["messages"][0]["role"] == "system"
+
+
+def test_translate_request_tracing_strips_partial_fields_on_exception(
+    monkeypatch,
+) -> None:
+    """If the tracing block raises, no half-populated fields leak to the wire."""
+
+    from feather.providers import openrouter_translator as t
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("synthetic boom")
+
+    monkeypatch.setattr(t, "_clamp_trace_value", _boom)
+
+    cfg = _min_cfg(tracing=OpenRouterTracingConfig(enabled=True, user="a"))
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    assert "session_id" not in body
+    assert "user" not in body
+    assert "trace" not in body
+
+
+def test_translate_request_normalises_reserved_key_collision_case_insensitively() -> None:  # noqa: E501
+    """``Feather_App`` (operator) must not bypass the ``feather_app`` reserved filter."""
+
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            metadata={"Feather_App": "spoof", "deployment": "prod"},
+        )
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    trace = body["trace"]
+    assert trace["feather_app"] == "feather-agent-os"
+    assert "Feather_App" not in trace
+    assert trace["deployment"] == "prod"
+
+
+def test_translate_request_tolerates_non_string_metadata_values() -> None:
+    """Numbers and bools are allowed; nested objects/arrays must be dropped.
+
+    OpenRouter's metadata-value schema is string-typed; sending a dict
+    triggers a 400. Coerce primitives, drop the rest.
+    """
+
+    cfg = _min_cfg(
+        tracing=OpenRouterTracingConfig(
+            enabled=True,
+            metadata={
+                "version": 7,
+                "active": True,
+                "nested": {"bad": 1},
+                "arr": [1, 2],
+            },
+        )
+    )
+    body = translate_request(
+        instructions="sys",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(trace_context=_trace_ctx()),
+        cfg=cfg,
+        model_limits=None,
+    )
+    trace = body["trace"]
+    assert trace["version"] == "7"
+    assert trace["active"] == "true"
+    assert "nested" not in trace
+    assert "arr" not in trace
 
 
 # ------------------------------------------------------ reconstruct_tool_calls

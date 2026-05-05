@@ -218,6 +218,36 @@ class ParallelConfig:
 
 
 @dataclass(slots=True)
+class OpenRouterTracingConfig:
+    """OpenRouter trace-broadcast metadata configuration.
+
+    OpenRouter forwards the request body's ``user``, ``session_id``, and
+    ``trace`` fields to every observability destination configured on the
+    OpenRouter dashboard (Comet Opik, Langfuse, OTel collectors, etc.).
+    This config governs *whether* Feather emits those fields and what
+    static metadata to fold into ``trace`` alongside the per-turn agent
+    identity.
+
+    Attributes:
+        enabled: Master switch. Default off so the stateless byte-on-the-
+            wire stays identical for users who haven't opted in.
+        user: Optional end-user identifier emitted as the OpenRouter
+            top-level ``user`` field (≤128 chars per OpenRouter spec).
+            Useful when one operator owns multiple Feather installations
+            and wants Opik to bucket traces by human.
+        metadata: Static key/value pairs merged into the per-turn ``trace``
+            object. Passed through to Opik as both trace + span metadata.
+            Clamped to OpenRouter's hard limits at translate time
+            (16 keys, 64-char keys, 512-char values) so a misconfigured
+            value can never trigger a 400 from OpenRouter.
+    """
+
+    enabled: bool = False
+    user: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+@dataclass(slots=True)
 class OpenRouterConfig:
     """OpenRouter (Chat Completions) provider configuration.
 
@@ -250,6 +280,7 @@ class OpenRouterConfig:
     # finish well under this; reduce for interactive UX, raise for
     # batch-style workloads.
     max_stream_wall_seconds: float = 600.0
+    tracing: OpenRouterTracingConfig | None = None
 
 
 @dataclass(slots=True)
@@ -501,6 +532,22 @@ class TaskEventRecord:
     created_at: str
 
 
+@dataclass(slots=True, frozen=True)
+class TraceContext:
+    """Per-turn observability identity threaded through the provider call.
+
+    Carries the small, stable identity bundle (session, agent name, agent
+    role) that observability backends like Comet Opik need to group traces
+    cleanly. Providers that support trace metadata broadcast (currently
+    OpenRouter) read it; providers that don't (OpenAI Responses API)
+    ignore it. Frozen so it's safe to share across concurrent turns.
+    """
+
+    session_id: str
+    agent_name: str
+    agent_role: str | None = None
+
+
 @dataclass(slots=True)
 class ProviderRequestConfig:
     """Optional per-request LLM overrides.
@@ -511,6 +558,10 @@ class ProviderRequestConfig:
     Pydantic ``BaseModel`` class; the provider converts ``model_json_schema()``
     into the wire format and defensively enforces ``additionalProperties:false``
     on every nested object, which OpenAI strict mode requires.
+
+    ``trace_context`` carries the per-turn identity (session, agent) used
+    by providers that broadcast trace metadata (OpenRouter → Opik etc.).
+    Always safe to set; providers that don't consume it ignore it.
     """
 
     model: str | None = None
@@ -520,6 +571,7 @@ class ProviderRequestConfig:
     response_schema: type[Any] | None = None
     response_schema_name: str | None = None
     mcp_servers: tuple[MCPServerConfig, ...] = ()
+    trace_context: TraceContext | None = None
 
 
 @dataclass(slots=True)

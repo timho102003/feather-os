@@ -96,6 +96,116 @@ Anthropic-style providers (Claude, Z.ai GLM, DeepSeek, Moonshot). It is
 ignored by providers that don't support caching, so it's safe to keep
 on always.
 
+### Sending traces to Comet Opik (and other observability platforms)
+
+OpenRouter can broadcast every request to one or more observability
+backends: Comet Opik, Langfuse, OTel collectors, W&B Weave, Sentry,
+Grafana Cloud, generic webhooks. Set this up once on the OpenRouter
+dashboard under **Settings → Observability**, then turn on tracing in
+Feather so every turn carries the metadata your dashboard needs to
+group sessions cleanly.
+
+The walkthrough below uses Comet Opik. Other destinations work the
+same way: only the credentials you paste into OpenRouter change.
+
+#### Step 1: Get your Comet Opik credentials
+
+OpenRouter's Comet Opik destination requires three values:
+
+| Field | What it is |
+|---|---|
+| API Key | Comet API key, starts with `opik_...` |
+| Workspace | Your Comet workspace name |
+| Project Name | The Opik project where traces should land |
+
+How to collect them:
+
+1. Sign up at <https://www.comet.com/signup> if you do not already
+   have a Comet account. The free tier is enough to get started.
+2. Sign in at <https://www.comet.com/opik>.
+3. Click your avatar in the top-right corner and pick **Account
+   Settings**. Copy your API key from the **API Keys** panel. It
+   starts with `opik_`.
+4. Your workspace name is the slug shown next to your account name
+   in the top-left corner, and it is also in the URL after
+   `/opik/`. If you only have one workspace, that is the one to use.
+5. Open the Opik UI sidebar and click **Projects**. Either pick an
+   existing project or click **New project** and give it a name
+   like `feather`. The exact string you use becomes the **Project
+   Name** value below.
+
+Note: this works only with Comet's hosted Opik (cloud). The
+self-hosted open-source build does not issue API keys, so OpenRouter
+cannot broadcast to it.
+
+#### Step 2: Add Opik as a broadcast destination on OpenRouter
+
+1. Open <https://openrouter.ai/settings/integrations>.
+2. Find **Comet Opik** in the list of observability destinations and
+   click **Configure**.
+3. Paste the three values from Step 1 (API Key, Workspace, Project
+   Name).
+4. Click **Test Connection**. OpenRouter only saves the
+   configuration if the test succeeds, so a green check means the
+   credentials are valid.
+5. Toggle **Enable Broadcast**.
+
+OpenRouter is now set up. From this point every chat completion
+request you send through your OpenRouter API key has its metadata
+forwarded to Opik, regardless of which client made the call.
+
+#### Step 3: Enable tracing in Feather
+
+Open `~/.feather/config/app.yaml` (or your project-local
+`.feather/config/app.yaml` if you ran `feather init`) and add a
+`tracing:` block under `openrouter:`:
+
+```yaml
+openrouter:
+  # ... your existing settings ...
+  tracing:
+    enabled: true
+    user: ops@example.com           # optional, identifies you in the UI
+    metadata:                       # optional static fields, merged into trace
+      deployment: prod
+      build_sha: abc123
+```
+
+When this is on, Feather adds three things to every OpenRouter request:
+
+* `session_id`: the Feather session UUID, so all turns of one chat
+  cluster together.
+* `user`: the operator-supplied identifier (only if you set it).
+* `trace`: a small object carrying `trace_name = "feather/<agent>"`,
+  `generation_name = <model>`, `feather_app`, `feather_agent_name`,
+  `feather_agent_role`, `feather_session_id`, plus any static metadata
+  you put in the YAML.
+
+OpenRouter forwards all of that to Opik. In the Opik UI you will see
+traces named `feather/<agent_name>`, grouped by `session_id`, with the
+`feather_*` keys and your operator metadata available as searchable
+facets.
+
+Tracing is opt-in. With no `tracing:` block, the request body is
+identical to what Feather sent before this feature existed.
+
+#### Verifying it works
+
+Send one message through `feather tui` and then check, in this order:
+
+1. **OpenRouter Activity tab.** Open
+   <https://openrouter.ai/activity>, click the most recent request,
+   and look at the Request panel. You should see `session_id`,
+   `user`, and a `trace` object with the `feather_*` keys at the
+   top level. If they are missing, your `tracing.enabled` did not
+   take effect (wrong config file, or `active_provider` is not
+   `openrouter`).
+2. **Opik UI.** In your Opik project, refresh the Traces view. A new
+   trace named `feather/<agent_name>` should appear within a few
+   seconds. If the OpenRouter Activity panel shows the fields but
+   Opik does not, return to Step 2 and re-test the connection from
+   the OpenRouter dashboard.
+
 ### Ready-made OpenRouter examples
 
 The package ships drop-in `openrouter:` blocks for popular models. Look

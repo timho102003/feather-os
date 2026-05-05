@@ -28,6 +28,7 @@ from feather.models import (
     MCPServerConfig,
     OpenAIConfig,
     OpenRouterConfig,
+    OpenRouterTracingConfig,
     ParallelConfig,
     ReasoningConfig,
     SchedulerConfig,
@@ -94,6 +95,19 @@ def load_app_config(
         or_reasoning_raw = openrouter_raw.get("reasoning") or None
         or_fallback_raw = openrouter_raw.get("fallback_models") or None
         or_prefs_raw = openrouter_raw.get("provider_preferences") or None
+        or_tracing_raw = openrouter_raw.get("tracing") or None
+        or_tracing_cfg: OpenRouterTracingConfig | None = None
+        if or_tracing_raw is not None:
+            tracing_metadata_raw = or_tracing_raw.get("metadata") or None
+            or_tracing_cfg = OpenRouterTracingConfig(
+                enabled=bool(or_tracing_raw.get("enabled", False)),
+                user=or_tracing_raw.get("user"),
+                metadata=(
+                    dict(tracing_metadata_raw)
+                    if isinstance(tracing_metadata_raw, dict)
+                    else None
+                ),
+            )
         openrouter_cfg = OpenRouterConfig(
             api_key_env=openrouter_raw.get("api_key_env", "OPEN_ROUTER_API_KEY"),
             base_url=openrouter_raw.get("base_url", "https://openrouter.ai/api/v1"),
@@ -127,6 +141,7 @@ def load_app_config(
             max_stream_wall_seconds=float(
                 openrouter_raw.get("max_stream_wall_seconds", 600.0)
             ),
+            tracing=or_tracing_cfg,
         )
     parallel_config = (
         ParallelConfig(

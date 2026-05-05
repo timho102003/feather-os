@@ -20,14 +20,52 @@ behavior independently.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from feather.models import (
     ModelTurn,
     OpenRouterConfig,
+    OpenRouterTracingConfig,
     ProviderRequestConfig,
     ToolCall,
+    TraceContext,
+)
+
+
+# OpenRouter trace metadata limits, lifted from the chat-completions API
+# spec at openrouter.ai/docs/api/api-reference/chat:
+#   ``user`` ≤ 128 chars, ``session_id`` ≤ 256 chars,
+#   ``metadata``: ≤ 16 kv pairs, 64-char keys, 512-char values.
+# We treat the ``trace`` object as the same kind of bag for clamping
+# purposes — the spec doesn't formally bound it but mirroring the
+# ``metadata`` limits keeps Feather safely under any sane upstream cap
+# and prevents an operator typo from triggering a 400.
+_OR_USER_MAX_LEN = 128
+_OR_SESSION_ID_MAX_LEN = 256
+_OR_TRACE_MAX_KEYS = 16
+_OR_TRACE_KEY_MAX_LEN = 64
+_OR_TRACE_VALUE_MAX_LEN = 512
+
+# Reserved trace keys Feather always populates. Operator metadata that
+# collides with one of these is silently shadowed: the per-turn identity
+# bundle is the source of truth, otherwise an operator misconfiguration
+# could disguise a sub-agent's traces as the lead's.
+_RESERVED_TRACE_KEYS = frozenset(
+    {
+        "trace_name",
+        "generation_name",
+        "trace_id",
+        "span_name",
+        "parent_span_id",
+        "feather_app",
+        "feather_agent_name",
+        "feather_agent_role",
+        "feather_session_id",
+    }
 )
 
 
@@ -353,7 +391,142 @@ def translate_request(
         body["provider"] = dict(cfg.provider_preferences)
     if cfg.fallback_models:
         body["models"] = list(cfg.fallback_models)
+    _maybe_apply_tracing(
+        body=body,
+        tracing=cfg.tracing,
+        trace_context=request_config.trace_context,
+        model=model,
+    )
     return body
+
+
+# ----------------------------------------------------------------- tracing
+
+
+def _maybe_apply_tracing(
+    *,
+    body: dict[str, Any],
+    tracing: OpenRouterTracingConfig | None,
+    trace_context: TraceContext | None,
+    model: str,
+) -> None:
+    """Mutate ``body`` in place to add OpenRouter trace-broadcast fields.
+
+    The function is no-op safe in four ways:
+
+    1. If tracing config is absent or ``enabled=False`` it returns
+       immediately, so the wire body stays byte-identical to the
+       pre-tracing behaviour.
+    2. If the per-turn trace context is missing it also returns: emitting
+       the operator-static ``user`` field alone (without session/agent
+       grouping) would land traces in Opik with no useful aggregation
+       and is more confusing than helpful.
+    3. Operator-supplied ``metadata`` values that violate OpenRouter's
+       limits (>16 keys, oversize key/value, non-primitive value) are
+       silently coerced or dropped rather than raised — the agent loop
+       must never crash because of an observability misconfig.
+    4. Any unanticipated exception is caught at the outer boundary,
+       logged at WARNING, and the body is left untouched. The agent loop
+       must never die because of an observability bug.
+    """
+
+    if tracing is None or not tracing.enabled:
+        return
+    if trace_context is None:
+        return
+
+    try:
+        body["session_id"] = trace_context.session_id[:_OR_SESSION_ID_MAX_LEN]
+        if tracing.user:
+            body["user"] = tracing.user[:_OR_USER_MAX_LEN]
+
+        # Reserved keys are written last so they always win over operator
+        # metadata in case of collision.
+        trace: dict[str, Any] = {}
+        if tracing.metadata:
+            for key, value in tracing.metadata.items():
+                coerced = _coerce_trace_value(value)
+                if coerced is None:
+                    continue
+                if not isinstance(key, str) or not key:
+                    continue
+                if key.lower() in _RESERVED_TRACE_KEYS:
+                    # Will be overwritten anyway; skip to preserve budget.
+                    # Lowercase compare so ``Feather_App`` can't sneak in
+                    # alongside ``feather_app`` and confuse trace search.
+                    continue
+                trace[key[:_OR_TRACE_KEY_MAX_LEN]] = coerced
+
+        # Reserved values are clamped to the same per-value cap so an
+        # oversize ``--session-id`` flag or a long ``model`` slug can
+        # never trigger a 400 from OpenRouter.
+        reserved: dict[str, Any] = {
+            "trace_name": _clamp_trace_value(
+                f"feather/{trace_context.agent_name}"
+            ),
+            "generation_name": _clamp_trace_value(model),
+            "feather_app": "feather-agent-os",
+            "feather_agent_name": _clamp_trace_value(trace_context.agent_name),
+            "feather_session_id": _clamp_trace_value(trace_context.session_id),
+        }
+        if trace_context.agent_role:
+            reserved["feather_agent_role"] = _clamp_trace_value(
+                trace_context.agent_role
+            )
+
+        # Reserved keys take priority over operator extras when the
+        # 16-key budget is tight.
+        budget = _OR_TRACE_MAX_KEYS - len(reserved)
+        if budget < 0:
+            # Defensive: if reserved ever grows past 16 (it's 6 today)
+            # this branch keeps us under the cap by trimming reserved
+            # rather than ignoring the overflow.
+            reserved = dict(list(reserved.items())[:_OR_TRACE_MAX_KEYS])
+            budget = 0
+        if len(trace) > budget:
+            # Stable order: dict insertion order in Python 3.7+;
+            # truncating the tail keeps the first N operator entries.
+            trace = dict(list(trace.items())[:budget])
+        trace.update(reserved)
+        body["trace"] = trace
+    except Exception:  # noqa: BLE001
+        # Tracing is observability — never let it take down the loop.
+        logger.warning(
+            "openrouter_tracing_apply_failed agent=%s session=%s",
+            getattr(trace_context, "agent_name", None),
+            getattr(trace_context, "session_id", None),
+            exc_info=True,
+        )
+        # Strip any partial fields so the wire body stays well-formed.
+        body.pop("session_id", None)
+        body.pop("user", None)
+        body.pop("trace", None)
+
+
+def _clamp_trace_value(value: str) -> str:
+    """Char-clamp a string to OpenRouter's per-value metadata cap."""
+
+    return value[:_OR_TRACE_VALUE_MAX_LEN]
+
+
+def _coerce_trace_value(value: Any) -> str | None:
+    """Coerce a metadata value to a string-typed payload, or drop it.
+
+    OpenRouter's metadata schema is string-typed. We accept primitives
+    (str/int/float/bool) and stringify them; nested dicts/lists are
+    dropped because they would either trigger a 400 or get serialized
+    into something the operator didn't intend.
+    """
+
+    if isinstance(value, bool):
+        # Check bool before int — ``isinstance(True, int)`` is ``True``.
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        out = str(value)
+        if len(out) > _OR_TRACE_VALUE_MAX_LEN:
+            out = out[:_OR_TRACE_VALUE_MAX_LEN]
+        return out
+    return None
 
 
 def _harden_strict_schema(schema: dict[str, Any]) -> None:

@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- OpenRouter trace metadata broadcast. Opt-in via the new
+  `openrouter.tracing` block in `app.yaml`. When enabled, every
+  OpenRouter turn carries `session_id`, an optional `user`, and a
+  structured `trace` object (with `trace_name`, `generation_name`, and
+  `feather_*` identity keys) that OpenRouter forwards to every
+  configured observability destination — Comet Opik, Langfuse, OTel
+  collectors, and so on. Default is off; the wire body is byte-identical
+  to prior behaviour for anyone who hasn't opted in.
+- Operator-supplied static `trace.metadata` values are clamped to
+  OpenRouter's published limits (16 keys, 64-char keys, 512-char values)
+  so a typo can't trigger a 400. Reserved Feather identity keys always
+  win over operator metadata of the same name.
+
 ## [0.1.0] - 2026-05-02
 
 First public release on PyPI as `feather-agent-os`.
