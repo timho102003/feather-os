@@ -316,6 +316,18 @@ MESSAGING_INBOUND_DEDUP_TABLE = TableSchema(
     ),
 )
 
+WORKER_HEARTBEATS_TABLE = TableSchema(
+    name="worker_heartbeats",
+    create_sql="""
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+        session_id TEXT PRIMARY KEY,
+        pid INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL
+    )
+    """,
+)
+
 TABLE_SCHEMAS = (
     SESSIONS_TABLE,
     MESSAGES_TABLE,
@@ -330,6 +342,7 @@ TABLE_SCHEMAS = (
     MESSAGING_CREDENTIALS_TABLE,
     MESSAGING_CHATS_TABLE,
     MESSAGING_INBOUND_DEDUP_TABLE,
+    WORKER_HEARTBEATS_TABLE,
 )
 
 

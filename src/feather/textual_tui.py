@@ -19,6 +19,7 @@ from textual.geometry import Region
 from textual.widgets import RichLog, Static, TextArea
 
 from feather.attachments import parse_attachment_drops, render_attachment_message
+from feather.core.lead_supervisor import LeadSupervisor
 from feather.models import AgentOutcome, RuntimeEvent, TaskRecord, TaskStatus
 from feather.runtime import FeatherRuntime
 from feather.slash_commands import (
@@ -47,6 +48,24 @@ logger = logging.getLogger(__name__)
 
 
 _SlashHandler = Callable[[str], None]
+
+
+_LEAD_WORKER_ENV = "FEATHER_USE_LEAD_WORKER"
+
+
+def _should_use_lead_worker() -> bool:
+    """Return True if the lead should run as a separate worker subprocess.
+
+    Opt-in for now: the worker/supervisor split (see
+    :class:`feather.core.lead_supervisor.LeadSupervisor`) is the substrate
+    needed for upcoming self-repair and out-of-band hang detection. With
+    the env var unset (the default), the TUI keeps the long-standing
+    in-process behavior — byte-identical wire calls, zero regression
+    risk for users who don't opt in.
+    """
+
+    raw = os.environ.get(_LEAD_WORKER_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 @dataclass(slots=True, frozen=True)
@@ -536,6 +555,7 @@ class FeatherTextualApp(App[None]):
         self._requested_session_id = session_id
         self._runtime: FeatherRuntime | None = None
         self._agent: Any = None
+        self._supervisor: LeadSupervisor | None = None
         self._active_session_id: str | None = None
         self._assistant_parts: list[str] = []
         self._latest_usage_ratio: float | None = None
@@ -603,6 +623,8 @@ class FeatherTextualApp(App[None]):
             self._active_session_id,
             self._handle_runtime_event,
         )
+        if _should_use_lead_worker():
+            await self._start_lead_worker_supervisor()
         await self._runtime.start_background_services()
         await self._refresh_monitor()
         self._update_header()
@@ -642,10 +664,60 @@ class FeatherTextualApp(App[None]):
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        if self._supervisor is not None:
+            try:
+                await self._supervisor.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.exception("textual_tui.lead_supervisor_shutdown_failed")
+            self._supervisor = None
         if self._runtime is not None:
             if self._active_session_id is not None:
                 self._runtime.set_session_event_handler(self._active_session_id, None)
             await self._runtime.close()
+
+    async def _start_lead_worker_supervisor(self) -> None:
+        """Spawn the lead-worker subprocess and wire it as the lead handle.
+
+        Opt-in via ``FEATHER_USE_LEAD_WORKER=1``. The in-process ``self._agent``
+        is retained so display-only properties (``config.name``) and idempotent
+        reads (``has_pending_inbox`` over the shared SQLite mailbox) keep
+        working — but every ``run`` / ``resume_on_inbox`` / mid-turn input call
+        is routed to the supervisor below.
+
+        Known limitations in this slice (will be addressed in subsequent
+        steps of the lead-worker roadmap):
+
+        * Messaging integrations (Telegram, LINE, WhatsApp) enqueue into
+          the in-process ``runtime.input_queue``; that queue lives in the
+          TUI process, so its contents are not visible to the worker. Use
+          worker mode only from the TUI for now.
+        * The cron scheduler still drives the in-process agent reference,
+          so scheduled prompts bypass the worker. Disable scheduled jobs
+          when running in worker mode if you need them processed by the
+          worker's run cycle.
+        """
+
+        assert self._runtime is not None
+        assert self._active_session_id is not None
+        db_path = Path(self._runtime.config.database.path)
+        if not db_path.is_absolute():
+            db_path = (self._root / db_path).resolve()
+        self._supervisor = LeadSupervisor(
+            db_path=db_path,
+            project_root=self._root,
+            agent_name="lead",
+        )
+        await self._supervisor.start(self._active_session_id)
+        logger.info(
+            "textual_tui.lead_worker_started session_id=%s",
+            self._active_session_id,
+        )
+
+    @property
+    def _lead_handle(self) -> Any:
+        """Return whichever of supervisor / in-process agent owns ``run``."""
+
+        return self._supervisor if self._supervisor is not None else self._agent
 
     async def action_submit(self) -> None:
         """Submit the focused composer.
@@ -854,6 +926,21 @@ class FeatherTextualApp(App[None]):
         assert self._active_session_id is not None
         ok = await self._runtime.input_queue.enqueue(self._active_session_id, text)
         if ok:
+            # In worker mode the agent's input queue lives in the worker
+            # process; forward the same text via the supervisor so the
+            # worker's between-iteration drain actually sees it. The local
+            # enqueue above is preserved purely to keep the depth display
+            # accurate in the TUI.
+            if self._supervisor is not None:
+                try:
+                    await self._supervisor.enqueue_user_input(
+                        self._active_session_id, text
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "textual_tui.lead_worker_enqueue_failed session_id=%s",
+                        self._active_session_id,
+                    )
             await self._refresh_monitor()
             self._update_work()
 
@@ -1723,14 +1810,14 @@ class FeatherTextualApp(App[None]):
             try:
                 if user_message == _INBOX_WAKE:
                     self._run_task = asyncio.create_task(
-                        self._agent.resume_on_inbox(
+                        self._lead_handle.resume_on_inbox(
                             self._active_session_id,
                             self._handle_runtime_event,
                         )
                     )
                 else:
                     self._run_task = asyncio.create_task(
-                        self._agent.run(
+                        self._lead_handle.run(
                             self._active_session_id,
                             user_message,
                             self._handle_runtime_event,
@@ -1776,7 +1863,7 @@ class FeatherTextualApp(App[None]):
                     stop_task.cancel()
                     answer = answer_task.result()
                     self._run_task = asyncio.create_task(
-                        self._agent.run(
+                        self._lead_handle.run(
                             self._active_session_id,
                             answer,
                             self._handle_runtime_event,

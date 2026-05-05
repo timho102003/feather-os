@@ -307,6 +307,17 @@ class FeatherRuntime:
         return self._agent_message_store
 
     @property
+    def session_store(self) -> SessionStore:
+        """Return the shared session store.
+
+        Public so the TUI can pre-create the lead session before spawning
+        the lead worker subprocess (the supervisor needs the session id
+        in argv before the worker boots).
+        """
+
+        return self._session_store
+
+    @property
     def subagent_registry(self) -> SubagentRegistry:
         """Return the live sub-agent subprocess registry."""
 
