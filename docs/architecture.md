@@ -363,6 +363,84 @@ Default trigger is 80% of the context window. The active model and
 window size are configured in
 [configuration.md](configuration.md#compaction).
 
+## Lead worker mode (opt-in)
+
+By default the lead agent runs as an `asyncio.Task` on the same event
+loop as the Textual TUI. Setting `FEATHER_USE_LEAD_WORKER=1` flips a
+two-pod layout:
+
+* The TUI process becomes the **supervisor**. It pre-creates the lead
+  session, spawns the worker subprocess, drains its stdout into the
+  same `_handle_runtime_event` callback that the in-process path uses,
+  and watches a new `worker_heartbeats` SQLite row for staleness.
+* The lead becomes the **worker** (`python -m feather.lead_worker_entry`).
+  It builds its own `FeatherRuntime`, runs the same `BaseAgent` loop,
+  emits one JSON line per `RuntimeEvent` to stdout, and writes a
+  heartbeat once per second.
+
+```mermaid
+%%{init: {"flowchart": {"htmlLabels": true, "padding": 16, "nodeSpacing": 60, "rankSpacing": 70}, "themeVariables": {"fontSize": "16px"}}}%%
+flowchart LR
+    USER["You"] --> TUI
+
+    subgraph SUPER["Supervisor pod (TUI process)"]
+        TUI["Textual TUI"]
+        SV["LeadSupervisor<br/>spawns + drains worker,<br/>watches heartbeat"]
+        TUI --> SV
+    end
+
+    subgraph WORK["Worker pod (subprocess)"]
+        ENTRY["lead_worker_entry<br/>argparse + asyncio streams"]
+        CORE["WorkerCore<br/>3 pumps: stdin / heartbeat / cmd loop"]
+        AGENT["BaseAgent<br/>same lead loop as default mode"]
+        ENTRY --> CORE --> AGENT
+    end
+
+    SV -- "stdin: RunCommand /<br/>EnqueueUserInput /<br/>Shutdown" --> CORE
+    CORE -- "stdout: RuntimeEvent JSONL +<br/>_run_complete control events" --> SV
+
+    subgraph SQL["SQLite (shared)"]
+        SESS["sessions / messages"]
+        MAIL["agent_messages<br/>(inter-agent mailbox)"]
+        HB["worker_heartbeats<br/>liveness"]
+    end
+
+    AGENT --> SESS
+    AGENT --> MAIL
+    CORE -- "heartbeat 1/s" --> HB
+    SV -- "is_stale check" --> HB
+```
+
+Wire shapes:
+
+* **Supervisor → worker** (`feather.core.worker_command_codec`) carries
+  four typed commands: `RunCommand`, `ResumeOnInboxCommand`,
+  `EnqueueUserInputCommand`, `ShutdownCommand`.
+* **Worker → supervisor** (`feather.core.runtime_event_codec`) carries
+  every `RuntimeEvent` the in-process path emits, plus three control
+  events (`_run_complete`, `_run_failed`, `_shutdown_ack`) that the
+  supervisor consumes internally and never forwards to the UI.
+* **Heartbeat** (`feather.storage.worker_heartbeat_store`) is one row
+  keyed by `session_id`. Worker writes; supervisor reads.
+
+Why this exists today even with no user-visible feature wired to it:
+worker mode is the **substrate** for the next two roadmap steps —
+out-of-band hang detection (the supervisor's `is_stale()` already
+exists; the UI banner ships in step 2) and self-repair restart-resume
+(a `request_restart` tool + the supervisor's existing `restart()` ship
+in step 3). Default users see byte-identical behavior because the env
+flag is off.
+
+Limitations enforced by the runtime when worker mode is on:
+
+* Cron scheduler is not started — would race the worker on session
+  state.
+* Messaging adapters (Telegram / LINE / WhatsApp) are not started for
+  the same reason.
+
+See [configuration.md → Lead worker mode](configuration.md#lead-worker-mode-opt-in)
+for the env var and the limitations.
+
 ## Putting it all together
 
 If you read all six diagrams, you have the whole mental model:
@@ -379,6 +457,9 @@ If you read all six diagrams, you have the whole mental model:
 6. **MCP** servers connect on demand and survive session restarts.
 7. **Compaction** keeps long sessions alive without burning the active
    model's context.
+8. **Lead worker mode** (opt-in) splits the lead into its own
+   subprocess so the supervisor can detect hangs and (later) restart
+   it cleanly.
 
 Each piece is documented in its own guide. Use this page when you need
 to see how they fit.

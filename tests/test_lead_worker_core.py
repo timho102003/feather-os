@@ -396,6 +396,54 @@ async def test_run_command_failure_emits_run_failed_control_event(
     assert "boom" in failed["payload"]["error_message"]
 
 
+async def test_request_shutdown_wakes_idle_command_pump(tmp_path: Path) -> None:
+    """SIGTERM-style ``request_shutdown`` while stdin is idle must terminate.
+
+    The earlier ``async for`` impl only checked the shutdown flag *after*
+    stdin yielded a line, so a SIGTERM arriving while ``readline`` was
+    blocked on an idle pipe would never wake the worker until the pipe
+    was closed externally. Verifies the explicit ``__anext__`` race in
+    ``_command_pump`` against ``_shutdown_event``.
+    """
+
+    agent = _FakeAgent()
+    store = await _open_heartbeat_store(tmp_path)
+    input_queue = UserInputQueue()
+    events, sink = _captured_event_sink()
+
+    # An iterator that never yields — the pump must be woken from the outside.
+    async def _idle_forever() -> AsyncIterator[str]:
+        while True:
+            await asyncio.sleep(60)
+            yield ""  # pragma: no cover — never reached in this test
+
+    try:
+        core = WorkerCore(
+            agent=agent,
+            input_queue=input_queue,
+            heartbeat_store=store,
+            session_id="s-idle",
+            pid=1,
+            heartbeat_interval=0.05,
+            command_source=_idle_forever(),
+            event_sink=sink,
+        )
+        # Schedule a shutdown after a brief moment so the pump is parked
+        # in its readline race when the flag flips.
+        async def _trip_shutdown() -> None:
+            await asyncio.sleep(0.1)
+            core.request_shutdown()
+
+        await asyncio.wait_for(
+            asyncio.gather(core.run(), _trip_shutdown()), timeout=2.0
+        )
+        final = await store.get("s-idle")
+        assert final is not None
+        assert final.status is WorkerStatus.STOPPED
+    finally:
+        await store.close()
+
+
 async def test_shutdown_emits_ack_event(tmp_path: Path) -> None:
     """ShutdownCommand is acknowledged on the event stream so the supervisor can wait for it."""
 

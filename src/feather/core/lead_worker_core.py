@@ -151,9 +151,36 @@ class WorkerCore:
     # ------------------------------------------------------------------ #
 
     async def _command_pump(self) -> None:
+        # Use explicit ``__anext__`` instead of ``async for`` so each fetch
+        # can be raced against ``_shutdown_event.wait()``. With ``async for``
+        # the loop body only runs *after* a line arrives, which means a
+        # SIGTERM that fires while ``readline`` is blocked on an idle
+        # stdin would not wake the pump until the supervisor (or the OS)
+        # closed the pipe.
+        async def _read_one() -> str:
+            return await self._command_source.__anext__()
+
         try:
-            async for raw_line in self._command_source:
-                if self._shutdown_event.is_set():
+            while not self._shutdown_event.is_set():
+                next_task = asyncio.create_task(_read_one())
+                stop_task = asyncio.create_task(self._shutdown_event.wait())
+                done, pending = await asyncio.wait(
+                    {next_task, stop_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                if next_task not in done:
+                    # Shutdown won the race — drain pending cancellations
+                    # so the cancelled readline doesn't surface a warning.
+                    with contextlib.suppress(
+                        asyncio.CancelledError, Exception
+                    ):
+                        await next_task
+                    return
+                try:
+                    raw_line = next_task.result()
+                except StopAsyncIteration:
                     return
                 try:
                     cmd = decode_command(raw_line)

@@ -307,17 +307,6 @@ class FeatherRuntime:
         return self._agent_message_store
 
     @property
-    def session_store(self) -> SessionStore:
-        """Return the shared session store.
-
-        Public so the TUI can pre-create the lead session before spawning
-        the lead worker subprocess (the supervisor needs the session id
-        in argv before the worker boots).
-        """
-
-        return self._session_store
-
-    @property
     def subagent_registry(self) -> SubagentRegistry:
         """Return the live sub-agent subprocess registry."""
 
@@ -341,12 +330,36 @@ class FeatherRuntime:
 
         return self._messaging_service
 
-    async def start_background_services(self) -> None:
-        """Start shared background services such as the cron scheduler."""
+    async def start_background_services(
+        self, *, lead_in_subprocess: bool = False
+    ) -> None:
+        """Start shared background services such as the cron scheduler.
 
-        await self._cron_scheduler.start()
+        Args:
+            lead_in_subprocess: When True, the lead agent is running in a
+                separate worker process (see
+                :class:`feather.core.lead_supervisor.LeadSupervisor`). In
+                that mode the cron scheduler and the messaging router
+                are NOT started: both build their own in-process
+                ``BaseAgent`` and call ``run`` against the same
+                ``sessions`` row that the worker is mutating, which
+                corrupts ``last_response_id`` / ``pending_inputs`` /
+                ``messages.sequence`` under any concurrent activity.
+                The sub-agent reaper still runs because sub-agents are
+                spawned by tools, not by background services.
+        """
+
+        if lead_in_subprocess:
+            logger.info(
+                "runtime.start_background_services skipping cron + messaging "
+                "(lead_in_subprocess=True): both would race the worker on "
+                "shared session state. Re-enable by leaving "
+                "FEATHER_USE_LEAD_WORKER unset."
+            )
+        else:
+            await self._cron_scheduler.start()
+            await self._messaging_service.start()
         await self._subagent_reaper.start()
-        await self._messaging_service.start()
 
     async def run_pending_cron_jobs(self) -> int:
         """Run one scheduler tick immediately."""

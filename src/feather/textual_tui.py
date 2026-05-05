@@ -623,9 +623,12 @@ class FeatherTextualApp(App[None]):
             self._active_session_id,
             self._handle_runtime_event,
         )
-        if _should_use_lead_worker():
+        worker_mode = _should_use_lead_worker()
+        if worker_mode:
             await self._start_lead_worker_supervisor()
-        await self._runtime.start_background_services()
+        await self._runtime.start_background_services(
+            lead_in_subprocess=worker_mode
+        )
         await self._refresh_monitor()
         self._update_header()
         self._update_work()
@@ -924,23 +927,27 @@ class FeatherTextualApp(App[None]):
     async def _enqueue_user_text(self, text: str) -> None:
         assert self._runtime is not None
         assert self._active_session_id is not None
+        # In worker mode the lead's own input queue lives inside the
+        # worker process. Forwarding via the supervisor is the only path
+        # that actually reaches the agent loop; the in-process queue
+        # would never drain (no in-process agent runs) and would grow
+        # unbounded — also producing a misleading queue-depth display.
+        if self._supervisor is not None:
+            try:
+                await self._supervisor.enqueue_user_input(
+                    self._active_session_id, text
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "textual_tui.lead_worker_enqueue_failed session_id=%s",
+                    self._active_session_id,
+                )
+                return
+            await self._refresh_monitor()
+            self._update_work()
+            return
         ok = await self._runtime.input_queue.enqueue(self._active_session_id, text)
         if ok:
-            # In worker mode the agent's input queue lives in the worker
-            # process; forward the same text via the supervisor so the
-            # worker's between-iteration drain actually sees it. The local
-            # enqueue above is preserved purely to keep the depth display
-            # accurate in the TUI.
-            if self._supervisor is not None:
-                try:
-                    await self._supervisor.enqueue_user_input(
-                        self._active_session_id, text
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "textual_tui.lead_worker_enqueue_failed session_id=%s",
-                        self._active_session_id,
-                    )
             await self._refresh_monitor()
             self._update_work()
 

@@ -70,6 +70,11 @@ _SHUTDOWN_ACK = "_shutdown_ack"
 _DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1.0
 _DEFAULT_STALENESS_THRESHOLD_SECONDS = 5.0
 _DEFAULT_SHUTDOWN_GRACE_SECONDS = 2.0
+# Cap the event queue so a chatty worker can't grow it unbounded inside
+# the supervisor process: stdout reads naturally backpressure on the OS
+# pipe buffer once the queue is full. 1024 covers ~10s of streaming text
+# deltas at typical token rates with comfortable headroom.
+_DEFAULT_EVENT_QUEUE_MAXSIZE = 1024
 
 
 class SupervisorError(RuntimeError):
@@ -151,7 +156,12 @@ class LeadSupervisor:
         self._handle: WorkerHandle | None = None
         self._session_id: str | None = None
         self._heartbeat_store: WorkerHeartbeatStore | None = None
-        self._event_queue: asyncio.Queue[RuntimeEvent | None] = asyncio.Queue()
+        # Bounded queue: ``put`` blocks the stdout reader once full, which
+        # backpressures the worker's stdout pipe — preventing a chatty
+        # worker from OOMing the supervisor on long streaming runs.
+        self._event_queue: asyncio.Queue[RuntimeEvent | None] = asyncio.Queue(
+            maxsize=_DEFAULT_EVENT_QUEUE_MAXSIZE
+        )
         self._reader_task: asyncio.Task[None] | None = None
         self._run_lock = asyncio.Lock()
         self._closed = False
@@ -176,10 +186,27 @@ class LeadSupervisor:
                 )
             return
 
+        # Reset the event queue before each spawn so any stragglers from a
+        # previous worker (eg an unconsumed ``_run_complete`` queued after
+        # the prior driver task was cancelled) cannot misroute the very
+        # next ``run()`` into returning the previous worker's payload.
+        # Critical for ``restart()`` which is the load-bearing primitive
+        # for upcoming self-repair.
+        self._event_queue = asyncio.Queue(maxsize=_DEFAULT_EVENT_QUEUE_MAXSIZE)
+
         store = WorkerHeartbeatStore(self._db_path)
         await store.initialize()
+        try:
+            self._handle = await self._handle_factory(session_id)
+        except BaseException:
+            # Factory failure leaves the heartbeat store open — the next
+            # ``shutdown()`` short-circuits on ``_handle is None`` and
+            # would leak the SQLite connection. Close the store before
+            # re-raising so callers can retry ``start()`` cleanly.
+            with contextlib.suppress(Exception):
+                await store.close()
+            raise
         self._heartbeat_store = store
-        self._handle = await self._handle_factory(session_id)
         self._session_id = session_id
         self._reader_task = asyncio.create_task(
             self._stdout_reader(), name="supervisor.stdout_reader"
@@ -231,7 +258,7 @@ class LeadSupervisor:
                 await handle.close_stdin()
             handle.terminate()
             try:
-                await asyncio.wait_for(handle.wait(), timeout=2.0)
+                await asyncio.wait_for(handle.wait(), timeout=self._shutdown_grace)
             except asyncio.TimeoutError:
                 logger.warning(
                     "lead_supervisor SIGTERM timeout — escalating to SIGKILL "
@@ -241,7 +268,9 @@ class LeadSupervisor:
                 )
                 handle.kill()
                 try:
-                    await asyncio.wait_for(handle.wait(), timeout=2.0)
+                    await asyncio.wait_for(
+                        handle.wait(), timeout=self._shutdown_grace
+                    )
                 except asyncio.TimeoutError:
                     logger.error(
                         "lead_supervisor SIGKILL timeout — giving up wait "
@@ -521,6 +550,13 @@ class _SubprocessWorkerHandle:
         if self._process.stdin is None or self._process.stdin.is_closing():
             raise BrokenPipeError("worker stdin is closed")
         line = encode_command(command).encode("utf-8")
+        # No-await invariant: the line and its terminating newline must be
+        # written without an intervening ``await`` so concurrent callers
+        # of ``send_command`` (e.g. ``enqueue_user_input`` arriving while
+        # ``run`` is dispatching another command) cannot interleave half
+        # a command with the next one and corrupt the worker's stdin.
+        # ``StreamWriter.write`` is purely synchronous; the ``drain``
+        # below is the only suspension point.
         self._process.stdin.write(line)
         self._process.stdin.write(b"\n")
         await self._process.stdin.drain()

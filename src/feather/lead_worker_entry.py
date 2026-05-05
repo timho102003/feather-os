@@ -46,6 +46,20 @@ logger = logging.getLogger(__name__)
 _DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1.0
 
 
+def _positive_float(raw: str) -> float:
+    """Argparse type that rejects non-positive heartbeat intervals upfront."""
+
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if value <= 0:
+        raise argparse.ArgumentTypeError(
+            f"heartbeat-interval must be > 0 (got {value})"
+        )
+    return value
+
+
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="feather-lead-worker",
@@ -63,7 +77,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--heartbeat-interval",
-        type=float,
+        type=_positive_float,
         default=_DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         help=(
             "Seconds between worker_heartbeats refreshes. Must be > 0. "
@@ -170,7 +184,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    # Mirror subagent_entry: keep stdout flushed even if a nested library
-    # decides to chatter. Set BEFORE asyncio.run so subprocesses inherit it.
+    # Set PYTHONUNBUFFERED so any nested subprocesses we spawn inherit
+    # unbuffered stdio. Our own per-line flush in ``_stdout_event_sink``
+    # is what keeps the supervisor from blocking on a half-buffered pipe.
     os.environ.setdefault("PYTHONUNBUFFERED", "1")
     raise SystemExit(main())

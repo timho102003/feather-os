@@ -21,6 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   OpenRouter's published limits (16 keys, 64-char keys, 512-char values)
   so a typo can't trigger a 400. Reserved Feather identity keys always
   win over operator metadata of the same name.
+- Lead worker subprocess substrate. Opt-in via the new
+  `FEATHER_USE_LEAD_WORKER=1` env var. When enabled, the lead agent
+  runs as a separate `python -m feather.lead_worker_entry` subprocess
+  with the Textual TUI as its supervisor; they communicate via a
+  JSONL command/event protocol over stdin/stdout plus a new
+  `worker_heartbeats` SQLite table. Default is off; default users see
+  byte-identical behaviour. Substrate for upcoming out-of-band hang
+  detection (the supervisor's `is_stale()` is wired but the UI banner
+  ships in a follow-up) and self-repair restart-resume (a
+  `request_restart` tool ships in a follow-up). See
+  [docs/architecture.md](docs/architecture.md#lead-worker-mode-opt-in)
+  and [docs/configuration.md](docs/configuration.md#lead-worker-mode-opt-in).
+- Worker-mode runtime guards: when `FEATHER_USE_LEAD_WORKER=1` is set,
+  `FeatherRuntime.start_background_services` skips the cron scheduler
+  and the messaging adapters. Both build their own in-process
+  `BaseAgent` and would race the worker on the shared `sessions` row,
+  silently corrupting `last_response_id`, `pending_inputs`, and
+  `messages.sequence`.
 
 ### Changed
 

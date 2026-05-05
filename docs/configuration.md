@@ -363,6 +363,39 @@ Full path layout is documented in
 | `PARALLEL_API_KEY` | Parallel AI key for `web_search` / `web_fetch`. |
 | `FEATHER_HOME` | Override the global state root. |
 | `FEATHER_PROJECT_ROOT` | Skip the walk-up search and pin a project. |
+| `FEATHER_USE_LEAD_WORKER` | Opt in to running the lead agent as a separate worker subprocess. See [Lead worker mode (opt-in)](#lead-worker-mode-opt-in) below. |
 
 Feather loads `~/.feather/.env` first, then `./.env` from the project
 root with override-on. So a project `.env` wins over the global one.
+
+## Lead worker mode (opt-in)
+
+Default: **off**. With the env var unset, the lead agent runs in the
+same Python process as the Textual TUI — the long-standing behavior. No
+configuration change is needed for typical use.
+
+Set `FEATHER_USE_LEAD_WORKER=1` (also accepted: `true`, `yes`, `on`) to
+spawn the lead as a separate `python -m feather.lead_worker_entry`
+subprocess. The TUI becomes the supervisor: it talks to the worker via
+the worker's stdin/stdout (one JSON line per command/event) and watches
+a new `worker_heartbeats` SQLite table for liveness. This mode is the
+substrate for upcoming self-repair (the lead patches its own code and
+asks for a clean restart) and for out-of-band hang detection.
+
+Defaults that govern the worker's heartbeat cadence and the supervisor's
+staleness threshold are not user-configurable in `app.yaml` yet — they
+ship as 1 s and 5 s respectively (`feather.core.lead_supervisor`).
+
+**Known limitations of worker mode in this release** — both are
+deliberate guards that the runtime enforces automatically when the env
+flag is set:
+
+* The cron scheduler is not started. Cron jobs build their own
+  in-process `BaseAgent` and would race the worker on the shared
+  `sessions` row.
+* Messaging integrations (Telegram, LINE, WhatsApp) are not started for
+  the same reason — their inbound queue is the TUI-process input queue
+  the worker can't see.
+
+If you need scheduled jobs or messaging webhooks in this session, leave
+the env flag unset.

@@ -107,6 +107,51 @@ async def test_clear_removes_row(tmp_path: Path) -> None:
         await store.close()
 
 
+async def test_concurrent_write_and_read_under_wal(tmp_path: Path) -> None:
+    """A separate connection's writes must be visible to a separate
+    connection's reads under WAL — the worker writes from one process
+    while the supervisor reads from another, and a stuck contention
+    bug here would mask hangs in production.
+    """
+
+    import asyncio
+
+    # Two store instances on the same DB file simulate two processes.
+    writer = WorkerHeartbeatStore(tmp_path / "feather.db")
+    reader = WorkerHeartbeatStore(tmp_path / "feather.db")
+    await writer.initialize()
+    await reader.initialize()
+
+    try:
+        # Writer hammers heartbeats; reader observes the latest pid.
+        async def write_loop() -> None:
+            for i in range(50):
+                await writer.heartbeat(
+                    session_id="s-wal", pid=1000 + i, status=WorkerStatus.RUNNING
+                )
+
+        async def read_loop() -> int:
+            seen = 0
+            for _ in range(50):
+                row = await reader.get("s-wal")
+                if row is not None:
+                    seen += 1
+                await asyncio.sleep(0)
+            return seen
+
+        _, seen = await asyncio.gather(write_loop(), read_loop())
+        # The reader must see at least one row — exact count is timing-
+        # dependent so we just assert "made forward progress, no deadlock".
+        assert seen > 0
+        # Final pid in writer's last heartbeat is what reader observes.
+        final = await reader.get("s-wal")
+        assert final is not None
+        assert final.pid == 1049
+    finally:
+        await writer.close()
+        await reader.close()
+
+
 async def test_status_enum_round_trips_via_storage(tmp_path: Path) -> None:
     """All defined WorkerStatus values must survive write -> read."""
 

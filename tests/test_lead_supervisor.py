@@ -407,3 +407,111 @@ async def test_supervisor_rejects_invalid_threshold(tmp_path: Path) -> None:
             heartbeat_interval=1.0,
             staleness_threshold=0.5,
         )
+
+
+async def test_restart_drains_stale_events_so_next_run_is_not_short_circuited(
+    tmp_path: Path,
+) -> None:
+    """A `_run_complete` left over in the queue from the previous worker
+    must NOT be returned by the FIRST run() against the new worker.
+
+    Reproduces the failure mode: previous worker emits a `_run_complete`
+    that arrives after the agent driver was cancelled (so nothing
+    consumed it). Without queue draining on restart, the next supervisor.run
+    would short-circuit on the stale event and return the prior worker's
+    payload — silently dropping the actually-new turn. Critical for the
+    self-repair restart-resume path that builds on this substrate.
+    """
+
+    handles: list[_FakeWorkerHandle] = []
+
+    def factory(_sid: str):
+        async def _make() -> WorkerHandle:
+            h = _FakeWorkerHandle()
+            handles.append(h)
+            h.auto_ack_shutdown()
+            return h
+
+        return _make()
+
+    supervisor = LeadSupervisor(
+        db_path=tmp_path / "feather.db",
+        project_root=tmp_path,
+        heartbeat_interval=0.05,
+        staleness_threshold=0.5,
+        shutdown_grace=0.05,
+        handle_factory=factory,
+    )
+    await supervisor.start("s1")
+    # Push a stale `_run_complete` from the FIRST worker before any caller
+    # has consumed it (mimics an event that arrived after the driver was
+    # cancelled in on_unmount). Mark it so the test can detect leakage.
+    handles[0].push_event(
+        RuntimeEvent(
+            kind="_run_complete",
+            payload={
+                "method": "run",
+                "status": "completed",
+                "session_id": "s1",
+                "assistant_text": "STALE — must not leak to next worker",
+                "total_tool_calls": 999,
+            },
+        )
+    )
+    await supervisor.restart()
+    # The new worker should produce a clean, distinguishable result.
+    handles[1].push_event(
+        RuntimeEvent(
+            kind="_run_complete",
+            payload={
+                "method": "run",
+                "status": "completed",
+                "session_id": "s1",
+                "assistant_text": "fresh",
+                "total_tool_calls": 0,
+            },
+        )
+    )
+    result = await supervisor.run("s1", "hello")
+    assert result.assistant_text == "fresh"
+    assert result.total_tool_calls == 0
+
+    await supervisor.shutdown()
+
+
+async def test_start_closes_heartbeat_store_when_factory_raises(
+    tmp_path: Path,
+) -> None:
+    """Factory failure must not leak the open SQLite connection."""
+
+    db_path = tmp_path / "feather.db"
+
+    def boom_factory(_sid: str):
+        async def _make() -> WorkerHandle:
+            raise RuntimeError("factory exploded")
+
+        return _make()
+
+    supervisor = LeadSupervisor(
+        db_path=db_path,
+        project_root=tmp_path,
+        heartbeat_interval=0.05,
+        staleness_threshold=0.5,
+        handle_factory=boom_factory,
+    )
+    with pytest.raises(RuntimeError, match="factory exploded"):
+        await supervisor.start("s1")
+    # If the store leaked, a second store opening the same DB would still
+    # work (SQLite + WAL allows multiple readers/writers), so we instead
+    # verify the supervisor is in a clean state and a retry succeeds.
+    assert supervisor._heartbeat_store is None  # noqa: SLF001 — internal check
+    assert supervisor._handle is None  # noqa: SLF001 — internal check
+
+    # Retry with a working factory should still succeed (no stale state).
+    handle = _FakeWorkerHandle()
+    supervisor._handle_factory = (  # noqa: SLF001 — internal check
+        lambda _sid: _wrap_in_async(handle)
+    )
+    await supervisor.start("s1")
+    handle.auto_ack_shutdown()
+    await supervisor.shutdown()
