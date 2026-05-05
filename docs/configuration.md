@@ -158,6 +158,12 @@ openrouter:
     allow_fallbacks: false         # surface 503s instead of re-routing
   fallback_models:
     - qwen/qwen3.5-plus-02-15
+  tracing:                          # optional; default off
+    enabled: false                  # flip to true to broadcast trace metadata
+    user: ops@example.com           # ≤128 chars; identifies you in trace UI
+    metadata:                       # static keys merged into trace object
+      env: prod
+      build_sha: abc123
 ```
 
 * `cache_strategy: anthropic_breakpoint`: wraps the system prompt in
@@ -167,6 +173,20 @@ openrouter:
   recommended whenever the agent uses tools.
 * `fallback_models`: tried in order if the primary model is
   unavailable.
+* `tracing`: opt-in observability metadata. When `enabled: true`,
+  every OpenRouter request body carries `session_id`, an optional
+  `user`, and a structured `trace` object that OpenRouter forwards
+  to every observability destination configured on its dashboard
+  (Comet Opik, Langfuse, OTel, Sentry, Grafana, webhooks). Default
+  off; the wire body is byte-identical to prior behaviour for anyone
+  who has not opted in. Operator-supplied `metadata` values are
+  clamped to OpenRouter's published limits (16 keys, 64-char keys,
+  512-char values). Reserved Feather identity keys (`trace_name`,
+  `generation_name`, `feather_app`, `feather_agent_name`,
+  `feather_agent_role`, `feather_session_id`) always win over
+  operator metadata of the same name. See
+  [providers.md](providers.md#sending-traces-to-comet-opik-and-other-observability-platforms)
+  for the full walkthrough.
 
 The packaged `openrouter-examples/` folder has tested, drop-in blocks
 for popular models. See [providers.md](providers.md).

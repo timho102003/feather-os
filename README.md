@@ -20,6 +20,10 @@ is just `feather`.
 * Add your own skills, custom sub-agents, and MCP servers without
   touching the package code.
 * Reach the agent from Telegram, LINE, or WhatsApp.
+* When running on OpenRouter, opt in to broadcast every turn's metadata
+  (session, agent, model) to Comet Opik or any other observability
+  destination OpenRouter supports. See
+  [docs/providers.md](docs/providers.md#sending-traces-to-comet-opik-and-other-observability-platforms).
 
 ## How it fits together
 
@@ -117,6 +121,7 @@ works fine, it just starts every chat fresh.
 | Drop files into a chat (text, images, PDFs) | [docs/attachments.md](docs/attachments.md) |
 | Schedule the agent to do something later | [docs/scheduling.md](docs/scheduling.md) |
 | Talk to Feather from Telegram, LINE, or WhatsApp | [docs/messaging.md](docs/messaging.md) |
+| Send traces to Comet Opik (or Langfuse, OTel, etc.) | [docs/providers.md](docs/providers.md#sending-traces-to-comet-opik-and-other-observability-platforms) |
 | Look up every config knob | [docs/configuration.md](docs/configuration.md) |
 | Fix something that broke | [docs/troubleshooting.md](docs/troubleshooting.md) |
 
