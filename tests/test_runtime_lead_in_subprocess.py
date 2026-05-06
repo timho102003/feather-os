@@ -1,10 +1,12 @@
 """Tests for the ``lead_in_subprocess`` flag on FeatherRuntime.start_background_services.
 
-When the flag is True (TUI's worker-mode is active), the cron scheduler
-and messaging service must NOT start. Both build their own in-process
-``BaseAgent`` and would race the worker on the shared ``sessions`` row,
-silently corrupting ``last_response_id`` / ``pending_inputs`` /
-``messages.sequence``. The sub-agent reaper must still start because
+When the flag is True (TUI's worker-mode is active), the **messaging
+service** must NOT start — its inbound queue is the in-process
+``UserInputQueue`` which the worker can't see. The **cron scheduler**
+runs in both modes: it routes through the agent_messages mailbox
+(which is process-shared via SQLite), so the worker's existing
+``resume_on_inbox`` path picks up cron-triggered turns naturally with
+no race on session state. The sub-agent reaper always runs because
 sub-agents are spawned by tools, not by background services.
 """
 
@@ -43,15 +45,24 @@ def _build_runtime_with_recorders() -> tuple[
     return runtime, cron, messaging, reaper
 
 
-async def test_lead_in_subprocess_true_skips_cron_and_messaging() -> None:
-    """When the lead is out-of-process, cron + messaging must not start."""
+async def test_lead_in_subprocess_true_skips_only_messaging() -> None:
+    """In worker mode the messaging router is paused; cron now runs.
+
+    Cron previously raced the worker on session state because it built
+    its own in-process BaseAgent. Now it routes through the
+    agent_messages mailbox, so it's safe in both modes.
+    """
 
     runtime, cron, messaging, reaper = _build_runtime_with_recorders()
     await runtime.start_background_services(lead_in_subprocess=True)
 
-    assert cron.start_calls == 0, "cron must not start when lead is in subprocess"
+    assert cron.start_calls == 1, (
+        "cron must start in worker mode — mailbox routing makes it safe"
+    )
     assert messaging.start_calls == 0, (
-        "messaging must not start when lead is in subprocess"
+        "messaging must not start when lead is in subprocess — its "
+        "inbound UserInputQueue lives in this process and the worker "
+        "can't see it"
     )
     assert reaper.start_calls == 1, (
         "subagent reaper must still start — sub-agents are spawned by tools, "

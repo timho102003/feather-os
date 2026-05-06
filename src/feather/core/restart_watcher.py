@@ -30,6 +30,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
+from feather.core.constants import LEAD_AGENT_NAME
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.session_store import SessionStore
 
@@ -200,7 +201,10 @@ class RestartWatcher:
             # restart-cycle notifications.
             from_agent_name="__system_restart_watcher",
             to_session_id=self._lead_session_id,
-            to_agent_name="lead",
+            # The lead's BaseAgent filters by exact name match
+            # (case-sensitive SQL). Canonical constant avoids the
+            # silent-strand bug.
+            to_agent_name=LEAD_AGENT_NAME,
             body=outcome.message,
             expects_response=False,
         )

@@ -39,6 +39,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
+from feather.core.constants import LEAD_AGENT_NAME
 from feather.storage.agent_message_store import AgentMessageStore
 
 logger = logging.getLogger(__name__)
@@ -292,7 +293,11 @@ class LogTriageBot:
             # messages.
             from_agent_name="__system_log_triage",
             to_session_id=self._lead_session_id,
-            to_agent_name="lead",
+            # The lead's BaseAgent filters its inbox by exact name match
+            # (case-sensitive SQL). Use the canonical constant to avoid
+            # the silent-strand bug where "lead" rows are never drained
+            # because the agent's own name is "Lead".
+            to_agent_name=LEAD_AGENT_NAME,
             body=body,
             expects_response=False,
         )

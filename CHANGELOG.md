@@ -92,8 +92,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   three signals: env var (`FEATHER_USE_LEAD_WORKER`) wins, then YAML
   setting, then default-off. The env var also accepts explicit
   falsy values (`0`, `false`, `no`, `off`) so a user with the YAML
-  setting on can disable the feature for a single launch (eg when
-  cron-driven workflows are critical for that session).
+  setting on can disable the feature for a single launch.
+
+### Changed
+
+- **Cron scheduler now routes through the agent-message mailbox.**
+  When a job fires, the scheduler drops one message into the lead's
+  inbox via `agent_message_store.send` and marks the job succeeded.
+  The lead's existing `resume_on_inbox` path picks it up under the
+  lead's own session lock. Old design built an in-process `BaseAgent`
+  per fire and called `agent.run` synchronously, which raced the
+  worker on shared session state when self-repair was on — that was
+  the only reason cron was paused in safety-net mode. **Cron now
+  runs in both modes.** Behavior diff: the cron job is marked
+  succeeded as soon as the mailbox row commits, not after the agent
+  finishes the turn; an LLM failure on the queued turn shows up via
+  the agent's normal turn-completion UI rather than as a
+  `scheduled_task_failed` cron event. The
+  `scheduled_task_completed` event no longer fires (cron does not
+  observe completion).
+
+### Fixed
+
+- **Synthetic system messages from `log_triage_bot`,
+  `restart_watcher`, and the new cron path were stranded forever
+  due to a case-sensitive SQL filter on the lead's inbox.** Senders
+  were addressing `to_agent_name="lead"` (lowercase) but the lead's
+  `BaseAgent` filters by `agent_config.name` which is `"Lead"`
+  (capital L, from `lead.yaml`), and SQLite string equality is
+  case-sensitive. Result: every triage notification, restart
+  acknowledgement, and (after this PR's mailbox-routed cron) cron
+  prompt was silently dropped. Centralised the canonical name as
+  `feather.core.constants.LEAD_AGENT_NAME` and routed all three
+  senders through it. Added an end-to-end test that pins the
+  invariant by querying both the canonical name (must return the
+  message) and the wrong case (must return nothing).
 
 ### Changed
 

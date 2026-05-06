@@ -469,10 +469,14 @@ and the new tools / commands are no-ops without the supervisor.
 
 Limitations enforced by the runtime when worker mode is on:
 
-* Cron scheduler is not started — would race the worker on session
-  state.
-* Messaging adapters (Telegram / LINE / WhatsApp) are not started for
-  the same reason.
+* Messaging adapters (Telegram / LINE / WhatsApp) are not started —
+  their inbound queue is the in-process `UserInputQueue` which the
+  worker can't see.
+
+The **cron scheduler runs in both modes**. Cron jobs route through the
+`agent_messages` mailbox (one row per fire, addressed to the lead),
+so the worker's existing `resume_on_inbox` path processes the
+cron-triggered turns under the lead's own session lock — no race.
 
 See [configuration.md → Self-repair safety net](configuration.md#self-repair-safety-net-opt-in)
 for the env var, the YAML setting, and the limitations, and

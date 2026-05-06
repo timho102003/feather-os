@@ -33,7 +33,7 @@ async def test_run_once_no_op_when_flag_unset(tmp_path: Path) -> None:
         triggered = await watcher.run_once()
         assert triggered is False
         restart_fn.assert_not_awaited()
-        inbox = await msg.inbox(to_session_id=session.id, to_agent_name="lead")
+        inbox = await msg.inbox(to_session_id=session.id, to_agent_name="Lead")
         assert inbox == []
     finally:
         await sess.close()
@@ -60,7 +60,7 @@ async def test_run_once_triggers_restart_when_flag_set(tmp_path: Path) -> None:
         # spin on the same row.
         assert await sess.get_restart_request(session.id) is None
         # Lead inbox has a system message describing the outcome.
-        inbox = await msg.inbox(to_session_id=session.id, to_agent_name="lead")
+        inbox = await msg.inbox(to_session_id=session.id, to_agent_name="Lead")
         assert len(inbox) == 1
         assert "succeeded" in inbox[0].body.lower()
         assert "patched compaction.py" in inbox[0].body
@@ -94,7 +94,7 @@ async def test_run_once_clears_flag_and_reports_failure_when_restart_raises(
         # Flag MUST be cleared, otherwise the next tick re-fires
         # restart() in a tight loop.
         assert await sess.get_restart_request(session.id) is None
-        inbox = await msg.inbox(to_session_id=session.id, to_agent_name="lead")
+        inbox = await msg.inbox(to_session_id=session.id, to_agent_name="Lead")
         assert len(inbox) == 1
         assert "failed" in inbox[0].body.lower()
         assert "RuntimeError" in inbox[0].body

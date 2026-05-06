@@ -89,7 +89,7 @@ async def test_run_once_sends_summary_when_errors_present(tmp_path: Path) -> Non
         )
         sent = await bot.run_once()
         assert sent == 1
-        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="lead")
+        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="Lead")
         assert len(inbox) == 1
         msg = inbox[0]
         assert "tool failed: timeout" in msg.body
@@ -111,7 +111,7 @@ async def test_run_once_does_not_send_when_no_errors(tmp_path: Path) -> None:
         )
         sent = await bot.run_once()
         assert sent == 0
-        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="lead")
+        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="Lead")
         assert inbox == []
     finally:
         await store.close()
@@ -135,7 +135,7 @@ async def test_run_once_deduplicates_already_reported_errors(
         second = await bot.run_once()
         assert first == 1
         assert second == 0
-        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="lead")
+        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="Lead")
         assert len(inbox) == 1
     finally:
         await store.close()
@@ -161,7 +161,7 @@ async def test_run_once_picks_up_new_errors_after_first_run(tmp_path: Path) -> N
             )
         sent = await bot.run_once()
         assert sent == 1
-        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="lead")
+        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="Lead")
         # First message + second message; both still pending until lead drains.
         assert len(inbox) == 2
         assert "second failure" in inbox[1].body
@@ -186,7 +186,7 @@ async def test_run_once_caps_summary_at_max_errors(tmp_path: Path) -> None:
             max_errors_per_summary=10,
         )
         await bot.run_once()
-        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="lead")
+        inbox = await store.inbox(to_session_id="s-lead", to_agent_name="Lead")
         assert len(inbox) == 1
         # Body should include the cap notice and at most 10 enumerated errors.
         body = inbox[0].body

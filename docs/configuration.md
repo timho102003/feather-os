@@ -408,18 +408,20 @@ The onboarding wizard asks once and writes the YAML answer. Re-run
 
 ### Trade-off
 
-When the safety net is on, the runtime automatically pauses two
-subsystems that would otherwise race the agent on shared session state:
+When the safety net is on, the runtime automatically pauses one
+subsystem that would otherwise race the agent on shared session state:
 
-* The **cron scheduler** is not started. Cron jobs build their own
-  in-process `BaseAgent` and would corrupt `last_response_id` /
-  `pending_inputs` if they fire while the worker is mid-turn.
 * **Messaging integrations** (Telegram, LINE, WhatsApp) are not
-  started for the same reason — their inbound queue is the TUI-process
-  input queue, which the worker can't see.
+  started — their inbound queue is the TUI-process input queue, which
+  the worker can't see.
 
-If you need scheduled jobs or messaging webhooks active for a session,
-leave the safety net off (`self_repair.enabled: false` in YAML, or
+The **cron scheduler runs in both modes**: cron jobs now route through
+the `agent_messages` mailbox (which is process-shared via SQLite), so
+the worker's existing `resume_on_inbox` path picks them up naturally
+with no race on session state.
+
+If you need messaging webhooks active for a session, leave the safety
+net off (`self_repair.enabled: false` in YAML, or
 `FEATHER_USE_LEAD_WORKER=0` for a one-off override).
 
 ### Defaults
