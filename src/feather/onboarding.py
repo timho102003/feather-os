@@ -339,6 +339,11 @@ class OnboardingAnswers:
     gemini_api_key: str = ""
     web_search_enabled: bool = False
     parallel_api_key: str = ""
+    # Experimental: when True, the TUI runs the lead agent as a separate
+    # background process so it can detect hangs and let the agent reload
+    # its own patched code. Trade-off: cron and messaging integrations
+    # are paused. ``FEATHER_USE_LEAD_WORKER=1`` overrides this at runtime.
+    self_repair_enabled: bool = False
 
     def collect_secrets(self) -> dict[str, str]:
         """Return only the non-empty (KEY, value) pairs for ``.env``.
@@ -478,6 +483,54 @@ _ENABLED_LINE_RE = re.compile(
     r"(?P<trailing>\s*(?:#.*)?)$",
     re.IGNORECASE,
 )
+
+
+def apply_self_repair_toggle(path: Path, *, enabled: bool) -> bool:
+    """Rewrite ``self_repair.enabled`` in ``app.yaml`` while preserving comments.
+
+    Mirrors the conservative line-walker used for ``memory.enabled``: only
+    a strict ``  enabled: <bool> [# comment]`` line under a top-level
+    ``self_repair:`` key is rewritten. Returns ``True`` iff the value
+    was changed (so callers can warn the operator when the file shape
+    is unexpected).
+    """
+
+    text = path.read_text(encoding="utf-8")
+    lines = text.splitlines()
+
+    in_block = False
+    awaiting_enabled = False
+    changed = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if not in_block:
+            if stripped == "self_repair:":
+                in_block = True
+                awaiting_enabled = True
+            continue
+        if not awaiting_enabled:
+            break
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if indent == 0:
+            # Sibling top-level key — left the self_repair block without
+            # finding the enabled line. Stop without rewriting.
+            break
+        match = _ENABLED_LINE_RE.match(line)
+        if match:
+            indent_str = match.group("indent")
+            trailing = match.group("trailing") or ""
+            new_value = "true" if enabled else "false"
+            lines[index] = f"{indent_str}enabled: {new_value}{trailing}"
+            changed = True
+            awaiting_enabled = False
+            break
+
+    if changed:
+        new_text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+        _atomic_write_text(path, new_text)
+    return changed
 
 
 def apply_app_yaml_toggles(
@@ -782,6 +835,26 @@ class OnboardingWizard:
             self._say("Parallel AI: https://parallel.ai/")
             answers.parallel_api_key = self._reuse_or_ask_secret("PARALLEL_API_KEY")
 
+        # Self-repair safety net (experimental, advanced)
+        self._say(
+            "\nSelf-repair safety net (experimental, advanced)\n"
+            "  When ON, Feather runs your agent in a separate background\n"
+            "  process so it can:\n"
+            "    • detect when the agent stops responding and offer a\n"
+            "      recovery action,\n"
+            "    • let the agent fix bugs in its own code and reload\n"
+            "      itself, so a session-breaking issue doesn't cost you\n"
+            "      the whole chat.\n"
+            "  Trade-off: in this mode, scheduled reminders and messaging\n"
+            "  integrations (Telegram, LINE, WhatsApp) are paused — they\n"
+            "  share state with the agent and would conflict.\n"
+            "  Recommended: leave OFF unless you know you want it.\n"
+            "  You can change this later in app.yaml."
+        )
+        answers.self_repair_enabled = self._ask_yes_no(
+            "Enable experimental self-repair safety net?"
+        )
+
         await self._persist(answers)
         targets = self._resolve_persist_targets()
         self._say(
@@ -847,6 +920,17 @@ class OnboardingWizard:
                 logger.warning(
                     "app.yaml regex toggle missed; user must flip "
                     "active_provider/memory.enabled manually."
+                )
+            self_repair_changed = apply_self_repair_toggle(
+                yaml_path, enabled=answers.self_repair_enabled
+            )
+            # Only WARN if the user actually opted IN and we couldn't
+            # write it — leaving the default false in a default file is
+            # not interesting.
+            if answers.self_repair_enabled and not self_repair_changed:
+                logger.warning(
+                    "app.yaml self_repair toggle missed; user must flip "
+                    "self_repair.enabled to true manually."
                 )
 
         marker = targets["marker"]

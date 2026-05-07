@@ -37,11 +37,18 @@ SESSIONS_TABLE = TableSchema(
         active_mcp_servers TEXT NOT NULL DEFAULT '[]',
         pending_inputs TEXT NOT NULL,
         created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
+        updated_at TEXT NOT NULL,
+        restart_requested_at TEXT,
+        restart_reason TEXT
     )
     """,
     required_columns=(
         ColumnSchema(name="active_mcp_servers", definition="TEXT NOT NULL DEFAULT '[]'"),
+        # Self-repair flag: written by request_restart tool (worker side),
+        # polled by the supervisor to trigger a graceful worker restart
+        # on the same session_id. NULL when no restart is pending.
+        ColumnSchema(name="restart_requested_at", definition="TEXT"),
+        ColumnSchema(name="restart_reason", definition="TEXT"),
     ),
 )
 
@@ -316,6 +323,18 @@ MESSAGING_INBOUND_DEDUP_TABLE = TableSchema(
     ),
 )
 
+WORKER_HEARTBEATS_TABLE = TableSchema(
+    name="worker_heartbeats",
+    create_sql="""
+    CREATE TABLE IF NOT EXISTS worker_heartbeats (
+        session_id TEXT PRIMARY KEY,
+        pid INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL
+    )
+    """,
+)
+
 TABLE_SCHEMAS = (
     SESSIONS_TABLE,
     MESSAGES_TABLE,
@@ -330,6 +349,7 @@ TABLE_SCHEMAS = (
     MESSAGING_CREDENTIALS_TABLE,
     MESSAGING_CHATS_TABLE,
     MESSAGING_INBOUND_DEDUP_TABLE,
+    WORKER_HEARTBEATS_TABLE,
 )
 
 

@@ -55,7 +55,9 @@ async def test_wizard_skips_memory_question_when_marker_absent(tmp_path, paths):
         # OPENAI key
         ["sk-test"],
     )
-    # The 'web search' yes/no comes after memory; reuse the input recorder
+    # The 'web search' and 'self-repair' yes/no questions come after memory;
+    # append both via the recorder so the wizard's run() doesn't run dry.
+    wizard.input_fn._answers.append("n")  # type: ignore[attr-defined]
     wizard.input_fn._answers.append("n")  # type: ignore[attr-defined]
     answers = await wizard.run()
 
@@ -74,8 +76,8 @@ async def test_wizard_treats_marker_present_as_memory_on(tmp_path, paths):
     wizard = _wizard_for(
         tmp_path,
         paths,
-        # identity (5) + 3 provider yes/no answers + web-search (n)
-        ["Tester", "", "", "", "", "y", "n", "n", "n"],
+        # identity (5) + 3 provider yes/no + web-search (n) + self-repair (n)
+        ["Tester", "", "", "", "", "y", "n", "n", "n", "n"],
         # OPENAI + GEMINI
         ["sk-test", "gemini-key"],
     )
@@ -94,8 +96,8 @@ async def test_wizard_with_no_paths_asks_memory_question_legacy(tmp_path):
     wizard = OnboardingWizard(
         root=tmp_path,
         input_fn=_Recorder(
-            # identity (5) + 3 provider yes/no answers + memory? + web search
-            ["Tester", "", "", "", "", "y", "n", "n", "n", "n"]
+            # identity (5) + 3 provider yes/no + memory? + web search + self-repair
+            ["Tester", "", "", "", "", "y", "n", "n", "n", "n", "n"]
         ),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),

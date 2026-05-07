@@ -13,6 +13,7 @@ from feather.core.base_agent import BaseAgent
 from feather.core.compaction import ContextCompactor
 from feather.core.default_agent import DefaultAgent
 from feather.core.input_queue import UserInputQueue
+from feather.core.install_mode import detect_install_mode
 from feather.core.lead_agent import LeadAgent
 from feather.core.prompt_builder import PromptBuilder
 from feather.core.session_run_coordinator import SessionRunCoordinator
@@ -54,6 +55,8 @@ from feather.tools.parallel_search_tool import ParallelSearchTool
 from feather.tools.pdf_tool import ReadPdfTool
 from feather.tools.read_file_tool import ReadFileTool
 from feather.tools.recall_memory_tool import RecallMemoryTool
+from feather.tools.request_restart_tool import RequestRestartTool
+from feather.tools.submit_github_report_tool import SubmitGithubReportTool
 from feather.tools.write_file_tool import WriteFileTool
 from feather.tools.registry import ToolRegistry
 from feather.tools.send_message_tool import SendMessageTool
@@ -544,6 +547,18 @@ class AgentFactory:
             "spawn_agent": self._build_spawn_agent_builder(),
             "terminate_agent": self._build_terminate_agent_builder(),
         }
+        # request_restart: self-repair primitive. Probes install-mode once at
+        # build time so each tool instance carries an accurate upgrade-
+        # durability warning in its response without re-detecting on every call.
+        install_info = detect_install_mode()
+        session_store = self._session_store
+        builders["request_restart"] = lambda: RequestRestartTool(
+            session_store, install_info
+        )
+        # submit_github_report: file an issue upstream via the gh CLI.
+        # No state to inject; the tool detects gh availability lazily on
+        # each call so the factory builds even on machines without gh.
+        builders["submit_github_report"] = SubmitGithubReportTool
         # send_message: available to every role (lead, sub-agents, custom).
         # The sender identity is baked into the tool instance at build time
         # so the tool execution call doesn't need to rediscover it.

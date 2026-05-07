@@ -94,6 +94,20 @@ class TaskRunStatus(str, Enum):
     KILLED = "killed"
 
 
+class WorkerStatus(str, Enum):
+    """Self-reported lifecycle states for a lead worker subprocess.
+
+    The worker writes its current state to ``worker_heartbeats`` so the
+    supervisor (TUI) can distinguish a clean stop from a hang. ``CRASHED``
+    is never set by the worker itself — it is inferred by the supervisor
+    when a heartbeat goes stale beyond the staleness threshold.
+    """
+
+    RUNNING = "running"
+    STOPPING = "stopping"
+    STOPPED = "stopped"
+
+
 class TaskOutputKind(str, Enum):
     """Supported task output classes."""
 
@@ -152,6 +166,21 @@ class SchedulerConfig:
     poll_interval_seconds: float
     failure_retry_seconds: float
     max_due_jobs_per_tick: int
+
+
+@dataclass(slots=True)
+class SelfRepairConfig:
+    """Self-repair safety net configuration.
+
+    When ``enabled`` is True (set via the onboarding wizard or by
+    flipping the YAML manually), the TUI runs the lead agent in a
+    separate worker subprocess so it can detect hangs and let the
+    agent reload its own patched code. ``FEATHER_USE_LEAD_WORKER=1``
+    in the environment overrides this — handy for one-off testing
+    without flipping the persistent config.
+    """
+
+    enabled: bool = False
 
 
 @dataclass(slots=True)
@@ -353,6 +382,7 @@ class AppConfig:
     active_provider: str = "openai"
     openrouter: OpenRouterConfig | None = None
     claude: ClaudeConfig | None = None
+    self_repair: SelfRepairConfig = field(default_factory=SelfRepairConfig)
 
 
 @dataclass(slots=True)
@@ -584,6 +614,16 @@ class TaskEventRecord:
     agent_name: str | None
     session_id: str | None
     created_at: str
+
+
+@dataclass(slots=True, frozen=True)
+class WorkerHeartbeat:
+    """One row of ``worker_heartbeats`` — a worker's last self-reported tick."""
+
+    session_id: str
+    pid: int
+    status: WorkerStatus
+    heartbeat_at: datetime
 
 
 @dataclass(slots=True, frozen=True)

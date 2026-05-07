@@ -363,6 +363,126 @@ Default trigger is 80% of the context window. The active model and
 window size are configured in
 [configuration.md](configuration.md#compaction).
 
+## Self-repair safety net (opt-in)
+
+By default the lead agent runs as an `asyncio.Task` on the same event
+loop as the Textual TUI. Opting in to the safety net (either via the
+onboarding wizard, by setting `self_repair.enabled: true` in
+`app.yaml`, or with `FEATHER_USE_LEAD_WORKER=1` in the environment)
+flips a two-pod layout:
+
+* The TUI process becomes the **supervisor**. It pre-creates the lead
+  session, spawns the worker subprocess, drains its stdout into the
+  same `_handle_runtime_event` callback that the in-process path uses,
+  and watches a new `worker_heartbeats` SQLite row for staleness.
+* The lead becomes the **worker** (`python -m feather.lead_worker_entry`).
+  It builds its own `FeatherRuntime`, runs the same `BaseAgent` loop,
+  emits one JSON line per `RuntimeEvent` to stdout, and writes a
+  heartbeat once per second.
+
+```mermaid
+%%{init: {"flowchart": {"htmlLabels": true, "padding": 16, "nodeSpacing": 60, "rankSpacing": 70}, "themeVariables": {"fontSize": "16px"}}}%%
+flowchart LR
+    USER["You"] --> TUI
+
+    subgraph SUPER["Supervisor pod (TUI process)"]
+        TUI["Textual TUI"]
+        SV["LeadSupervisor<br/>spawns + drains worker,<br/>watches heartbeat"]
+        TUI --> SV
+    end
+
+    subgraph WORK["Worker pod (subprocess)"]
+        ENTRY["lead_worker_entry<br/>argparse + asyncio streams"]
+        CORE["WorkerCore<br/>3 pumps: stdin / heartbeat / cmd loop"]
+        AGENT["BaseAgent<br/>same lead loop as default mode"]
+        ENTRY --> CORE --> AGENT
+    end
+
+    SV -- "stdin: RunCommand /<br/>EnqueueUserInput /<br/>Shutdown" --> CORE
+    CORE -- "stdout: RuntimeEvent JSONL +<br/>_run_complete control events" --> SV
+
+    subgraph SQL["SQLite (shared)"]
+        SESS["sessions / messages"]
+        MAIL["agent_messages<br/>(inter-agent mailbox)"]
+        HB["worker_heartbeats<br/>liveness"]
+    end
+
+    AGENT --> SESS
+    AGENT --> MAIL
+    CORE -- "heartbeat 1/s" --> HB
+    SV -- "is_stale check" --> HB
+```
+
+Wire shapes:
+
+* **Supervisor → worker** (`feather.core.worker_command_codec`) carries
+  four typed commands: `RunCommand`, `ResumeOnInboxCommand`,
+  `EnqueueUserInputCommand`, `ShutdownCommand`.
+* **Worker → supervisor** (`feather.core.runtime_event_codec`) carries
+  every `RuntimeEvent` the in-process path emits, plus three control
+  events (`_run_complete`, `_run_failed`, `_shutdown_ack`) that the
+  supervisor consumes internally and never forwards to the UI.
+* **Heartbeat** (`feather.storage.worker_heartbeat_store`) is one row
+  keyed by `session_id`. Worker writes; supervisor reads.
+
+When the env flag is on, the supervisor process spawns three
+auxiliary tasks alongside the worker:
+
+* **Hang watcher** polls `LeadSupervisor.is_stale()` every 2 s and
+  surfaces a red `Lead unresponsive` marker (and a green `Lead
+  recovered` marker) on transitions. State machine is two-state, so
+  a sustained hang produces one alert, not one per tick.
+* **Log triage bot** tails `.feather/logs/feather.log` for ERROR-level
+  entries since its last reported high-water mark and posts a single
+  summary message into the lead's mailbox via `agent_messages`.
+  Auto-resets dedup on log rotation (inode change).
+* **Restart watcher** polls the new `sessions.restart_requested_at`
+  column once per ~1.5 s. When the lead's `request_restart` tool sets
+  the flag, the watcher cancels any in-flight run (with a 10 s cap so
+  a stuck cleanup can't block the watchdog), calls
+  `LeadSupervisor.restart()` (serialized via `_restart_lock` so it
+  can't race a concurrent `/restart-lead` slash), then drops a
+  "restart succeeded / failed" message back into the inbox.
+
+Two new tools surface to the lead in worker mode:
+
+* **`request_restart(reason)`** — self-repair primitive. The lead
+  calls this after patching `feather/*` modules and verifying the
+  change with tests. The tool itself does not kill anything; it
+  writes the flag and returns. Response carries an install-mode
+  warning (editable / wheel / read-only) so the model can advise the
+  user about upgrade durability.
+* **`submit_github_report(kind, title, body, repo?)`** — wraps
+  `gh issue create` via subprocess. Reads the `submit-github-report`
+  skill before invocation; never auto-submits; rejects PR kind for v1
+  with a clear "not yet" notice.
+
+Plus a new slash command:
+
+* **`/restart-lead`** — manual recovery hook. Same `LeadSupervisor.restart()`
+  the watcher calls; the slash command is the user-driven alternative
+  for the case where the lead can't (or won't) call `request_restart`
+  itself, e.g. after a hang banner.
+
+Default users see byte-identical behavior because the env flag is off
+and the new tools / commands are no-ops without the supervisor.
+
+Limitations enforced by the runtime when worker mode is on:
+
+* Messaging adapters (Telegram / LINE / WhatsApp) are not started —
+  their inbound queue is the in-process `UserInputQueue` which the
+  worker can't see.
+
+The **cron scheduler runs in both modes**. Cron jobs route through the
+`agent_messages` mailbox (one row per fire, addressed to the lead),
+so the worker's existing `resume_on_inbox` path processes the
+cron-triggered turns under the lead's own session lock — no race.
+
+See [configuration.md → Self-repair safety net](configuration.md#self-repair-safety-net-opt-in)
+for the env var, the YAML setting, and the limitations, and
+[tools-and-commands.md](tools-and-commands.md#self-repair-and-upstream-reporting)
+for the per-tool reference.
+
 ## Putting it all together
 
 If you read all six diagrams, you have the whole mental model:
@@ -379,6 +499,10 @@ If you read all six diagrams, you have the whole mental model:
 6. **MCP** servers connect on demand and survive session restarts.
 7. **Compaction** keeps long sessions alive without burning the active
    model's context.
+8. **Self-repair safety net** (opt-in) splits the lead into its own
+   subprocess so the supervisor can detect hangs, surface a recovery
+   action, and let the agent reload its own patched code without
+   losing the conversation.
 
 Each piece is documented in its own guide. Use this page when you need
 to see how they fit.

@@ -1,4 +1,38 @@
-"""Background scheduler that dispatches due cron jobs into agent sessions."""
+"""Background scheduler that delivers due cron prompts into agent mailboxes.
+
+Cron jobs in Feather are scheduled prompts: "every morning at 9am, ask
+the lead to summarize my open tasks." When a job's ``next_run_at``
+arrives, the scheduler used to build a fresh in-process ``BaseAgent``
+and call ``agent.run`` synchronously. That worked when everything ran
+in one process, but in self-repair safety-net mode the lead lives in
+a separate worker subprocess — and the in-process cron-built agent
+would race the worker on the shared ``sessions`` row, corrupting
+``last_response_id`` / ``pending_inputs`` / ``messages.sequence``.
+
+Mailbox routing dissolves that race. The scheduler now does one thing:
+it pushes a message into the lead's mailbox via
+:class:`feather.storage.agent_message_store.AgentMessageStore`. The
+lead's existing inbox watcher picks it up on its next iteration and
+processes it through ``resume_on_inbox`` — the same code path
+inter-agent messages already take. The lead's own
+``SessionRunCoordinator`` lock serializes the cron-triggered turn
+against any in-flight user-driven turn.
+
+Behavior diff vs the old design:
+
+* The cron job is marked succeeded as soon as the mailbox row commits,
+  not when the agent finishes the turn. A subsequent LLM failure on the
+  queued turn surfaces via the agent's normal turn-completion UI,
+  not as a ``scheduled_task_failed`` cron event.
+* The ``scheduled_task_completed`` UI event is dropped — the cron
+  scheduler does not know when the agent finishes; the live turn
+  display takes over from there.
+* ``scheduled_task_triggered`` still fires when a job is queued so the
+  user sees "your reminder was delivered" in real time.
+* ``scheduled_task_failed`` still fires, but now signals "couldn't
+  queue the message" — the rare case where the mailbox write itself
+  fails.
+"""
 
 from __future__ import annotations
 
@@ -7,8 +41,8 @@ import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
-from feather.core.agent_factory import AgentFactory
 from feather.models import CronJobRecord, RuntimeEvent, SchedulerConfig
+from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.cron_store import CronJobStore
 
 logger = logging.getLogger(__name__)
@@ -17,19 +51,19 @@ SessionEventHandlerResolver = Callable[[str], Callable[[RuntimeEvent], None] | N
 
 
 class CronScheduler:
-    """Poll persisted cron jobs and dispatch due work through the normal agent loop."""
+    """Poll persisted cron jobs and deliver due prompts to the target agent's mailbox."""
 
     def __init__(
         self,
         *,
         config: SchedulerConfig,
         cron_store: CronJobStore,
-        agent_factory: AgentFactory,
+        message_store: AgentMessageStore,
         event_handler_resolver: SessionEventHandlerResolver | None = None,
     ) -> None:
         self._config = config
         self._cron_store = cron_store
-        self._agent_factory = agent_factory
+        self._message_store = message_store
         self._event_handler_resolver = event_handler_resolver
         self._task: asyncio.Task[None] | None = None
         self._tick_lock = asyncio.Lock()
@@ -103,16 +137,25 @@ class CronScheduler:
             event_handler(
                 RuntimeEvent(
                     kind="scheduled_task_triggered",
-                    text=f"Cron `{job.name}` fired at {fired_at.isoformat()}",
+                    text=(
+                        f"Cron `{job.name}` queued for the {job.agent_key} "
+                        f"agent at {fired_at.isoformat()}"
+                    ),
                 )
             )
 
-        agent = self._agent_factory.build(job.agent_key)
+        body = _render_scheduled_message(job, fired_at=fired_at)
         try:
-            await agent.run(
-                job.session_id,
-                _render_scheduled_message(job, fired_at=fired_at),
-                event_handler,
+            await self._message_store.send(
+                from_session_id=job.session_id,
+                # Namespaced "from" so a future user-defined agent named
+                # "system" or "cron" can't shadow these scheduler-posted
+                # messages on the lead's inbox.
+                from_agent_name="__system_cron",
+                to_session_id=job.session_id,
+                to_agent_name=job.agent_key,
+                body=body,
+                expects_response=False,
             )
         except Exception as exc:  # noqa: BLE001
             retry_at = fired_at + timedelta(seconds=self._config.failure_retry_seconds)
@@ -121,13 +164,18 @@ class CronScheduler:
                 error=str(exc),
                 retry_at=retry_at,
             )
-            logger.exception("cron job dispatch failed job_id=%s session_id=%s", job.id, job.session_id)
+            logger.exception(
+                "cron job mailbox send failed job_id=%s session_id=%s",
+                job.id,
+                job.session_id,
+            )
             if event_handler is not None:
                 event_handler(
                     RuntimeEvent(
                         kind="scheduled_task_failed",
                         text=(
-                            f"Cron `{job.name}` failed and will retry at {retry_at.isoformat()}: {exc}"
+                            f"Cron `{job.name}` failed to queue "
+                            f"and will retry at {retry_at.isoformat()}: {exc}"
                         ),
                     )
                 )
@@ -135,20 +183,14 @@ class CronScheduler:
 
         updated = await self._cron_store.mark_job_succeeded(job.id, ran_at=fired_at)
         logger.info(
-            "cron job dispatched job_id=%s session_id=%s next_run_at=%s status=%s",
+            "cron job dispatched (mailbox) job_id=%s session_id=%s "
+            "agent=%s next_run_at=%s status=%s",
             updated.id,
             updated.session_id,
+            job.agent_key,
             updated.next_run_at,
             updated.status.value,
         )
-        if event_handler is not None:
-            next_run_text = updated.next_run_at or "none"
-            event_handler(
-                RuntimeEvent(
-                    kind="scheduled_task_completed",
-                    text=f"Cron `{updated.name}` completed. Next run: {next_run_text}",
-                )
-            )
 
     def _resolve_event_handler(self, session_id: str) -> Callable[[RuntimeEvent], None] | None:
         if self._event_handler_resolver is None:

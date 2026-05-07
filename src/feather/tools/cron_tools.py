@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from feather.core.constants import LEAD_AGENT_NAME
 from feather.models import CronJobStatus, CronScheduleType, ToolExecutionContext, ToolExecutionResult
 from feather.storage.cron_store import CronJobStore
 from feather.tools.base import BaseTool
@@ -58,7 +59,11 @@ class CreateCronTool(BaseTool):
     async def execute(self, arguments: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
         job = await self._cron_store.create_job(
             session_id=context.session_id,
-            agent_key="lead",
+            # ``agent_key`` flows into ``to_agent_name`` on the mailbox
+            # row the scheduler writes when the job fires. Must match
+            # the lead's canonical agent name (case-sensitive SQL filter)
+            # or the message strands forever.
+            agent_key=LEAD_AGENT_NAME,
             name=arguments["name"],
             schedule_type=CronScheduleType(arguments["schedule_type"]),
             schedule_value=arguments["schedule_value"],

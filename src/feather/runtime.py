@@ -274,7 +274,12 @@ class FeatherRuntime:
             cron_scheduler=CronScheduler(
                 config=app_config.scheduler,
                 cron_store=cron_store,
-                agent_factory=agent_factory,
+                # Mailbox-routed: scheduler delivers prompts via
+                # agent_messages so the lead's existing inbox path
+                # (resume_on_inbox) processes them, instead of the
+                # scheduler building its own in-process BaseAgent.
+                # Works in both default and self-repair modes.
+                message_store=agent_message_store,
             ),
             memory_stack=memory_stack,
             input_queue=input_queue,
@@ -308,6 +313,17 @@ class FeatherRuntime:
         return self._agent_message_store
 
     @property
+    def session_store(self) -> SessionStore:
+        """Return the shared session store.
+
+        Used by the supervisor-side ``RestartWatcher`` to poll the
+        ``restart_requested_at`` flag set by the worker's
+        ``request_restart`` tool.
+        """
+
+        return self._session_store
+
+    @property
     def subagent_registry(self) -> SubagentRegistry:
         """Return the live sub-agent subprocess registry."""
 
@@ -331,12 +347,40 @@ class FeatherRuntime:
 
         return self._messaging_service
 
-    async def start_background_services(self) -> None:
-        """Start shared background services such as the cron scheduler."""
+    async def start_background_services(
+        self, *, lead_in_subprocess: bool = False
+    ) -> None:
+        """Start shared background services such as the cron scheduler.
+
+        Args:
+            lead_in_subprocess: When True, the lead agent is running in a
+                separate worker process (see
+                :class:`feather.core.lead_supervisor.LeadSupervisor`).
+                The **messaging router** is NOT started in that mode —
+                its inbound queue is the in-process
+                :class:`UserInputQueue` which the worker can't see. The
+                **cron scheduler** runs in both modes: it now routes
+                through the ``agent_messages`` mailbox (see
+                :mod:`feather.core.cron_scheduler`), which is
+                process-shared via SQLite, so the worker's existing
+                ``resume_on_inbox`` path processes the cron-triggered
+                turns naturally with no race on session state. The
+                sub-agent reaper always runs because sub-agents are
+                spawned by tools, not by background services.
+        """
 
         await self._cron_scheduler.start()
+        if lead_in_subprocess:
+            logger.info(
+                "runtime.start_background_services skipping messaging "
+                "(lead_in_subprocess=True): the messaging router enqueues "
+                "into the in-process UserInputQueue which the worker "
+                "can't see. Set self_repair.enabled=false to use Telegram "
+                "/ LINE / WhatsApp."
+            )
+        else:
+            await self._messaging_service.start()
         await self._subagent_reaper.start()
-        await self._messaging_service.start()
 
     async def run_pending_cron_jobs(self) -> int:
         """Run one scheduler tick immediately."""

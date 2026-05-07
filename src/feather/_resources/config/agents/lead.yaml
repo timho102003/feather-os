@@ -42,3 +42,5 @@ registered_tools:
   - task_output
   - task_stop
   - task_resume
+  - request_restart
+  - submit_github_report

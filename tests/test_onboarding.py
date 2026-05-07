@@ -238,6 +238,7 @@ async def test_wizard_full_happy_path(tmp_path: Path) -> None:
             "n",       # skip Claude
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc"])
@@ -280,6 +281,7 @@ async def test_wizard_re_prompts_on_empty_name(tmp_path: Path) -> None:
             "n",       # skip Claude
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc"])
@@ -310,6 +312,7 @@ async def test_wizard_memory_branch_collects_keys(tmp_path: Path) -> None:
             "y",       # enable memory
             "http://localhost:6333",   # Qdrant menu input (falls through to default)
             "n",       # skip web search
+            "n",       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "", "gem-key"])
@@ -343,6 +346,7 @@ async def test_wizard_openrouter_only_branch_collects_key(tmp_path: Path) -> Non
             "n",       # skip Claude
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["or-key"])
@@ -379,6 +383,7 @@ async def test_wizard_claude_only_branch_collects_key(tmp_path: Path) -> None:
             "y",       # wire Claude
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair
         ]
     )
     secret_iter = iter(["ant-key"])
@@ -415,6 +420,7 @@ async def test_wizard_multi_provider_asks_for_active_default(tmp_path: Path) -> 
             "claude",  # picked active provider
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair
         ]
     )
     secret_iter = iter(["sk-key", "ant-key"])
@@ -490,6 +496,7 @@ async def test_wizard_multi_provider_picker_rejects_unknown_then_accepts(
             "openrouter",
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair
         ]
     )
     secret_iter = iter(["sk-key", "or-key"])
@@ -600,6 +607,7 @@ async def test_wizard_echoes_masked_confirmation_after_each_secret(tmp_path: Pat
                                      # prompts for QDRANT_API_KEY
             "https://qdrant.example",
             "y",
+            "n",  # self-repair safety net (off)
         ]
     )
     secret_iter = iter([
@@ -641,7 +649,7 @@ async def test_wizard_uses_secret_input_for_api_keys(tmp_path: Path) -> None:
     secret_calls: list[str] = []
     public_calls: list[str] = []
 
-    public_iter = iter(["Tim", "", "", "", "", "y", "n", "n", "n", "n"])
+    public_iter = iter(["Tim", "", "", "", "", "y", "n", "n", "n", "n", "n"])
     secret_iter = iter(["sk-secret"])
 
     def fake_input(prompt: str) -> str:
@@ -694,6 +702,7 @@ async def test_wizard_force_re_run_updates_existing_profile_fields(tmp_path: Pat
             "n",       # skip Claude
             "n",       # memory
             "n",       # web search
+            "n",       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-new"])
@@ -916,6 +925,7 @@ async def test_wizard_local_docker_path_uses_injected_launcher(tmp_path: Path) -
             "y",       # enable memory
             "",                     # default deployment choice (1 = local-docker)
             "n",
+            "n",  # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "gem-key"])
@@ -962,6 +972,7 @@ async def test_wizard_local_existing_path_skips_launcher(tmp_path: Path) -> None
             "y",       # enable memory
             "2",
             "n",
+            "n",  # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "gem-key"])
@@ -1008,6 +1019,7 @@ async def test_wizard_cloud_path_collects_url_and_key(tmp_path: Path, monkeypatc
             "3",
             "https://qdrant.example",
             "n",
+            "n",  # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "qdrant-cloud-key", "gem-key"])
@@ -1053,6 +1065,7 @@ async def test_wizard_short_circuits_when_qdrant_url_in_env(
             "y",            # enable memory
             # No deployment-choice prompt is consumed.
             "n",            # no web search
+            "n",            # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "gem-key"])
@@ -1107,6 +1120,7 @@ async def test_wizard_cloud_path_rejects_url_without_scheme(
             "qdrant.example:6333",     # invalid — no scheme; wizard re-prompts
             "https://qdrant.example",  # valid second attempt
             "n",                       # no web search
+            "n",                       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "", "gem-key"])
@@ -1157,6 +1171,7 @@ async def test_wizard_cloud_path_unreachable_url_offers_retry_or_proceed(
             "https://qdrant.example",  # unreachable in this test
             "y",                       # "use this URL anyway?"
             "n",                       # no web search
+            "n",                       # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "", "gem-key"])
@@ -1202,6 +1217,7 @@ async def test_wizard_local_docker_falls_back_when_docker_unavailable(
             "y",
             "1",
             "n",
+            "n",  # self-repair safety net (off)
         ]
     )
     secret_iter = iter(["sk-abc", "gem-key"])

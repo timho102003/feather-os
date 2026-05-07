@@ -19,6 +19,9 @@ from textual.geometry import Region
 from textual.widgets import RichLog, Static, TextArea
 
 from feather.attachments import parse_attachment_drops, render_attachment_message
+from feather.core.lead_supervisor import LeadSupervisor
+from feather.core.log_triage_bot import LogTriageBot
+from feather.core.restart_watcher import RestartWatcher
 from feather.models import AgentOutcome, RuntimeEvent, TaskRecord, TaskStatus
 from feather.runtime import FeatherRuntime
 from feather.slash_commands import (
@@ -47,6 +50,72 @@ logger = logging.getLogger(__name__)
 
 
 _SlashHandler = Callable[[str], None]
+
+
+_LEAD_WORKER_ENV = "FEATHER_USE_LEAD_WORKER"
+
+# Hang-watcher cadence. The supervisor's default staleness threshold is
+# 5 s and the worker's heartbeat cadence is 1 s, so polling every 2 s
+# means a real hang surfaces in at most one threshold window plus one
+# poll interval (~7 s) — fast enough to be useful, slow enough that
+# noise from a single missed beat doesn't fire.
+_HANG_WATCHER_POLL_SECONDS = 2.0
+
+
+def decide_hang_alert(prev_stale: bool, current_stale: bool) -> str | None:
+    """Pure state-machine helper for the hang watcher.
+
+    Returns ``"alert"`` on a not-stale → stale transition,
+    ``"recover"`` on the inverse, and ``None`` for no-change ticks.
+    Extracted so the TUI's polling loop is a thin wrapper that's easy
+    to reason about and the actual state logic is unit-testable.
+    """
+
+    if current_stale and not prev_stale:
+        return "alert"
+    if prev_stale and not current_stale:
+        return "recover"
+    return None
+
+
+def _env_says_use_lead_worker() -> bool | None:
+    """Return the env-var override or ``None`` if not set.
+
+    Recognised truthy values: ``1`` / ``true`` / ``yes`` / ``on``.
+    Recognised falsy override: ``0`` / ``false`` / ``no`` / ``off``.
+    Anything else (including unset) returns ``None`` so the YAML wins.
+    """
+
+    raw = os.environ.get(_LEAD_WORKER_ENV)
+    if raw is None:
+        return None
+    cleaned = raw.strip().lower()
+    if cleaned in {"1", "true", "yes", "on"}:
+        return True
+    if cleaned in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _should_use_lead_worker(yaml_enabled: bool = False) -> bool:
+    """Decide whether to run the lead in a separate worker subprocess.
+
+    Resolution order:
+
+    1. ``FEATHER_USE_LEAD_WORKER`` env var — power-user override that
+       wins over the persistent setting (handy for one-off testing
+       without flipping the YAML).
+    2. ``self_repair.enabled`` from ``app.yaml`` — the persistent
+       answer the onboarding wizard writes.
+
+    Default is False so users who never opted in get the long-standing
+    in-process behavior, byte-identical to before this feature shipped.
+    """
+
+    env_choice = _env_says_use_lead_worker()
+    if env_choice is not None:
+        return env_choice
+    return bool(yaml_enabled)
 
 
 @dataclass(slots=True, frozen=True)
@@ -536,6 +605,10 @@ class FeatherTextualApp(App[None]):
         self._requested_session_id = session_id
         self._runtime: FeatherRuntime | None = None
         self._agent: Any = None
+        self._supervisor: LeadSupervisor | None = None
+        self._log_triage_bot: LogTriageBot | None = None
+        self._restart_watcher: RestartWatcher | None = None
+        self._hang_watcher_task: asyncio.Task[None] | None = None
         self._active_session_id: str | None = None
         self._assistant_parts: list[str] = []
         self._latest_usage_ratio: float | None = None
@@ -603,7 +676,14 @@ class FeatherTextualApp(App[None]):
             self._active_session_id,
             self._handle_runtime_event,
         )
-        await self._runtime.start_background_services()
+        worker_mode = _should_use_lead_worker(
+            yaml_enabled=self._runtime.config.self_repair.enabled,
+        )
+        if worker_mode:
+            await self._start_lead_worker_supervisor()
+        await self._runtime.start_background_services(
+            lead_in_subprocess=worker_mode
+        )
         await self._refresh_monitor()
         self._update_header()
         self._update_work()
@@ -622,30 +702,195 @@ class FeatherTextualApp(App[None]):
         """Stop runtime services and background tasks."""
 
         self._stop_event.set()
-        for task in (
+        # Cancel + await every background task in one pass. ``_hang_watcher_task``
+        # is included here (rather than in its own block) because it shares the
+        # same shape as the four core tasks — a raw asyncio.Task with no
+        # ``stop()`` method.
+        background_tasks = (
             self._run_task,
             self._driver_task,
             self._watcher_task,
             self._monitor_task,
-        ):
+            self._hang_watcher_task,
+        )
+        for task in background_tasks:
             if task is not None and not task.done():
                 task.cancel()
-        for task in (
-            self._run_task,
-            self._driver_task,
-            self._watcher_task,
-            self._monitor_task,
-        ):
+        for task in background_tasks:
             if task is None:
                 continue
             try:
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        self._hang_watcher_task = None
+        # Aux subsystems with a stop/shutdown coroutine. Each is independently
+        # guarded so one failure logs and yields rather than aborting the rest
+        # of the teardown and leaking the remaining subsystems.
+        if self._restart_watcher is not None:
+            try:
+                await self._restart_watcher.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("textual_tui.restart_watcher_stop_failed")
+            self._restart_watcher = None
+        if self._log_triage_bot is not None:
+            try:
+                await self._log_triage_bot.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("textual_tui.log_triage_bot_stop_failed")
+            self._log_triage_bot = None
+        if self._supervisor is not None:
+            try:
+                await self._supervisor.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.exception("textual_tui.lead_supervisor_shutdown_failed")
+            self._supervisor = None
         if self._runtime is not None:
             if self._active_session_id is not None:
                 self._runtime.set_session_event_handler(self._active_session_id, None)
             await self._runtime.close()
+
+    async def _hang_watcher(self) -> None:
+        """Background poll: surface a banner when the worker heartbeat goes stale.
+
+        Two-state machine — only fires on transitions, so a sustained
+        hang shows one banner, not one per tick. Recovery emits a follow-up
+        message so the user knows the worker is healthy again without
+        having to re-test it themselves.
+        """
+
+        if self._supervisor is None:
+            return
+        prev_stale = False
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),
+                    timeout=_HANG_WATCHER_POLL_SECONDS,
+                )
+                return
+            except asyncio.TimeoutError:
+                pass
+            try:
+                current_stale = await self._supervisor.is_stale()
+            except Exception:  # noqa: BLE001
+                logger.exception("textual_tui.hang_watcher_check_failed")
+                continue
+            transition = decide_hang_alert(prev_stale, current_stale)
+            prev_stale = current_stale
+            if transition == "alert":
+                self._write_marker(
+                    "Lead unresponsive",
+                    "the lead worker has stopped sending heartbeats. "
+                    "Try /restart-lead to recover. Conversation history "
+                    "is preserved across restarts.",
+                    style="red",
+                )
+            elif transition == "recover":
+                self._write_marker(
+                    "Lead recovered",
+                    "heartbeats resumed; the worker is responsive again.",
+                    style="green",
+                )
+
+    async def _start_lead_worker_supervisor(self) -> None:
+        """Spawn the lead-worker subprocess and wire it as the lead handle.
+
+        Opt-in via ``FEATHER_USE_LEAD_WORKER=1``. The in-process ``self._agent``
+        is retained so display-only properties (``config.name``) and idempotent
+        reads (``has_pending_inbox`` over the shared SQLite mailbox) keep
+        working — but every ``run`` / ``resume_on_inbox`` / mid-turn input call
+        is routed to the supervisor below.
+
+        Known limitations in this slice (will be addressed in subsequent
+        steps of the lead-worker roadmap):
+
+        * Messaging integrations (Telegram, LINE, WhatsApp) enqueue into
+          the in-process ``runtime.input_queue``; that queue lives in the
+          TUI process, so its contents are not visible to the worker. Use
+          worker mode only from the TUI for now.
+        * The cron scheduler still drives the in-process agent reference,
+          so scheduled prompts bypass the worker. Disable scheduled jobs
+          when running in worker mode if you need them processed by the
+          worker's run cycle.
+        """
+
+        assert self._runtime is not None
+        assert self._active_session_id is not None
+        db_path = Path(self._runtime.config.database.path)
+        if not db_path.is_absolute():
+            db_path = (self._root / db_path).resolve()
+        self._supervisor = LeadSupervisor(
+            db_path=db_path,
+            project_root=self._root,
+            agent_name="lead",
+        )
+        await self._supervisor.start(self._active_session_id)
+        # Crash-recovery: a previous TUI session may have been SIGKILLed
+        # mid-restart, leaving `restart_requested_at` set on disk. If we
+        # let the watcher see that flag on its first tick it would fire
+        # an immediate, surprising restart against a worker that's only
+        # been alive for ~1.5 s. Clear any pre-existing flag now so only
+        # NEW request_restart calls fire restarts.
+        await self._runtime.session_store.clear_restart_request(
+            self._active_session_id
+        )
+        # Surface ERROR-level log entries from the worker (and from the
+        # supervisor process itself) into the lead's mailbox. The lead's
+        # existing inbox watcher picks them up via resume_on_inbox.
+        log_path = Path(self._runtime.config.logging.path)
+        if not log_path.is_absolute():
+            log_path = (self._root / log_path).resolve()
+        self._log_triage_bot = LogTriageBot(
+            log_path=log_path,
+            message_store=self._runtime.agent_message_store,
+            lead_session_id=self._active_session_id,
+        )
+        await self._log_triage_bot.start()
+        # Self-repair: poll the session row for request_restart flags and
+        # respawn the worker on the same session id when the lead asks.
+        self._restart_watcher = RestartWatcher(
+            session_store=self._runtime.session_store,
+            message_store=self._runtime.agent_message_store,
+            lead_session_id=self._active_session_id,
+            restart_fn=self._supervisor.restart,
+            cancel_in_flight_run=self._cancel_in_flight_run,
+        )
+        await self._restart_watcher.start()
+        # Watch the heartbeat for hangs and surface a banner to the user.
+        self._hang_watcher_task = asyncio.create_task(
+            self._hang_watcher(), name="textual_tui.hang_watcher"
+        )
+        logger.info(
+            "textual_tui.lead_worker_started session_id=%s",
+            self._active_session_id,
+        )
+
+    @property
+    def _lead_handle(self) -> Any:
+        """Return whichever of supervisor / in-process agent owns ``run``."""
+
+        return self._supervisor if self._supervisor is not None else self._agent
+
+    async def _cancel_in_flight_run(self) -> bool:
+        """Cancel the agent driver's current run task, if any.
+
+        Used by the restart watcher so the LeadSupervisor.shutdown
+        invariant ("no concurrent run/shutdown") holds when the
+        supervisor restarts the worker. Returns True iff a task was
+        actually cancelled.
+        """
+
+        run_task = self._run_task
+        if run_task is None or run_task.done():
+            return False
+        run_task.cancel()
+        try:
+            await run_task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            pass
+        self._run_task = None
+        return True
 
     async def action_submit(self) -> None:
         """Submit the focused composer.
@@ -852,6 +1097,25 @@ class FeatherTextualApp(App[None]):
     async def _enqueue_user_text(self, text: str) -> None:
         assert self._runtime is not None
         assert self._active_session_id is not None
+        # In worker mode the lead's own input queue lives inside the
+        # worker process. Forwarding via the supervisor is the only path
+        # that actually reaches the agent loop; the in-process queue
+        # would never drain (no in-process agent runs) and would grow
+        # unbounded — also producing a misleading queue-depth display.
+        if self._supervisor is not None:
+            try:
+                await self._supervisor.enqueue_user_input(
+                    self._active_session_id, text
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "textual_tui.lead_worker_enqueue_failed session_id=%s",
+                    self._active_session_id,
+                )
+                return
+            await self._refresh_monitor()
+            self._update_work()
+            return
         ok = await self._runtime.input_queue.enqueue(self._active_session_id, text)
         if ok:
             await self._refresh_monitor()
@@ -889,6 +1153,7 @@ class FeatherTextualApp(App[None]):
             "telegram": self._cmd_telegram,
             "line": self._cmd_line,
             "whatsapp": self._cmd_whatsapp,
+            "restart-lead": self._cmd_restart_lead,
         }
         handlers: dict[str, _SlashHandler] = {}
         unbound: list[str] = []
@@ -1252,6 +1517,68 @@ class FeatherTextualApp(App[None]):
             "\n".join(say_buffer + [f"state: {state}"]),
             label_style="bold cyan",
             body_style="white",
+        )
+
+    def _cmd_restart_lead(self, args: str) -> None:
+        """Respawn the lead worker subprocess (worker mode only).
+
+        Manual recovery hook for the hang banner and for "I just patched
+        the lead's code, please reload it." The supervisor's restart()
+        does the SIGTERM→SIGKILL dance and respawns on the same
+        ``--session-id``, so conversation history is preserved.
+        """
+
+        del args
+        if self._supervisor is None:
+            self._write_marker(
+                "/restart-lead",
+                (
+                    "lead worker mode is off — the lead is running in this "
+                    "process, so a worker restart is meaningless. "
+                    "Set FEATHER_USE_LEAD_WORKER=1 and relaunch feather."
+                ),
+                style="yellow",
+            )
+            return
+        self._spawn_async_command(self._restart_lead_async())
+
+    async def _restart_lead_async(self) -> None:
+        assert self._supervisor is not None
+        # Cancel any in-flight turn so the supervisor.restart() invariant
+        # ("no run() racing the shutdown") holds. The agent driver records
+        # "Interrupted" and loops back to await new input.
+        await self._cancel_in_flight_run()
+        self._write_marker(
+            "/restart-lead", "restarting lead worker…", style="cyan"
+        )
+        try:
+            await self._supervisor.restart()
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("textual_tui.restart_lead_failed")
+            # Clear the busy/awaiting state on the failure path too —
+            # otherwise a slash-driven restart that hits a spawn error
+            # leaves the TUI stuck "running" with no recovery path
+            # short of quitting.
+            self._busy_event.clear()
+            self._awaiting_event.clear()
+            self._status = "idle"
+            self._update_header()
+            self._write_marker(
+                "/restart-lead",
+                f"restart failed: {type(exc).__name__}: {exc}. "
+                "Type /exit and relaunch feather if the worker stays down.",
+                style="red",
+            )
+            return
+        self._busy_event.clear()
+        self._awaiting_event.clear()
+        self._status = "idle"
+        self._update_header()
+        self._write_marker(
+            "/restart-lead",
+            "lead worker restarted. Conversation history is preserved; "
+            "type your next message to continue.",
+            style="green",
         )
 
     def _cmd_clear(self, args: str) -> None:
@@ -1723,14 +2050,14 @@ class FeatherTextualApp(App[None]):
             try:
                 if user_message == _INBOX_WAKE:
                     self._run_task = asyncio.create_task(
-                        self._agent.resume_on_inbox(
+                        self._lead_handle.resume_on_inbox(
                             self._active_session_id,
                             self._handle_runtime_event,
                         )
                     )
                 else:
                     self._run_task = asyncio.create_task(
-                        self._agent.run(
+                        self._lead_handle.run(
                             self._active_session_id,
                             user_message,
                             self._handle_runtime_event,
@@ -1776,7 +2103,7 @@ class FeatherTextualApp(App[None]):
                     stop_task.cancel()
                     answer = answer_task.result()
                     self._run_task = asyncio.create_task(
-                        self._agent.run(
+                        self._lead_handle.run(
                             self._active_session_id,
                             answer,
                             self._handle_runtime_event,

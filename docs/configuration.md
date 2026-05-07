@@ -363,6 +363,68 @@ Full path layout is documented in
 | `PARALLEL_API_KEY` | Parallel AI key for `web_search` / `web_fetch`. |
 | `FEATHER_HOME` | Override the global state root. |
 | `FEATHER_PROJECT_ROOT` | Skip the walk-up search and pin a project. |
+| `FEATHER_USE_LEAD_WORKER` | Override the persistent self-repair setting (`1`/`true`/`yes`/`on` to enable, `0`/`false`/`no`/`off` to disable). Wins over `self_repair.enabled` in `app.yaml`. See [Self-repair safety net (opt-in)](#self-repair-safety-net-opt-in) below. |
 
 Feather loads `~/.feather/.env` first, then `./.env` from the project
 root with override-on. So a project `.env` wins over the global one.
+
+## Self-repair safety net (opt-in)
+
+Default: **off**. The agent runs in the same Python process as the
+Textual TUI — the long-standing behavior, byte-identical wire calls,
+no configuration change needed for typical use.
+
+When ON, Feather runs the agent in a separate background process so
+the TUI can:
+
+* detect when the agent stops responding and surface a banner with a
+  recovery action (`/restart-lead`),
+* let the agent fix bugs in its own code and reload itself (via the
+  `request_restart` tool) without losing the conversation.
+
+### How to enable
+
+Three layers, resolved in this order (first match wins):
+
+1. **Environment variable** (one-off, power-user override)
+
+   ```bash
+   FEATHER_USE_LEAD_WORKER=1 feather   # also accepts: true, yes, on
+   FEATHER_USE_LEAD_WORKER=0 feather   # explicit OFF for one launch
+   ```
+
+2. **`app.yaml`** (persistent answer the onboarding wizard writes):
+
+   ```yaml
+   self_repair:
+     enabled: true
+   ```
+
+3. **Default**: `false`.
+
+The onboarding wizard asks once and writes the YAML answer. Re-run
+`feather onboard --force` to change it interactively, or edit
+`~/.feather/config/app.yaml` directly.
+
+### Trade-off
+
+When the safety net is on, the runtime automatically pauses one
+subsystem that would otherwise race the agent on shared session state:
+
+* **Messaging integrations** (Telegram, LINE, WhatsApp) are not
+  started — their inbound queue is the TUI-process input queue, which
+  the worker can't see.
+
+The **cron scheduler runs in both modes**: cron jobs now route through
+the `agent_messages` mailbox (which is process-shared via SQLite), so
+the worker's existing `resume_on_inbox` path picks them up naturally
+with no race on session state.
+
+If you need messaging webhooks active for a session, leave the safety
+net off (`self_repair.enabled: false` in YAML, or
+`FEATHER_USE_LEAD_WORKER=0` for a one-off override).
+
+### Defaults
+
+Heartbeat cadence (1 s) and staleness threshold (5 s) are baked into
+`feather.core.lead_supervisor` and not user-configurable yet.
