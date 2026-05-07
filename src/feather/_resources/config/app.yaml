@@ -34,7 +34,7 @@ scheduler:
 self_repair:
   enabled: false
 
-active_provider: openrouter          # openai or openrouter. flip to "openrouter" to route every agent via OpenRouter
+active_provider: openrouter          # openai, openrouter, or claude. flip to route every agent through that provider
 
 openai:
   api_key_env: OPENAI_API_KEY
@@ -76,6 +76,32 @@ openrouter:
   fallback_models:
     - qwen/qwen3.5-plus-02-15
     - qwen/qwen3.5-397b-a17b
+
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  base_url: https://api.anthropic.com
+  anthropic_version: "2023-06-01"
+  # anthropic_beta: list of beta feature flags joined into the
+  # `anthropic-beta` header. Common values:
+  #   - extended-cache-ttl-2025-04-11   # 1h prompt-cache TTL
+  #   - interleaved-thinking-2025-05-14 # budget_tokens > max_tokens
+  anthropic_beta: []
+  model: claude-opus-4-7
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  # Set thinking.type to "adaptive" for Opus 4.7 / Mythos (the model picks
+  # its own budget). "enabled" + budget_tokens works on Sonnet/Haiku 4.5.
+  # Leave commented out to send no `thinking` field.
+  # thinking:
+  #   type: enabled
+  #   budget_tokens: 8000
+  cache_strategy: anthropic_breakpoint   # ephemeral cache_control on system + last user/tool turn
+  stream_idle_timeout_seconds: 90
+  request_timeout_seconds: 120
+  max_attempts: 3
+  supports_multimodal: true
+  max_stream_wall_seconds: 600
 
 parallel:
   api_key_env: PARALLEL_API_KEY

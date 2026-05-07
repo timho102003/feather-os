@@ -33,7 +33,7 @@ def paths(tmp_path):
 async def test_wizard_writes_env_to_global_path(tmp_path, paths):
     wizard = OnboardingWizard(
         root=tmp_path,
-        input_fn=_Recorder(["Tester", "", "", "", "", "1", "n", "n"]),
+        input_fn=_Recorder(["Tester", "", "", "", "", "y", "n", "n", "n", "n"]),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),
         qdrant_launcher=lambda say: "http://localhost:6333",
@@ -51,7 +51,7 @@ async def test_wizard_writes_env_to_global_path(tmp_path, paths):
 async def test_wizard_writes_user_md_to_global_path(tmp_path, paths):
     wizard = OnboardingWizard(
         root=tmp_path,
-        input_fn=_Recorder(["Tester", "Pref", "engineer", "Python", "Loves agents", "1", "n", "n"]),
+        input_fn=_Recorder(["Tester", "Pref", "engineer", "Python", "Loves agents", "y", "n", "n", "n", "n"]),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),
         qdrant_launcher=lambda say: "http://localhost:6333",
@@ -69,7 +69,7 @@ async def test_wizard_writes_user_md_to_global_path(tmp_path, paths):
 async def test_wizard_writes_onboarded_marker_to_global_state(tmp_path, paths):
     wizard = OnboardingWizard(
         root=tmp_path,
-        input_fn=_Recorder(["Tester", "", "", "", "", "1", "n", "n"]),
+        input_fn=_Recorder(["Tester", "", "", "", "", "y", "n", "n", "n", "n"]),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),
         qdrant_launcher=lambda say: "http://localhost:6333",
@@ -89,7 +89,7 @@ async def test_wizard_materializes_app_yaml_at_global_path(tmp_path, paths):
     assert not target.exists()
     wizard = OnboardingWizard(
         root=tmp_path,
-        input_fn=_Recorder(["Tester", "", "", "", "", "1", "n", "n"]),
+        input_fn=_Recorder(["Tester", "", "", "", "", "y", "n", "n", "n", "n"]),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),
         qdrant_launcher=lambda say: "http://localhost:6333",
@@ -108,8 +108,8 @@ async def test_wizard_legacy_paths_when_no_feather_paths(tmp_path):
     """Without feather_paths the wizard preserves the original behavior."""
     wizard = OnboardingWizard(
         root=tmp_path,
-        # Legacy flow: identity + provider + memory("n") + web("n") + self_repair("n").
-        input_fn=_Recorder(["Tester", "", "", "", "", "1", "n", "n", "n"]),
+        # Legacy flow: identity + 3 providers + memory("n") + web("n") + self_repair("n").
+        input_fn=_Recorder(["Tester", "", "", "", "", "y", "n", "n", "n", "n", "n"]),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),
         qdrant_launcher=lambda say: "http://localhost:6333",

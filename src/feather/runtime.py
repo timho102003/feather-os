@@ -31,6 +31,7 @@ from feather.messaging.webhook_server import WebhookServer
 from feather.models import EventHandler, TaskRunStatus, TaskStatus
 from feather.profile import UserProfileStore
 from feather.providers.base import BaseLLMProvider
+from feather.providers.claude_provider import ClaudeMessagesProvider
 from feather.providers.openai_provider import OpenAIResponsesProvider
 from feather.providers.openrouter_provider import OpenRouterChatProvider
 from feather.providers.parallel_client import ParallelClient
@@ -550,9 +551,9 @@ def _build_default_provider(app_config: Any) -> BaseLLMProvider:
     """Pick the provider implementation for the session-wide active provider.
 
     ``app_config.active_provider`` defaults to ``"openai"`` and preserves
-    existing sessions exactly. Setting it to ``"openrouter"`` flips every
-    agent to the OpenRouter Chat Completions path; missing
-    ``app_config.openrouter`` raises so operator misconfiguration fails
+    existing sessions exactly. Setting it to ``"openrouter"`` or
+    ``"claude"`` flips every agent to that provider's path; missing the
+    matching config block raises so operator misconfiguration fails
     loudly rather than silently falling back.
     """
 
@@ -563,10 +564,17 @@ def _build_default_provider(app_config: Any) -> BaseLLMProvider:
                 "active_provider=openrouter but no `openrouter:` block in app.yaml"
             )
         return OpenRouterChatProvider(app_config.openrouter)
+    if active == "claude":
+        if app_config.claude is None:
+            raise ValueError(
+                "active_provider=claude but no `claude:` block in app.yaml"
+            )
+        return ClaudeMessagesProvider(app_config.claude)
     if active == "openai":
         return OpenAIResponsesProvider(app_config.openai)
     raise ValueError(
-        f"unsupported active_provider={active!r} (expected 'openai' or 'openrouter')"
+        f"unsupported active_provider={active!r} "
+        "(expected 'openai', 'openrouter', or 'claude')"
     )
 
 

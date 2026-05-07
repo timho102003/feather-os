@@ -433,6 +433,113 @@ openrouter:
         await runtime.close()
 
 
+async def test_runtime_uses_claude_provider_when_active_provider_is_claude(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Setting active_provider=claude builds a ClaudeMessagesProvider."""
+
+    from feather.providers.claude_provider import ClaudeMessagesProvider
+
+    _write_app_config(tmp_path)
+    cfg_path = tmp_path / "config" / "app.yaml"
+    cfg_path.write_text(
+        cfg_path.read_text()
+        + """
+active_provider: claude
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  model: claude-opus-4-7
+  max_output_tokens: 16000
+  temperature: 1.0
+  parallel_tool_calls: true
+""",
+        encoding="utf-8",
+    )
+    _write_agent_config(tmp_path, "lead", name="Lead", role="lead", registered_tools=["grep"])
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    runtime = await FeatherRuntime.create(tmp_path)
+    try:
+        agent = runtime.build_agent("lead")
+        assert isinstance(agent._provider, ClaudeMessagesProvider)
+        assert agent._model_name == "claude-opus-4-7"
+    finally:
+        await runtime.close()
+
+
+async def test_runtime_active_provider_claude_without_block_raises(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """active_provider=claude without a ``claude:`` block must fail loudly."""
+
+    import pytest
+
+    _write_app_config(tmp_path)
+    cfg_path = tmp_path / "config" / "app.yaml"
+    cfg_path.write_text(
+        cfg_path.read_text() + "\nactive_provider: claude\n",
+        encoding="utf-8",
+    )
+    _write_agent_config(tmp_path, "lead", name="Lead", role="lead", registered_tools=["grep"])
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    with pytest.raises(ValueError, match="claude.*no .claude:. block"):
+        await FeatherRuntime.create(tmp_path)
+
+
+async def test_agent_factory_per_agent_claude_override(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An agent YAML ``provider: claude`` lifts that single agent off the default."""
+
+    from feather.providers.claude_provider import ClaudeMessagesProvider
+
+    _write_app_config(tmp_path)
+    cfg_path = tmp_path / "config" / "app.yaml"
+    cfg_path.write_text(
+        cfg_path.read_text()
+        + """
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  model: claude-opus-4-7
+  max_output_tokens: 16000
+  temperature: 1.0
+  parallel_tool_calls: true
+""",
+        encoding="utf-8",
+    )
+    _write_agent_config(tmp_path, "lead", name="Lead", role="lead", registered_tools=["grep"])
+    (tmp_path / "config" / "agents" / "anthropic.yaml").write_text(
+        """name: Anthropic
+role: research
+personality: Direct
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+registered_tools:
+  - grep
+provider: claude
+model: claude-haiku-4-5
+""",
+        encoding="utf-8",
+    )
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+
+    runtime = await FeatherRuntime.create(
+        tmp_path, provider_factory=lambda _cfg: FakeProvider()
+    )
+    try:
+        lead = runtime.build_agent("lead")
+        anthropic = runtime.build_agent("anthropic")
+        assert isinstance(lead._provider, FakeProvider)
+        assert isinstance(anthropic._provider, ClaudeMessagesProvider)
+        assert anthropic._model_name == "claude-haiku-4-5"
+    finally:
+        await runtime.close()
+
+
 async def test_agent_factory_per_agent_openrouter_override(
     tmp_path: Path, monkeypatch
 ) -> None:
