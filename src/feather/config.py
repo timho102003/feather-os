@@ -21,6 +21,8 @@ from feather.memory.config import (
 from feather.models import (
     AgentConfig,
     AppConfig,
+    ClaudeConfig,
+    ClaudeThinkingConfig,
     CompactionConfig,
     DatabaseConfig,
     LoggingConfig,
@@ -155,6 +157,54 @@ def load_app_config(
         if parallel_raw is not None
         else None
     )
+    claude_raw = raw.get("claude") or None
+    claude_cfg: ClaudeConfig | None = None
+    if claude_raw is not None:
+        thinking_raw = claude_raw.get("thinking") or None
+        thinking_cfg: ClaudeThinkingConfig | None = None
+        if thinking_raw is not None:
+            thinking_cfg = ClaudeThinkingConfig(
+                type=str(thinking_raw.get("type", "enabled")).strip().lower(),
+                budget_tokens=(
+                    int(thinking_raw["budget_tokens"])
+                    if thinking_raw.get("budget_tokens") is not None
+                    else None
+                ),
+            )
+        beta_raw = claude_raw.get("anthropic_beta") or ()
+        if isinstance(beta_raw, str):
+            beta_tuple = (beta_raw.strip(),) if beta_raw.strip() else ()
+        else:
+            beta_tuple = tuple(
+                str(b).strip() for b in beta_raw if str(b).strip()
+            )
+        claude_cfg = ClaudeConfig(
+            api_key_env=claude_raw.get("api_key_env", "ANTHROPIC_API_KEY"),
+            base_url=claude_raw.get("base_url", "https://api.anthropic.com"),
+            anthropic_version=str(
+                claude_raw.get("anthropic_version", "2023-06-01")
+            ),
+            anthropic_beta=beta_tuple,
+            model=claude_raw.get("model", "claude-opus-4-7"),
+            max_output_tokens=int(claude_raw.get("max_output_tokens", 32_000)),
+            temperature=float(claude_raw.get("temperature", 1.0)),
+            parallel_tool_calls=bool(claude_raw.get("parallel_tool_calls", True)),
+            thinking=thinking_cfg,
+            cache_strategy=str(
+                claude_raw.get("cache_strategy", "anthropic_breakpoint")
+            ),
+            stream_idle_timeout_seconds=float(
+                claude_raw.get("stream_idle_timeout_seconds", 90.0)
+            ),
+            request_timeout_seconds=float(
+                claude_raw.get("request_timeout_seconds", 120.0)
+            ),
+            max_attempts=int(claude_raw.get("max_attempts", 3)),
+            supports_multimodal=bool(claude_raw.get("supports_multimodal", True)),
+            max_stream_wall_seconds=float(
+                claude_raw.get("max_stream_wall_seconds", 600.0)
+            ),
+        )
     return AppConfig(
         database=DatabaseConfig(path=raw["database"]["path"]),
         storage=StorageConfig(temp_directory=raw["storage"]["temp_directory"]),
@@ -203,6 +253,7 @@ def load_app_config(
         mcp=_parse_mcp_config(raw.get("mcp") or {}),
         active_provider=active_provider,
         openrouter=openrouter_cfg,
+        claude=claude_cfg,
     )
 
 

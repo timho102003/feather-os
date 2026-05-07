@@ -233,9 +233,11 @@ async def test_wizard_full_happy_path(tmp_path: Path) -> None:
             "Engineer",
             "Python",
             "",
-            "1",
-            "n",
-            "n",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+            "n",       # memory
+            "n",       # web search
         ]
     )
     secret_iter = iter(["sk-abc"])
@@ -250,6 +252,7 @@ async def test_wizard_full_happy_path(tmp_path: Path) -> None:
 
     assert answers.name == "Tim"
     assert answers.openai_api_key == "sk-abc"
+    assert answers.provider == "openai"
     profile_text = (tmp_path / ".feather" / "user.md").read_text(encoding="utf-8")
     assert "name: Tim" in profile_text
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
@@ -272,7 +275,9 @@ async def test_wizard_re_prompts_on_empty_name(tmp_path: Path) -> None:
             "",        # role
             "",        # expertise
             "",        # about
-            "1",       # provider
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
             "n",       # memory
             "n",       # web search
         ]
@@ -299,10 +304,12 @@ async def test_wizard_memory_branch_collects_keys(tmp_path: Path) -> None:
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
-            "y",
-            "http://localhost:6333",
-            "n",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+            "y",       # enable memory
+            "http://localhost:6333",   # Qdrant menu input (falls through to default)
+            "n",       # skip web search
         ]
     )
     secret_iter = iter(["sk-abc", "", "gem-key"])
@@ -321,8 +328,8 @@ async def test_wizard_memory_branch_collects_keys(tmp_path: Path) -> None:
     assert "enabled: true" in yaml_text
 
 
-async def test_wizard_openrouter_branch_collects_key(tmp_path: Path) -> None:
-    """Selecting OpenRouter requires the OPEN_ROUTER_API_KEY and toggles the provider."""
+async def test_wizard_openrouter_only_branch_collects_key(tmp_path: Path) -> None:
+    """Wiring OpenRouter alone makes it the active provider and persists the key."""
 
     app_yaml = tmp_path / "config" / "app.yaml"
     app_yaml.parent.mkdir(parents=True)
@@ -331,12 +338,14 @@ async def test_wizard_openrouter_branch_collects_key(tmp_path: Path) -> None:
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "2",
-            "n",
-            "n",
+            "n",       # skip OpenAI
+            "y",       # wire OpenRouter
+            "n",       # skip Claude
+            "n",       # memory
+            "n",       # web search
         ]
     )
-    secret_iter = iter(["sk-abc", "or-key"])
+    secret_iter = iter(["or-key"])
     wizard = OnboardingWizard(
         root=tmp_path,
         input_fn=lambda _p: next(public_iter),
@@ -345,10 +354,153 @@ async def test_wizard_openrouter_branch_collects_key(tmp_path: Path) -> None:
     )
     answers = await wizard.run()
     assert answers.provider == "openrouter"
+    assert answers.openai_api_key == ""
     env_text = (tmp_path / ".env").read_text(encoding="utf-8")
     assert "OPEN_ROUTER_API_KEY=or-key" in env_text
+    assert "OPENAI_API_KEY" not in env_text
     yaml_text = app_yaml.read_text(encoding="utf-8")
     assert "active_provider: openrouter" in yaml_text
+
+
+async def test_wizard_claude_only_branch_collects_key(tmp_path: Path) -> None:
+    """Wiring Claude alone makes it the active provider and persists ANTHROPIC_API_KEY."""
+
+    app_yaml = tmp_path / "config" / "app.yaml"
+    app_yaml.parent.mkdir(parents=True)
+    app_yaml.write_text(
+        "active_provider: openai\nmemory:\n  enabled: false\n", encoding="utf-8"
+    )
+
+    public_iter = iter(
+        [
+            "Tim", "", "", "", "",
+            "n",       # skip OpenAI
+            "n",       # skip OpenRouter
+            "y",       # wire Claude
+            "n",       # memory
+            "n",       # web search
+        ]
+    )
+    secret_iter = iter(["ant-key"])
+    wizard = OnboardingWizard(
+        root=tmp_path,
+        input_fn=lambda _p: next(public_iter),
+        output_fn=lambda *_a, **_k: None,
+        secret_input_fn=lambda _p: next(secret_iter),
+    )
+    answers = await wizard.run()
+    assert answers.provider == "claude"
+    assert answers.claude_api_key == "ant-key"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "ANTHROPIC_API_KEY=ant-key" in env_text
+    yaml_text = app_yaml.read_text(encoding="utf-8")
+    assert "active_provider: claude" in yaml_text
+
+
+async def test_wizard_multi_provider_asks_for_active_default(tmp_path: Path) -> None:
+    """With two providers wired the wizard asks which to make active."""
+
+    app_yaml = tmp_path / "config" / "app.yaml"
+    app_yaml.parent.mkdir(parents=True)
+    app_yaml.write_text(
+        "active_provider: openai\nmemory:\n  enabled: false\n", encoding="utf-8"
+    )
+
+    public_iter = iter(
+        [
+            "Tim", "", "", "", "",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "y",       # wire Claude
+            "claude",  # picked active provider
+            "n",       # memory
+            "n",       # web search
+        ]
+    )
+    secret_iter = iter(["sk-key", "ant-key"])
+    wizard = OnboardingWizard(
+        root=tmp_path,
+        input_fn=lambda _p: next(public_iter),
+        output_fn=lambda *_a, **_k: None,
+        secret_input_fn=lambda _p: next(secret_iter),
+    )
+    answers = await wizard.run()
+    assert answers.provider == "claude"
+    assert answers.openai_api_key == "sk-key"
+    assert answers.claude_api_key == "ant-key"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "OPENAI_API_KEY=sk-key" in env_text
+    assert "ANTHROPIC_API_KEY=ant-key" in env_text
+
+
+async def test_wizard_aborts_when_no_provider_wired(tmp_path: Path) -> None:
+    """Declining all three providers raises NoProviderConfigured and skips persistence."""
+
+    import pytest
+    from feather.onboarding import NoProviderConfigured
+
+    app_yaml = tmp_path / "config" / "app.yaml"
+    app_yaml.parent.mkdir(parents=True)
+    app_yaml.write_text(
+        "active_provider: openai\nmemory:\n  enabled: false\n", encoding="utf-8"
+    )
+
+    public_iter = iter(
+        [
+            "Tim", "", "", "", "",
+            "n",       # skip OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+        ]
+    )
+    secret_iter = iter([])
+
+    wizard = OnboardingWizard(
+        root=tmp_path,
+        input_fn=lambda _p: next(public_iter),
+        output_fn=lambda *_a, **_k: None,
+        secret_input_fn=lambda _p: next(secret_iter),
+    )
+    with pytest.raises(NoProviderConfigured):
+        await wizard.run()
+    # Marker NOT written — re-running the wizard should re-prompt.
+    assert not (tmp_path / ".feather" / "onboarded.json").exists()
+    # `.env` file is also untouched (no leak of partial configuration).
+    assert not (tmp_path / ".env").exists()
+
+
+async def test_wizard_multi_provider_picker_rejects_unknown_then_accepts(
+    tmp_path: Path,
+) -> None:
+    """An unknown active-provider answer re-prompts until the user picks a wired one."""
+
+    app_yaml = tmp_path / "config" / "app.yaml"
+    app_yaml.parent.mkdir(parents=True)
+    app_yaml.write_text(
+        "active_provider: openai\nmemory:\n  enabled: false\n", encoding="utf-8"
+    )
+
+    public_iter = iter(
+        [
+            "Tim", "", "", "", "",
+            "y",       # wire OpenAI
+            "y",       # wire OpenRouter
+            "n",       # skip Claude
+            "claude",  # not wired — re-prompt
+            "openrouter",
+            "n",       # memory
+            "n",       # web search
+        ]
+    )
+    secret_iter = iter(["sk-key", "or-key"])
+    wizard = OnboardingWizard(
+        root=tmp_path,
+        input_fn=lambda _p: next(public_iter),
+        output_fn=lambda *_a, **_k: None,
+        secret_input_fn=lambda _p: next(secret_iter),
+    )
+    answers = await wizard.run()
+    assert answers.provider == "openrouter"
 
 
 async def test_maybe_run_onboarding_skips_when_marker_present(tmp_path: Path) -> None:
@@ -440,7 +592,9 @@ async def test_wizard_echoes_masked_confirmation_after_each_secret(tmp_path: Pat
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
+            "y",                      # wire OpenAI
+            "n",                      # skip OpenRouter
+            "n",                      # skip Claude
             "y",                      # enable memory
             "3",                      # cloud Qdrant — the only path that still
                                      # prompts for QDRANT_API_KEY
@@ -487,7 +641,7 @@ async def test_wizard_uses_secret_input_for_api_keys(tmp_path: Path) -> None:
     secret_calls: list[str] = []
     public_calls: list[str] = []
 
-    public_iter = iter(["Tim", "", "", "", "", "1", "n", "n"])
+    public_iter = iter(["Tim", "", "", "", "", "y", "n", "n", "n", "n"])
     secret_iter = iter(["sk-secret"])
 
     def fake_input(prompt: str) -> str:
@@ -535,9 +689,11 @@ async def test_wizard_force_re_run_updates_existing_profile_fields(tmp_path: Pat
             "NewRole",         # role (overwrite)
             "",                # expertise
             "",                # about
-            "1",
-            "n",
-            "n",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+            "n",       # memory
+            "n",       # web search
         ]
     )
     secret_iter = iter(["sk-new"])
@@ -754,8 +910,10 @@ async def test_wizard_local_docker_path_uses_injected_launcher(tmp_path: Path) -
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
-            "y",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+            "y",       # enable memory
             "",                     # default deployment choice (1 = local-docker)
             "n",
         ]
@@ -798,8 +956,10 @@ async def test_wizard_local_existing_path_skips_launcher(tmp_path: Path) -> None
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
-            "y",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+            "y",       # enable memory
             "2",
             "n",
         ]
@@ -841,8 +1001,10 @@ async def test_wizard_cloud_path_collects_url_and_key(tmp_path: Path, monkeypatc
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
-            "y",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
+            "y",       # enable memory
             "3",
             "https://qdrant.example",
             "n",
@@ -885,7 +1047,9 @@ async def test_wizard_short_circuits_when_qdrant_url_in_env(
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",            # provider OpenAI
+            "y",            # wire OpenAI
+            "n",            # skip OpenRouter
+            "n",            # skip Claude
             "y",            # enable memory
             # No deployment-choice prompt is consumed.
             "n",            # no web search
@@ -935,7 +1099,9 @@ async def test_wizard_cloud_path_rejects_url_without_scheme(
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",                       # provider OpenAI
+            "y",                       # wire OpenAI
+            "n",                       # skip OpenRouter
+            "n",                       # skip Claude
             "y",                       # enable memory
             "3",                       # cloud
             "qdrant.example:6333",     # invalid — no scheme; wizard re-prompts
@@ -983,7 +1149,9 @@ async def test_wizard_cloud_path_unreachable_url_offers_retry_or_proceed(
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
             "y",
             "3",
             "https://qdrant.example",  # unreachable in this test
@@ -1028,7 +1196,9 @@ async def test_wizard_local_docker_falls_back_when_docker_unavailable(
     public_iter = iter(
         [
             "Tim", "", "", "", "",
-            "1",
+            "y",       # wire OpenAI
+            "n",       # skip OpenRouter
+            "n",       # skip Claude
             "y",
             "1",
             "n",

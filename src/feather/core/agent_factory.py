@@ -31,6 +31,7 @@ from feather.mcp_client import (
 )
 from feather.models import AgentConfig, AppConfig, MCPServerConfig
 from feather.providers.base import BaseLLMProvider
+from feather.providers.claude_provider import ClaudeMessagesProvider
 from feather.providers.openai_provider import OpenAIResponsesProvider
 from feather.providers.openrouter_provider import OpenRouterChatProvider
 from feather.profile import UserProfileStore
@@ -280,10 +281,18 @@ class AgentFactory:
                     "but no `openrouter:` block in app.yaml"
                 )
             built = OpenRouterChatProvider(self._app_config.openrouter)
+        elif agent_provider == "claude":
+            if self._app_config.claude is None:
+                raise ValueError(
+                    f"Agent `{agent_config.name}` requested provider=claude "
+                    "but no `claude:` block in app.yaml"
+                )
+            built = ClaudeMessagesProvider(self._app_config.claude)
         else:
             raise ValueError(
                 f"Agent `{agent_config.name}` requested unknown provider "
-                f"`{agent_provider}` (expected 'openai' or 'openrouter')"
+                f"`{agent_provider}` "
+                "(expected 'openai', 'openrouter', or 'claude')"
             )
         self._providers_by_name[agent_provider] = built
         return built
@@ -301,6 +310,8 @@ class AgentFactory:
         provider_name = (agent_config.provider or self._default_provider_name()).strip().lower()
         if provider_name == "openrouter" and self._app_config.openrouter is not None:
             return self._app_config.openrouter.model
+        if provider_name == "claude" and self._app_config.claude is not None:
+            return self._app_config.claude.model
         return self._app_config.openai.model
 
     def _resolve_provider_name(self, agent_config: AgentConfig) -> str:
@@ -403,11 +414,15 @@ class AgentFactory:
     def _supports_multimodal_attachments(self, provider_name: str) -> bool:
         """Return whether the selected provider/model accepts image/PDF blocks."""
 
-        if provider_name != "openrouter":
-            return True
-        if self._app_config.openrouter is None:
-            return False
-        return self._app_config.openrouter.supports_multimodal
+        if provider_name == "openrouter":
+            if self._app_config.openrouter is None:
+                return False
+            return self._app_config.openrouter.supports_multimodal
+        if provider_name == "claude":
+            if self._app_config.claude is None:
+                return False
+            return self._app_config.claude.supports_multimodal
+        return True
 
     def _supported_mcp_servers(
         self,

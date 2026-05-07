@@ -284,6 +284,59 @@ class OpenRouterConfig:
 
 
 @dataclass(slots=True)
+class ClaudeThinkingConfig:
+    """Anthropic extended-thinking configuration.
+
+    Mirrors the ``thinking`` field on the Messages API request body. ``type``
+    is ``"enabled"`` (explicit budget), ``"adaptive"`` (model picks its own
+    budget — required on Opus 4.7+), or ``"disabled"``. ``budget_tokens`` is
+    consulted only when ``type == "enabled"`` and must be smaller than
+    ``max_output_tokens`` unless the ``interleaved-thinking-2025-05-14``
+    beta header is set.
+
+    When extended thinking is on, Anthropic ignores ``temperature``,
+    ``top_p``, and ``top_k`` for the thinking phase, and forbids
+    ``tool_choice`` values other than ``auto`` or ``none``. The provider
+    enforces these constraints at translate time.
+    """
+
+    type: str = "enabled"
+    budget_tokens: int | None = None
+
+
+@dataclass(slots=True)
+class ClaudeConfig:
+    """Anthropic Claude (Messages API) provider configuration.
+
+    Mirrors :class:`OpenRouterConfig` in spirit — one dataclass captures
+    the defaults for Claude turns — plus Claude-specific knobs:
+    ``anthropic_version`` (pinned API version date), ``anthropic_beta``
+    (extra beta feature flags broadcast as the ``anthropic-beta`` header),
+    ``thinking`` (extended-thinking), and ``cache_strategy``
+    (prompt-cache breakpoint placement).
+
+    The Messages API is stateless, so the provider replays full history
+    on every turn — same posture as :class:`OpenRouterConfig`.
+    """
+
+    api_key_env: str = "ANTHROPIC_API_KEY"
+    base_url: str = "https://api.anthropic.com"
+    anthropic_version: str = "2023-06-01"
+    anthropic_beta: tuple[str, ...] = ()
+    model: str = "claude-opus-4-7"
+    max_output_tokens: int = 32_000
+    temperature: float = 1.0
+    parallel_tool_calls: bool = True
+    thinking: ClaudeThinkingConfig | None = None
+    cache_strategy: str = "anthropic_breakpoint"
+    stream_idle_timeout_seconds: float = 90.0
+    request_timeout_seconds: float = 120.0
+    max_attempts: int = 3
+    supports_multimodal: bool = True
+    max_stream_wall_seconds: float = 600.0
+
+
+@dataclass(slots=True)
 class AppConfig:
     """Application-wide configuration."""
 
@@ -299,6 +352,7 @@ class AppConfig:
     mcp: MCPConfig = field(default_factory=MCPConfig)
     active_provider: str = "openai"
     openrouter: OpenRouterConfig | None = None
+    claude: ClaudeConfig | None = None
 
 
 @dataclass(slots=True)

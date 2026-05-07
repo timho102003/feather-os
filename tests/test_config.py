@@ -131,6 +131,78 @@ openrouter:
     assert cfg.openrouter.tracing is None
 
 
+def test_app_config_parses_claude_block(tmp_path: Path) -> None:
+    """active_provider=claude + claude block populates ClaudeConfig."""
+
+    (tmp_path / "config").mkdir(parents=True)
+    (tmp_path / "config" / "app.yaml").write_text(
+        _MIN_APP_YAML + """active_provider: claude
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  base_url: https://api.anthropic.com
+  anthropic_version: "2023-06-01"
+  anthropic_beta:
+    - extended-cache-ttl-2025-04-11
+  model: claude-opus-4-7
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  thinking: {type: enabled, budget_tokens: 4000}
+  cache_strategy: anthropic_breakpoint
+  stream_idle_timeout_seconds: 90
+  request_timeout_seconds: 120
+  max_attempts: 3
+  supports_multimodal: true
+  max_stream_wall_seconds: 600
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_app_config(tmp_path)
+    assert cfg.active_provider == "claude"
+    assert cfg.claude is not None
+    cl = cfg.claude
+    assert cl.api_key_env == "ANTHROPIC_API_KEY"
+    assert cl.anthropic_version == "2023-06-01"
+    assert cl.anthropic_beta == ("extended-cache-ttl-2025-04-11",)
+    assert cl.model == "claude-opus-4-7"
+    assert cl.max_output_tokens == 32_000
+    assert cl.thinking is not None
+    assert cl.thinking.type == "enabled"
+    assert cl.thinking.budget_tokens == 4000
+    assert cl.cache_strategy == "anthropic_breakpoint"
+    assert cl.max_attempts == 3
+    assert cl.supports_multimodal is True
+
+
+def test_app_config_claude_block_omitted_defaults_to_none(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir(parents=True)
+    (tmp_path / "config" / "app.yaml").write_text(_MIN_APP_YAML, encoding="utf-8")
+    cfg = load_app_config(tmp_path)
+    assert cfg.claude is None
+
+
+def test_app_config_claude_anthropic_beta_accepts_string_or_list(tmp_path: Path) -> None:
+    """``anthropic_beta`` should normalize a single string into a one-tuple."""
+
+    (tmp_path / "config").mkdir(parents=True)
+    (tmp_path / "config" / "app.yaml").write_text(
+        _MIN_APP_YAML + """active_provider: claude
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  model: claude-opus-4-7
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  anthropic_beta: extended-cache-ttl-2025-04-11
+""",
+        encoding="utf-8",
+    )
+    cfg = load_app_config(tmp_path)
+    assert cfg.claude is not None
+    assert cfg.claude.anthropic_beta == ("extended-cache-ttl-2025-04-11",)
+
+
 def test_agent_config_parses_provider_override(tmp_path: Path) -> None:
     """Agent YAML ``provider`` and ``model`` fields land on AgentConfig."""
 

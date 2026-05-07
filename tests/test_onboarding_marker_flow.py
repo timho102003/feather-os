@@ -50,8 +50,8 @@ async def test_wizard_skips_memory_question_when_marker_absent(tmp_path, paths):
     wizard = _wizard_for(
         tmp_path,
         paths,
-        # identity (5 prompts) + provider choice
-        ["Tester", "", "", "", "", "1"],
+        # identity (5 prompts) + 3 provider yes/no answers
+        ["Tester", "", "", "", "", "y", "n", "n"],
         # OPENAI key
         ["sk-test"],
     )
@@ -74,8 +74,8 @@ async def test_wizard_treats_marker_present_as_memory_on(tmp_path, paths):
     wizard = _wizard_for(
         tmp_path,
         paths,
-        # identity (5) + provider (1) + web-search (n)
-        ["Tester", "", "", "", "", "1", "n"],
+        # identity (5) + 3 provider yes/no answers + web-search (n)
+        ["Tester", "", "", "", "", "y", "n", "n", "n"],
         # OPENAI + GEMINI
         ["sk-test", "gemini-key"],
     )
@@ -94,8 +94,8 @@ async def test_wizard_with_no_paths_asks_memory_question_legacy(tmp_path):
     wizard = OnboardingWizard(
         root=tmp_path,
         input_fn=_Recorder(
-            # identity (5) + provider + memory? + web search
-            ["Tester", "", "", "", "", "1", "n", "n"]
+            # identity (5) + 3 provider yes/no answers + memory? + web search
+            ["Tester", "", "", "", "", "y", "n", "n", "n", "n"]
         ),
         output_fn=lambda *_a, **_k: None,
         secret_input_fn=_Recorder(["sk-test"]),

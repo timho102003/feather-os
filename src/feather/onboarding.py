@@ -44,6 +44,16 @@ _QDRANT_PORT = 6333
 _QDRANT_LOCAL_URL = f"http://localhost:{_QDRANT_PORT}"
 
 
+class NoProviderConfigured(RuntimeError):
+    """Raised when the wizard finishes provider prompts with nothing wired.
+
+    Feather requires at least one LLM provider (OpenAI, OpenRouter, or
+    Claude) to start. A user who declines all three exits the wizard
+    without writing the completion marker, so the next ``feather`` run
+    re-prompts rather than booting into a half-configured state.
+    """
+
+
 class DockerNotAvailable(RuntimeError):
     """Raised when the ``docker`` CLI cannot be invoked."""
 
@@ -317,6 +327,7 @@ class OnboardingAnswers:
     openai_api_key: str = ""
     provider: str = "openai"
     openrouter_api_key: str = ""
+    claude_api_key: str = ""
     memory_enabled: bool = False
     # "" when memory disabled; otherwise one of:
     # "local-docker" — wizard spun up a local Qdrant Docker container,
@@ -339,6 +350,7 @@ class OnboardingAnswers:
         candidates = {
             "OPENAI_API_KEY": self.openai_api_key,
             "OPEN_ROUTER_API_KEY": self.openrouter_api_key,
+            "ANTHROPIC_API_KEY": self.claude_api_key,
             "QDRANT_URL": self.qdrant_url,
             "QDRANT_API_KEY": self.qdrant_api_key,
             "GEMINI_API_KEY": self.gemini_api_key,
@@ -619,30 +631,64 @@ class OnboardingWizard:
         )
         answers.about = self._ask("Short bio (Enter to skip)")
 
-        # Required: OpenAI key. Reuse the value already in the
-        # environment when present so re-runs don't make the user paste
-        # the same key again.
+        # Providers — Feather supports OpenAI Responses, OpenRouter Chat
+        # Completions, and Anthropic Claude Messages. The wizard prompts
+        # for each independently so a user can wire as many as they have
+        # keys for; at least one must be enabled for the runtime to
+        # start. When more than one is wired we ask which should be the
+        # session-wide default (``active_provider`` in app.yaml); a single
+        # wired provider becomes active automatically.
         self._say(
-            "\nFeather needs an OpenAI API key. Get one at "
-            "https://platform.openai.com/api-keys"
+            "\nLLM provider keys:\n"
+            "Feather can route through OpenAI, OpenRouter, and Anthropic "
+            "Claude. Wire whichever you have keys for — at least one is "
+            "required."
         )
-        answers.openai_api_key = self._reuse_or_ask_secret("OPENAI_API_KEY")
-
-        # Provider
-        self._say(
-            "\nProvider:\n"
-            "  [1] OpenAI (default)\n"
-            "  [2] OpenRouter (multi-model routing — requires its own key)"
-        )
-        choice = self._ask("Choose 1 or 2 (default 1)") or "1"
-        if choice.strip() == "2":
-            answers.provider = "openrouter"
+        if self._ask_yes_no("Wire OpenAI?"):
+            self._say("Get an OpenAI key at https://platform.openai.com/api-keys")
+            answers.openai_api_key = self._reuse_or_ask_secret("OPENAI_API_KEY")
+        if self._ask_yes_no("Wire OpenRouter?"):
             self._say("Get an OpenRouter key at https://openrouter.ai/keys")
             answers.openrouter_api_key = self._reuse_or_ask_secret(
                 "OPEN_ROUTER_API_KEY"
             )
+        if self._ask_yes_no("Wire Claude (Anthropic)?"):
+            self._say("Get an Anthropic key at https://console.anthropic.com/")
+            answers.claude_api_key = self._reuse_or_ask_secret("ANTHROPIC_API_KEY")
+
+        wired = [
+            name
+            for name, key in (
+                ("openai", answers.openai_api_key),
+                ("openrouter", answers.openrouter_api_key),
+                ("claude", answers.claude_api_key),
+            )
+            if key
+        ]
+        if not wired:
+            self._say(
+                "\nNo provider was wired. Feather needs at least one of "
+                "OpenAI / OpenRouter / Claude to run. Aborting onboarding — "
+                "re-run `feather onboard` once you have a key ready."
+            )
+            raise NoProviderConfigured(
+                "onboarding aborted: at least one LLM provider must be wired"
+            )
+        if len(wired) == 1:
+            answers.provider = wired[0]
         else:
-            answers.provider = "openai"
+            choices = " / ".join(wired)
+            while True:
+                pick = (
+                    self._ask(
+                        f"Default provider [{choices}] (default {wired[0]})"
+                    )
+                    or wired[0]
+                ).strip().lower()
+                if pick in wired:
+                    answers.provider = pick
+                    break
+                self._say(f"Pick one of: {choices}.")
 
         # Memory — when paths is provided, the marker decides instead of
         # an interactive yes/no. This keeps the new flow honest:
