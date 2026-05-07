@@ -21,6 +21,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   OpenRouter's published limits (16 keys, 64-char keys, 512-char values)
   so a typo can't trigger a 400. Reserved Feather identity keys always
   win over operator metadata of the same name.
+- Lead worker subprocess substrate. Opt-in via the new
+  `FEATHER_USE_LEAD_WORKER=1` env var. When enabled, the lead agent
+  runs as a separate `python -m feather.lead_worker_entry` subprocess
+  with the Textual TUI as its supervisor; they communicate via a
+  JSONL command/event protocol over stdin/stdout plus a new
+  `worker_heartbeats` SQLite table. Default is off; default users see
+  byte-identical behaviour. Substrate for upcoming out-of-band hang
+  detection (the supervisor's `is_stale()` is wired but the UI banner
+  ships in a follow-up) and self-repair restart-resume (a
+  `request_restart` tool ships in a follow-up). See
+  [docs/architecture.md](docs/architecture.md#lead-worker-mode-opt-in)
+  and [docs/configuration.md](docs/configuration.md#lead-worker-mode-opt-in).
+- Worker-mode runtime guards: when `FEATHER_USE_LEAD_WORKER=1` is set,
+  `FeatherRuntime.start_background_services` skips the cron scheduler
+  and the messaging adapters. Both build their own in-process
+  `BaseAgent` and would race the worker on the shared `sessions` row,
+  silently corrupting `last_response_id`, `pending_inputs`, and
+  `messages.sequence`.
+- Hang-detection banner. In worker mode, the TUI polls
+  `LeadSupervisor.is_stale()` every 2 s and surfaces a red
+  `Lead unresponsive` conversation marker on transition into stale
+  (heartbeat older than 5 s) and a green `Lead recovered` marker on
+  recovery. State machine fires on transitions only, so a sustained
+  hang produces one alert rather than one per tick.
+- `/restart-lead` slash command. Manual recovery hook for the hang
+  banner and for "I just patched the lead's code, please reload it."
+  Cancels any in-flight run, calls `LeadSupervisor.restart()` (which
+  does the SIGTERM → SIGKILL dance + respawns on the same
+  `--session-id`). Worker-mode only; surfaces a clear "worker mode is
+  off" notice when called against the in-process default path.
+- Error-triage bot. In worker mode, the supervisor tails
+  `.feather/logs/feather.log` for ERROR-level entries and posts a
+  single summary message into the lead's mailbox so the lead can
+  investigate. Two-layer dedup (high-water mark + bounded recency
+  set), auto-resets on log rotation (inode change), reads off-thread
+  via `asyncio.to_thread` so the supervisor's event loop stays
+  responsive.
+- `request_restart` tool. Self-repair primitive: the lead calls it
+  after patching `feather/*` modules and verifying the change. The
+  tool itself does not kill any process — it writes a new
+  `sessions.restart_requested_at` flag. The supervisor's restart
+  watcher polls the flag, calls `LeadSupervisor.restart()` (serialized
+  via a dedicated `_restart_lock` so it can't race a concurrent
+  `/restart-lead`), and posts a "restart succeeded / failed" message
+  back into the lead's inbox so the conversation continues naturally.
+- Install-mode detection. `feather.core.install_mode.detect_install_mode`
+  classifies the running install as `editable`, `wheel`, or `read_only`.
+  Surfaced in `request_restart`'s response so the model can warn the
+  user when a patch will be silently overwritten on the next
+  `pip install --upgrade`.
+- `submit_github_report` tool + skill. File an issue (PR support
+  deferred) on the upstream repo via the `gh` CLI. The
+  `submit-github-report` skill (loaded on demand) carries the issue
+  template, hard rules ("never auto-submit", "one bug per report",
+  "tests must pass first"), and the "ask the user before sending"
+  flow. Body length is checked in UTF-8 bytes (not chars) so
+  CJK/emoji-heavy bodies don't slip past Feather's check just to be
+  rejected by GitHub. The URL is extracted by scanning for the first
+  `https://github.com/*` line so a `gh` release-update warning before
+  the URL doesn't break parsing.
+- New `sessions.restart_requested_at` and `sessions.restart_reason`
+  columns (idempotent migration via `ensure_column`). Pre-existing
+  flags on launch are cleared so a SIGKILLed prior session can't
+  trigger a surprise restart of a freshly-spawned worker.
+- Onboarding wizard asks once whether to enable the **self-repair
+  safety net** (the user-facing name for the lead-worker subprocess
+  feature) and writes the answer to `self_repair.enabled` in
+  `app.yaml`. New `SelfRepairConfig` dataclass + parser layer the
+  three signals: env var (`FEATHER_USE_LEAD_WORKER`) wins, then YAML
+  setting, then default-off. The env var also accepts explicit
+  falsy values (`0`, `false`, `no`, `off`) so a user with the YAML
+  setting on can disable the feature for a single launch.
+
+### Changed
+
+- **Cron scheduler now routes through the agent-message mailbox.**
+  When a job fires, the scheduler drops one message into the lead's
+  inbox via `agent_message_store.send` and marks the job succeeded.
+  The lead's existing `resume_on_inbox` path picks it up under the
+  lead's own session lock. Old design built an in-process `BaseAgent`
+  per fire and called `agent.run` synchronously, which raced the
+  worker on shared session state when self-repair was on — that was
+  the only reason cron was paused in safety-net mode. **Cron now
+  runs in both modes.** Behavior diff: the cron job is marked
+  succeeded as soon as the mailbox row commits, not after the agent
+  finishes the turn; an LLM failure on the queued turn shows up via
+  the agent's normal turn-completion UI rather than as a
+  `scheduled_task_failed` cron event. The
+  `scheduled_task_completed` event no longer fires (cron does not
+  observe completion).
+
+### Fixed
+
+- **Synthetic system messages from `log_triage_bot`,
+  `restart_watcher`, and the new cron path were stranded forever
+  due to a case-sensitive SQL filter on the lead's inbox.** Senders
+  were addressing `to_agent_name="lead"` (lowercase) but the lead's
+  `BaseAgent` filters by `agent_config.name` which is `"Lead"`
+  (capital L, from `lead.yaml`), and SQLite string equality is
+  case-sensitive. Result: every triage notification, restart
+  acknowledgement, and (after this PR's mailbox-routed cron) cron
+  prompt was silently dropped. Centralised the canonical name as
+  `feather.core.constants.LEAD_AGENT_NAME` and routed all three
+  senders through it. Added an end-to-end test that pins the
+  invariant by querying both the canonical name (must return the
+  message) and the wrong case (must return nothing).
 
 ### Changed
 

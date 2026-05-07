@@ -32,6 +32,7 @@ from feather.models import (
     ParallelConfig,
     ReasoningConfig,
     SchedulerConfig,
+    SelfRepairConfig,
     StorageConfig,
     SkillsConfig,
 )
@@ -86,6 +87,7 @@ def load_app_config(
             raw = _deep_merge(raw, _read_yaml(global_app_yaml))
     compaction_raw = raw.get("compaction") or {}
     scheduler_raw = raw.get("scheduler") or {}
+    self_repair_raw = raw.get("self_repair") or {}
     reasoning_raw = raw["openai"].get("reasoning") or None
     parallel_raw = raw.get("parallel") or None
     active_provider = str(raw.get("active_provider") or "openai").strip().lower()
@@ -176,6 +178,9 @@ def load_app_config(
             poll_interval_seconds=float(scheduler_raw.get("poll_interval_seconds", 5)),
             failure_retry_seconds=float(scheduler_raw.get("failure_retry_seconds", 60)),
             max_due_jobs_per_tick=int(scheduler_raw.get("max_due_jobs_per_tick", 10)),
+        ),
+        self_repair=SelfRepairConfig(
+            enabled=bool(self_repair_raw.get("enabled", False)),
         ),
         openai=OpenAIConfig(
             api_key_env=raw["openai"]["api_key_env"],

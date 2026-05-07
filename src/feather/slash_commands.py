@@ -314,6 +314,15 @@ def default_registry() -> SlashCommandRegistry:
             ),
             category="messaging",
         ),
+        SlashCommand(
+            name="restart-lead",
+            summary=(
+                "Respawn the lead worker subprocess (worker mode only). "
+                "Use after a hang banner or to reload patched lead code."
+            ),
+            aliases=("restart_lead",),
+            category="session",
+        ),
     )
     return SlashCommandRegistry(commands)
 

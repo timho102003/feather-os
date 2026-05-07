@@ -578,6 +578,51 @@ class SessionStore:
         if values:
             await self._update_session_fields(session_id, **values)
 
+    async def mark_restart_requested(
+        self, session_id: str, reason: str
+    ) -> None:
+        """Set the restart-requested flag for ``session_id``.
+
+        Written by the ``request_restart`` tool when the lead has just
+        patched its own code and wants the supervisor to reload it.
+        The supervisor's restart watcher polls this column and triggers
+        a graceful worker respawn when it transitions from NULL to a
+        timestamp.
+        """
+
+        cleaned = reason.strip() or "(no reason supplied)"
+        await self._update_session_fields(
+            session_id,
+            restart_requested_at=_utc_now(),
+            restart_reason=cleaned,
+        )
+
+    async def clear_restart_request(self, session_id: str) -> None:
+        """Clear the restart-requested flag (post-restart bookkeeping)."""
+
+        await self._update_session_fields(
+            session_id,
+            restart_requested_at=None,
+            restart_reason=None,
+        )
+
+    async def get_restart_request(
+        self, session_id: str
+    ) -> tuple[str, str] | None:
+        """Return ``(timestamp, reason)`` if a restart is pending, else None."""
+
+        row = await self._fetchone(
+            "SELECT restart_requested_at, restart_reason "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        )
+        if row is None:
+            return None
+        ts = row["restart_requested_at"]
+        if ts is None:
+            return None
+        return (str(ts), str(row["restart_reason"] or ""))
+
     async def _update_session_fields(self, session_id: str, **values: str | None) -> None:
         assignments = ", ".join(f"{key} = ?" for key in values)
         params = list(values.values()) + [_utc_now(), session_id]
