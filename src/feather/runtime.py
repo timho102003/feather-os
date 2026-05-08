@@ -28,7 +28,7 @@ from feather.messaging.router import MessagingRouter
 from feather.messaging.service import MessagingService
 from feather.messaging.store import MessagingStore
 from feather.messaging.webhook_server import WebhookServer
-from feather.models import EventHandler, TaskRunStatus, TaskStatus
+from feather.models import AppConfig, EventHandler, TaskRunStatus, TaskStatus
 from feather.profile import UserProfileStore
 from feather.providers.base import BaseLLMProvider
 from feather.providers.claude_provider import ClaudeMessagesProvider
@@ -76,6 +76,7 @@ class FeatherRuntime:
         subagent_reaper: SubagentReaper,
         messaging_service: MessagingService,
         default_provider: BaseLLMProvider,
+        app_config: AppConfig,
         shutdown_timeout_s: float = 30.0,
     ) -> None:
         self._root = root
@@ -93,6 +94,7 @@ class FeatherRuntime:
         self._subagent_reaper = subagent_reaper
         self._messaging_service = messaging_service
         self._default_provider = default_provider
+        self._app_config = app_config
         self._shutdown_timeout_s = shutdown_timeout_s
         self._session_event_handlers: dict[str, EventHandler] = {}
 
@@ -290,6 +292,7 @@ class FeatherRuntime:
             subagent_reaper=subagent_reaper,
             messaging_service=messaging_service,
             default_provider=provider,
+            app_config=app_config,
             shutdown_timeout_s=app_config.memory.trigger.shutdown_timeout_s,
         )
         runtime._cron_scheduler.set_event_handler_resolver(runtime._resolve_session_event_handler)
@@ -346,6 +349,12 @@ class FeatherRuntime:
         """Return the shared messaging-integration service."""
 
         return self._messaging_service
+
+    @property
+    def config(self) -> AppConfig:
+        """Return the loaded application configuration."""
+
+        return self._app_config
 
     async def start_background_services(
         self, *, lead_in_subprocess: bool = False
