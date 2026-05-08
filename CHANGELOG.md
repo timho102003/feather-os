@@ -7,8 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-05-08
+
 ### Added
 
+- **Anthropic Claude (Messages API) provider.** Third LLM provider at
+  feature parity with OpenAI Responses and OpenRouter Chat: streaming,
+  multi-turn, parallel tool calls, prompt caching (`cache_control`
+  ephemeral breakpoints), extended thinking (`thinking.budget_tokens`),
+  multimodal (image + PDF), structured outputs via the forced
+  single-tool pattern, retry on 408/409/429/500/503/504/529 with
+  `retry-after` honoring, and idle/wall-clock stream timeouts. Opt in
+  via `active_provider: claude` plus a `claude:` block in `app.yaml`
+  and `ANTHROPIC_API_KEY` in your env. Default model is
+  `claude-opus-4-7`. Per-agent overrides via `provider:` /
+  `model:` in the agent YAML are honored. The translator gates
+  `temperature` for models that reject it (Opus 4.7+, Mythos), mirroring
+  OpenAI's gpt-5 reasoning-model handling.
+- **Three-provider onboarding flow.** The onboarding wizard now asks
+  three independent yes/no questions ("wire OpenAI?", "wire OpenRouter?",
+  "wire Claude?") and prompts for each chosen provider's API key. When
+  more than one is wired the wizard asks which should be the default
+  `active_provider`. When none is chosen it aborts with a clear "you
+  need to wire at least one" message. `.env.example` lists all three
+  keys with section headers.
 - OpenRouter trace metadata broadcast. Opt-in via the new
   `openrouter.tracing` block in `app.yaml`. When enabled, every
   OpenRouter turn carries `session_id`, an optional `user`, and a
@@ -111,25 +133,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `scheduled_task_failed` cron event. The
   `scheduled_task_completed` event no longer fires (cron does not
   observe completion).
-
-### Fixed
-
-- **Synthetic system messages from `log_triage_bot`,
-  `restart_watcher`, and the new cron path were stranded forever
-  due to a case-sensitive SQL filter on the lead's inbox.** Senders
-  were addressing `to_agent_name="lead"` (lowercase) but the lead's
-  `BaseAgent` filters by `agent_config.name` which is `"Lead"`
-  (capital L, from `lead.yaml`), and SQLite string equality is
-  case-sensitive. Result: every triage notification, restart
-  acknowledgement, and (after this PR's mailbox-routed cron) cron
-  prompt was silently dropped. Centralised the canonical name as
-  `feather.core.constants.LEAD_AGENT_NAME` and routed all three
-  senders through it. Added an end-to-end test that pins the
-  invariant by querying both the canonical name (must return the
-  message) and the wrong case (must return nothing).
-
-### Changed
-
 - `write_file` now writes anywhere inside the workspace (the discovered
   project root, or the directory `feather` was launched from when no
   project is detected), matching the `bash` tool's `cwd` constraint.
@@ -158,6 +161,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   works as written; reads outside the workspace but under `$HOME`
   render in the output with a `~/` prefix so the user's real `$HOME`
   is not echoed into chat.
+
+### Fixed
+
+- **Synthetic system messages from `log_triage_bot`,
+  `restart_watcher`, and the new cron path were stranded forever
+  due to a case-sensitive SQL filter on the lead's inbox.** Senders
+  were addressing `to_agent_name="lead"` (lowercase) but the lead's
+  `BaseAgent` filters by `agent_config.name` which is `"Lead"`
+  (capital L, from `lead.yaml`), and SQLite string equality is
+  case-sensitive. Result: every triage notification, restart
+  acknowledgement, and (after this PR's mailbox-routed cron) cron
+  prompt was silently dropped. Centralised the canonical name as
+  `feather.core.constants.LEAD_AGENT_NAME` and routed all three
+  senders through it. Added an end-to-end test that pins the
+  invariant by querying both the canonical name (must return the
+  message) and the wrong case (must return nothing).
+- **Textual TUI failed to start with `AttributeError: 'FeatherRuntime'
+  object has no attribute 'config'`.** The TUI's `on_mount` reads
+  `self._runtime.config.self_repair.enabled` to decide whether to
+  launch the lead in a worker subprocess, but `FeatherRuntime` only
+  kept `app_config` as a local in `create()` — it was never persisted
+  on the instance. The runtime now stores the loaded `AppConfig` and
+  exposes it via a `config` property; a regression test pins the exact
+  attribute chain so a future `AppConfig` refactor can't silently
+  break TUI startup.
 
 ## [0.1.0] - 2026-05-02
 
