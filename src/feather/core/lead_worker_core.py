@@ -44,6 +44,7 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
+from feather.config_schema import ReloadClass
 from feather.core.input_queue import UserInputQueue
 from feather.core.runtime_event_codec import encode_event
 from feather.core.worker_command_codec import (
@@ -359,14 +360,15 @@ class WorkerCore:
         prior_config = self._runtime.config
         try:
             await self._runtime.reload_config()
-            if cmd.reload_class == "next_turn":
-                # Dry-run: attempt to build each cached agent with the new
-                # config.  If any build raises, we roll back before committing.
-                for agent_name in list(self._runtime._agents):
+            if cmd.reload_class == ReloadClass.NEXT_TURN.value:
+                # Two-phase: build each cached agent first to surface a bad
+                # config (e.g. active_provider missing its block) BEFORE any
+                # cached instance is swapped, so a failing build rolls back
+                # cleanly with no partial state.
+                cached_agents = list(self._runtime._agents)
+                for agent_name in cached_agents:
                     self._runtime._agent_factory.build(agent_name)
-                # Dry-run succeeded — commit by calling rebuild_agent which
-                # replaces the cached instance.
-                for agent_name in list(self._runtime._agents):
+                for agent_name in cached_agents:
                     self._runtime.rebuild_agent(agent_name)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
