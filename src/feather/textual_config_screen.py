@@ -427,10 +427,7 @@ class ConfigScreen(ModalScreen[None]):
             )
             return
 
-        live: list[str] = []
-        next_turn: list[str] = []
-        restart_lead: list[str] = []
-        restart_app: list[str] = []
+        buckets: dict[ReloadClass, list[str]] = {rc: [] for rc in ReloadClass}
         errors: list[str] = []
 
         for path, value in list(self._dirty.items()):
@@ -442,23 +439,16 @@ class ConfigScreen(ModalScreen[None]):
             del self._dirty[path]
             field_def = lookup(path)
             if field_def is not None:
-                bucket = {
-                    ReloadClass.LIVE: live,
-                    ReloadClass.NEXT_TURN: next_turn,
-                    ReloadClass.RESTART_LEAD: restart_lead,
-                    ReloadClass.RESTART_APP: restart_app,
-                }[field_def.reload]
-                bucket.append(path)
+                buckets[field_def.reload].append(path)
 
-        parts: list[str] = []
-        if live:
-            parts.append(f"{len(live)} live")
-        if next_turn:
-            parts.append(f"{len(next_turn)} next-turn")
-        if restart_lead:
-            parts.append(f"{len(restart_lead)} needs restart-lead")
-        if restart_app:
-            parts.append(f"{len(restart_app)} needs full restart")
+        # Banner segments in deterministic display order.
+        labels: list[tuple[ReloadClass, str]] = [
+            (ReloadClass.LIVE, "live"),
+            (ReloadClass.NEXT_TURN, "next-turn"),
+            (ReloadClass.RESTART_LEAD, "needs restart-lead"),
+            (ReloadClass.RESTART_APP, "needs full restart"),
+        ]
+        parts = [f"{len(buckets[rc])} {label}" for rc, label in labels if buckets[rc]]
         if errors:
             parts.append(f"{len(errors)} errors")
 
@@ -468,7 +458,7 @@ class ConfigScreen(ModalScreen[None]):
         self._refresh_body()
 
         # Schedule apply_config_change for immediately applicable fields.
-        applied_paths = list(live) + list(next_turn)
+        applied_paths = buckets[ReloadClass.LIVE] + buckets[ReloadClass.NEXT_TURN]
         if applied_paths and self._runtime is not None:
             runtime = self._runtime
 
