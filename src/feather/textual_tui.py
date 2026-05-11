@@ -740,6 +740,8 @@ class FeatherTextualApp(App[None]):
                 logger.exception("textual_tui.log_triage_bot_stop_failed")
             self._log_triage_bot = None
         if self._supervisor is not None:
+            if self._runtime is not None:
+                self._runtime.detach_supervisor()
             try:
                 await self._supervisor.shutdown()
             except Exception:  # noqa: BLE001
@@ -825,6 +827,7 @@ class FeatherTextualApp(App[None]):
             project_root=self._root,
             agent_name="lead",
         )
+        self._runtime.attach_supervisor(self._supervisor)
         await self._supervisor.start(self._active_session_id)
         # Crash-recovery: a previous TUI session may have been SIGKILLed
         # mid-restart, leaving `restart_requested_at` set on disk. If we
