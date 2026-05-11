@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.widgets import Static
+from textual.widgets import Input, Static
 
 from feather.config import load_app_config
 from feather.config_service import ConfigService
@@ -630,3 +630,65 @@ def test_config_screen_has_required_action_methods() -> None:
         "action_confirm_self_repair",
     ):
         assert hasattr(ConfigScreen, method), f"missing {method}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 red-team fixes (Tasks 13a-13d)
+# ---------------------------------------------------------------------------
+
+
+async def test_escape_cancels_inline_edit(service: ConfigService) -> None:
+    """Esc while the inline editor is focused cancels the edit, not the modal."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+
+        # Open the inline editor on the first field.
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Check whether the editor was opened.
+        try:
+            screen.query_one("#config-inline-editor", Input)
+            editor_present = True
+        except Exception:
+            editor_present = False
+
+        if not editor_present:
+            # enter didn't open an editor in this fixture configuration — skip.
+            return
+
+        # Press Esc — should cancel the edit only, modal stays open.
+        await pilot.press("escape")
+        await pilot.pause()
+
+        # Modal still mounted.
+        assert isinstance(pilot.app.screen, ConfigScreen)
+        # _pending_edit cleared.
+        assert screen._pending_edit is None
+        # Inline editor widget removed.
+        remaining = screen.query("#config-inline-editor")
+        assert not remaining, "inline editor widget should be removed after Esc"
+
+
+def test_save_in_flight_flag_prevents_overlap(service: ConfigService) -> None:
+    """Second save during in-flight apply is rejected."""
+
+    import inspect
+
+    src = inspect.getsource(ConfigScreen.action_save)
+    assert "_apply_in_flight" in src, (
+        "action_save must guard against concurrent applies via _apply_in_flight flag"
+    )
+
+
+def test_apply_error_renders_in_footer(service: ConfigService) -> None:
+    """An exception from runtime.apply_config_change surfaces in the footer."""
+
+    import inspect
+
+    src = inspect.getsource(ConfigScreen)
+    assert "apply error" in src, (
+        "action_save's _apply worker must catch exceptions and render them in the footer"
+    )

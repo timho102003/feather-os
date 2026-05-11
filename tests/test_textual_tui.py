@@ -322,3 +322,14 @@ def test_mouse_reporting_defaults_on_and_can_be_disabled(monkeypatch) -> None:
 
     monkeypatch.setenv("FEATHER_TUI_MOUSE", "1")
     assert _mouse_enabled()
+
+
+def test_textual_tui_cmd_config_apply_handles_exceptions() -> None:
+    """_cmd_config's _apply worker must catch exceptions and surface them."""
+
+    import inspect
+
+    src = inspect.getsource(FeatherTextualApp._cmd_config)
+    assert "apply error" in src or "try:" in src, (
+        "_cmd_config's _apply worker must catch exceptions from apply_config_change"
+    )

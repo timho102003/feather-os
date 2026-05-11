@@ -86,7 +86,7 @@ class ConfigScreen(ModalScreen[None]):
     """
 
     BINDINGS = [
-        Binding("escape", "close", "Close"),
+        Binding("escape", "close", "Close", priority=True),
         Binding("left", "prev_tab", "← tab", show=True),
         Binding("right", "next_tab", "→ tab", show=True),
         Binding("up", "section_prev", "↑ section", show=True),
@@ -521,7 +521,25 @@ class ConfigScreen(ModalScreen[None]):
     # ------------------------------------------------------------------
 
     def action_close(self) -> None:
-        """Close the modal, requiring a second Esc when there are dirty fields."""
+        """Close the modal, requiring a second Esc when there are dirty fields.
+
+        If an inline edit is in progress, the first Esc cancels the edit
+        (removes the Input widget and clears ``_pending_edit``) and returns
+        without dismissing the modal.  The second Esc then follows the normal
+        dirty-confirm + dismiss path.
+        """
+
+        # Cancel an in-flight inline edit first, if any.
+        if self._pending_edit is not None:
+            try:
+                editor = self.query_one("#config-inline-editor", Input)
+            except Exception:
+                editor = None
+            if editor is not None:
+                editor.remove()
+            self._pending_edit = None
+            self._set_footer("edit cancelled  esc=close")
+            return
 
         if self._dirty and not self._confirm_close:
             self._confirm_close = True
