@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from feather.config_schema import (
     FieldType,
     REGISTRY,
