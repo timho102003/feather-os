@@ -59,6 +59,10 @@ _ANTHROPIC_REJECTED_INTEGER_KEYWORDS: frozenset[str] = frozenset(
     {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
 )
 
+_JSON_SCHEMA_INSTANCE_DATA_KEYS: frozenset[str] = frozenset(
+    {"default", "const", "enum", "example", "examples"}
+)
+
 
 def sanitize_anthropic_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``schema`` safe for Anthropic's tool validator.
@@ -108,6 +112,8 @@ def _sanitize_node(node: Any) -> Any:
         for keyword in _ANTHROPIC_REJECTED_INTEGER_KEYWORDS:
             node.pop(keyword, None)
         for key, value in list(node.items()):
+            if key in _JSON_SCHEMA_INSTANCE_DATA_KEYS:
+                continue
             node[key] = _sanitize_node(value)
         return node
     if isinstance(node, list):
