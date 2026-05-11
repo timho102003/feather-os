@@ -11,8 +11,6 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from typing import get_args, get_origin
 
-import pytest
-
 from feather.config_schema import IGNORED_PATHS, REGISTRY, Scope
 from feather.models import AgentConfig, AppConfig
 
@@ -45,10 +43,6 @@ def _leaf_paths(prefix: str, cls: type) -> list[str]:
     return out
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="REGISTRY filled across Phase 1 Tasks 3-7; remove xfail in Task 7",
-)
 def test_app_config_fields_are_in_registry_or_ignored() -> None:
     leaves = {f"app.{p}" for p in _leaf_paths("", AppConfig)}
     addressed = {f.path for f in REGISTRY if f.scope is Scope.APP}
@@ -59,10 +53,6 @@ def test_app_config_fields_are_in_registry_or_ignored() -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="REGISTRY filled across Phase 1 Tasks 3-7; remove xfail in Task 7",
-)
 def test_agent_config_fields_are_in_registry_or_ignored() -> None:
     leaves = {f"agents.*.{p}" for p in _leaf_paths("", AgentConfig)}
     addressed = {

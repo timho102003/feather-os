@@ -1124,6 +1124,65 @@ REGISTRY: tuple[ConfigField, ...] = (
         scope=Scope.APP,
         description="Temperature for query builder.",
     ),
+    # Agent: Lead ----------------------------------------------------
+    ConfigField(
+        path="agents.Lead.personality",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="One-line personality / voice description.",
+    ),
+    ConfigField(
+        path="agents.Lead.memory_enabled",
+        type=FieldType.BOOLEAN,
+        widget=WidgetHint.TOGGLE,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="Agent-level memory opt-in (also gated by app.memory.enabled).",
+    ),
+    ConfigField(
+        path="agents.Lead.provider",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="Override the app-level provider for this agent (blank inherits).",
+    ),
+    ConfigField(
+        path="agents.Lead.model",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="Override the provider's default model for this agent (blank inherits).",
+    ),
+    ConfigField(
+        path="agents.Lead.reasoning.effort",
+        type=FieldType.ENUM,
+        widget=WidgetHint.DROPDOWN,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="Per-agent reasoning effort override.",
+        enum=("none", "minimal", "low", "medium", "high"),
+    ),
+    ConfigField(
+        path="agents.Lead.reasoning.summary",
+        type=FieldType.ENUM,
+        widget=WidgetHint.DROPDOWN,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="Per-agent reasoning summary verbosity.",
+        enum=("auto", "concise", "detailed"),
+    ),
+    ConfigField(
+        path="agents.Lead.registered_tools",
+        type=FieldType.STRING_LIST,
+        widget=WidgetHint.LIST_EDITOR,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.AGENT,
+        description="List of tool names this agent may call.",
+    ),
 )
 IGNORED_PATHS: frozenset[str] = frozenset({
     # Provider-internal cache plumbing (not a user-facing knob)
@@ -1164,4 +1223,27 @@ IGNORED_PATHS: frozenset[str] = frozenset({
     "app.memory.query_builder.model",
     "app.memory.query_builder.max_output_tokens",
     "app.memory.query_builder.temperature",
+    # Composite container fields — models.py uses `from __future__ import
+    # annotations`, so the drift walker sees only top-level field names (not
+    # their nested leaves). These paths represent the container dataclasses
+    # whose individual sub-fields are each individually registered above.
+    "app.database",
+    "app.storage",
+    "app.logging",
+    "app.compaction",
+    "app.skills",
+    "app.scheduler",
+    "app.self_repair",
+    "app.openai",
+    "app.openrouter",
+    "app.claude",
+    "app.parallel",
+    "app.memory",
+    "app.mcp",
+    # Agent composite field — ReasoningConfig sub-fields are individually
+    # registered as agents.Lead.reasoning.effort / .summary above.
+    "agents.*.reasoning",
+    # Agent identity fields — name and role are structural, not user-editable.
+    "agents.*.name",
+    "agents.*.role",
 })
