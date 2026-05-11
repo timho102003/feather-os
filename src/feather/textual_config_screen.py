@@ -229,10 +229,8 @@ class ConfigScreen(ModalScreen[None]):
     def _render_form(self) -> str:
         """Render the right-hand form rows for the active subsection."""
 
-        sections = self._subsections()
-        if not sections:
+        if not self._subsections():
             return "(no fields)"
-        active_section = sections[self._active_section_index % len(sections)]
         fields = self._fields_in_section()
         rows: list[str] = []
         for idx, f in enumerate(fields):
