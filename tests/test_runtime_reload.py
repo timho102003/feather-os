@@ -88,3 +88,102 @@ async def test_reload_config_swaps_app_config(tmp_path: Path) -> None:
         assert runtime.config.active_provider == "claude"
     finally:
         await runtime.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 19 — rebuild_agent
+# ---------------------------------------------------------------------------
+
+# Minimal agent YAML for the test lead.  The packaged lead.yaml lists
+# ``web_search`` which requires a ParallelClient the test runtime doesn't
+# provision.  By staging a project-local override we avoid the unknown-tool
+# error without touching production configs.
+_MINIMAL_LEAD_YAML = """\
+name: Lead
+role: lead
+personality: Test stub.
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+memory_enabled: false
+registered_tools:
+  - bash
+  - ask_user
+"""
+
+
+def _write_minimal_agent_yaml(project: Path) -> None:
+    """Stage a minimal lead agent config inside the test project directory."""
+
+    agents_dir = project / "config" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "lead.yaml").write_text(_MINIMAL_LEAD_YAML, encoding="utf-8")
+
+
+async def test_rebuild_agent_uses_new_provider_after_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """rebuild_agent() installs a fresh provider instance from the new config."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+    _write_minimal_agent_yaml(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-before")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-after")
+
+    runtime = await FeatherRuntime.create(project)
+    try:
+        agent_before = runtime.build_agent("lead")
+        provider_before = id(agent_before._provider)
+
+        (project / "config" / "app.yaml").write_text(
+            _MINIMAL_YAML.replace("active_provider: openai", "active_provider: claude"),
+            encoding="utf-8",
+        )
+
+        await runtime.reload_config()
+        runtime.rebuild_agent("lead")
+
+        agent_after = runtime.get_agent("lead")
+        assert id(agent_after._provider) != provider_before
+    finally:
+        await runtime.close()
+
+
+async def test_get_agent_raises_if_not_built(tmp_path: Path) -> None:
+    """get_agent() raises KeyError when no agent with that name is cached."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+    _write_minimal_agent_yaml(project)
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        with pytest.raises(KeyError, match="lead"):
+            runtime.get_agent("lead")
+    finally:
+        await runtime.close()
+
+
+async def test_build_agent_populates_cache(tmp_path: Path) -> None:
+    """build_agent() stores the result so get_agent() returns the same instance."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+    _write_minimal_agent_yaml(project)
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        agent = runtime.build_agent("lead")
+        assert runtime.get_agent("lead") is agent
+    finally:
+        await runtime.close()

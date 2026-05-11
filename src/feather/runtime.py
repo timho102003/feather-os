@@ -97,6 +97,7 @@ class FeatherRuntime:
         self._app_config = app_config
         self._shutdown_timeout_s = shutdown_timeout_s
         self._session_event_handlers: dict[str, EventHandler] = {}
+        self._agents: dict[str, BaseAgent] = {}
 
     @classmethod
     async def create(
@@ -299,9 +300,65 @@ class FeatherRuntime:
         return runtime
 
     def build_agent(self, agent_name: str) -> BaseAgent:
-        """Build one configured agent from the shared runtime."""
+        """Build a fresh agent and cache it for later :meth:`rebuild_agent` calls.
 
-        return self._agent_factory.build(agent_name)
+        Args:
+            agent_name: Logical agent name (e.g. ``"lead"``).
+
+        Returns:
+            The newly built agent instance.
+        """
+
+        agent = self._agent_factory.build(agent_name)
+        self._agents[agent_name] = agent
+        return agent
+
+    def get_agent(self, name: str) -> BaseAgent:
+        """Return the cached agent built via :meth:`build_agent`.
+
+        Args:
+            name: Logical agent name.
+
+        Raises:
+            KeyError: If no agent with ``name`` has been built yet.
+        """
+
+        if name not in self._agents:
+            raise KeyError(f"agent {name!r} not yet built")
+        return self._agents[name]
+
+    def rebuild_agent(self, name: str) -> BaseAgent:
+        """Reconstruct ``name`` (and its provider) against the current app_config.
+
+        Session cursor (``last_response_id``) is owned by
+        :class:`~feather.storage.session_store.SessionStore` rather than the
+        agent instance, so the new agent picks up the in-flight conversation
+        transparently on the next turn.
+
+        The factory's internal ``_app_config`` AND ``_provider`` are updated
+        to the runtime's current config so provider-bound state (model,
+        reasoning, HTTP clients) reflects the freshly reloaded values.
+
+        Args:
+            name: Logical agent name.
+
+        Returns:
+            The newly built agent instance, already stored in the cache.
+        """
+
+        # Sync the factory's config view with whatever reload_config() loaded.
+        self._agent_factory._app_config = self._app_config
+        # Rebuild the factory's default provider so the new agent gets a fresh
+        # provider client (correct model, reasoning config, HTTP client, etc.)
+        # that matches the new active_provider setting.
+        new_default_provider = _build_default_provider(self._app_config)
+        active = (self._app_config.active_provider or "openai").strip().lower()
+        self._agent_factory._provider = new_default_provider
+        self._agent_factory._providers_by_name[active] = new_default_provider
+        new_agent = self._agent_factory.build(name)
+        self._agents[name] = new_agent
+        logger.info("runtime.agent.rebuilt name=%s provider=%s", name, active)
+        return new_agent
 
     @property
     def input_queue(self) -> UserInputQueue:
