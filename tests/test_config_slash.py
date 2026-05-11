@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from feather.config import load_app_config
-from feather.config_paths import PathScope
 from feather.config_service import ConfigService
 from feather.config_slash import handle_config_command
 from feather.paths import FeatherPaths
