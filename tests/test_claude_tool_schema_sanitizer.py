@@ -67,3 +67,82 @@ def test_sanitizer_does_not_recurse_into_const_examples_enum() -> None:
     assert cleaned["properties"]["a"]["const"] == {"minimum": 1}
     assert cleaned["properties"]["b"]["examples"] == [{"minimum": 2}]
     assert cleaned["properties"]["c"]["enum"] == ["minimum", "maximum"]
+
+
+def test_sanitizer_strips_minimum_inside_items() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "pages": {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1},
+            }
+        },
+    }
+
+    cleaned = sanitize_anthropic_tool_schema(schema)
+
+    assert "minimum" not in cleaned["properties"]["pages"]["items"]
+
+
+def test_sanitizer_strips_minimum_inside_anyof() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "n": {
+                "anyOf": [
+                    {"type": "integer", "minimum": 1, "maximum": 10},
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    cleaned = sanitize_anthropic_tool_schema(schema)
+
+    int_branch = cleaned["properties"]["n"]["anyOf"][0]
+    assert "minimum" not in int_branch
+    assert "maximum" not in int_branch
+
+
+def test_sanitizer_normalises_integer_null_union() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": ["integer", "null"], "minimum": 1},
+        },
+    }
+
+    cleaned = sanitize_anthropic_tool_schema(schema)
+
+    assert cleaned["properties"]["limit"]["type"] == "integer"
+    assert "minimum" not in cleaned["properties"]["limit"]
+
+
+def test_sanitizer_warns_on_multi_type_non_null_union(caplog) -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "weird": {"type": ["integer", "string"]},
+        },
+    }
+
+    with caplog.at_level("WARNING"):
+        cleaned = sanitize_anthropic_tool_schema(schema)
+
+    assert cleaned["properties"]["weird"]["type"] == ["integer", "string"]
+    assert any("multi-type union" in r.message for r in caplog.records)
+
+
+def test_sanitizer_handles_exclusive_minimum_maximum() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "ratio": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1},
+        },
+    }
+
+    cleaned = sanitize_anthropic_tool_schema(schema)
+
+    assert "exclusiveMinimum" not in cleaned["properties"]["ratio"]
+    assert "exclusiveMaximum" not in cleaned["properties"]["ratio"]
