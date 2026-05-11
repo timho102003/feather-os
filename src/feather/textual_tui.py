@@ -1143,6 +1143,7 @@ class FeatherTextualApp(App[None]):
             "onboard": self._cmd_onboard,
             "qdrant": self._cmd_qdrant,
             "clear": self._cmd_clear,
+            "config": self._cmd_config,
             "copy": self._cmd_copy,
             "queue": self._cmd_queue,
             "agents": self._cmd_agents,
@@ -1176,6 +1177,7 @@ class FeatherTextualApp(App[None]):
         # multi-line bodies after a slash command do not silently vanish
         # (review fix M1).
         self._slash_handlers_accepts_args: set[str] = {
+            "config",
             "telegram",
             "line",
             "whatsapp",
@@ -1590,6 +1592,60 @@ class FeatherTextualApp(App[None]):
         self._assistant_parts = []
         self._render_conversation()
         self._write_marker("Cleared", "transcript cleared (session history kept)")
+
+    def _cmd_config(self, args: str) -> None:
+        """Dispatch the `/config <sub> [args]` slash command.
+
+        Args:
+            args: Raw argument string after the ``/config`` token, e.g.
+                ``"get app.active_provider"`` or ``"set app.active_provider claude"``.
+        """
+
+        from feather.config_service import ConfigService
+        from feather.config_slash import handle_config_command
+        from feather.paths import FeatherPaths as _Paths
+
+        assert self._runtime is not None
+        # Get paths defensively — fallback to a fresh FeatherPaths if the TUI
+        # doesn't track them explicitly.
+        paths = getattr(self, "_paths", None) or _Paths(project_root=self._root)
+
+        service = ConfigService(
+            paths=paths,
+            app_config=self._runtime.config,
+        )
+        result = handle_config_command(service, args)
+        self._write_marker(
+            "Config",
+            result.body,
+            style="cyan" if result.ok else "red",
+        )
+
+        if result.ok and result.requires_apply:
+            runtime = self._runtime
+
+            async def _apply() -> None:
+                outcome = await runtime.apply_config_change(
+                    list(result.requires_apply or [])
+                )
+                msg_parts: list[str] = []
+                if outcome.applied:
+                    msg_parts.append(f"Applied: {', '.join(outcome.applied)}")
+                if outcome.needs_restart_lead:
+                    msg_parts.append(
+                        "Needs /restart-lead: " + ", ".join(outcome.needs_restart_lead)
+                    )
+                if outcome.needs_restart_app:
+                    msg_parts.append(
+                        "Needs full restart: " + ", ".join(outcome.needs_restart_app)
+                    )
+                self._write_marker(
+                    "Config apply",
+                    "\n".join(msg_parts) or "no changes applied",
+                    style="cyan",
+                )
+
+            self._spawn_async_command(_apply())
 
     def _cmd_copy(self, args: str) -> None:
         """Copy the transcript to the terminal clipboard."""
