@@ -533,7 +533,9 @@ class FeatherRuntime:
         # keeps the TUI process's config view consistent; the worker handles
         # its own validate-then-swap internally.
         if self._supervisor is not None and (live or next_turn):
-            reload_class = "next_turn" if next_turn else "live"
+            reload_class = (
+                ReloadClass.NEXT_TURN.value if next_turn else ReloadClass.LIVE.value
+            )
             worker_paths = list(live) + list(next_turn)
             try:
                 ack = await self._supervisor.request_config_reload(
