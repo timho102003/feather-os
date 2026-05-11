@@ -9,7 +9,7 @@ without a corresponding registry entry, forcing an explicit decision
 from __future__ import annotations
 
 from dataclasses import fields, is_dataclass
-from typing import Any, get_args, get_origin
+from typing import get_args, get_origin
 
 import pytest
 
