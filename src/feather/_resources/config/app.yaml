@@ -207,18 +207,19 @@ memory:
   #                                  (NOT the agent's model — would mis-route slugs across providers)
   #   model: <string>             → pin this exact model for the op
   # Multiple ops overriding to the same provider share one cached httpx client.
-  extraction:
-    provider: openai                  # null = inherit app.active_provider
-    model: gpt-5.4-nano                     # null = inherit agent's current conversation model
-    max_output_tokens: 2000
-    temperature: 0.1
-  classification:
-    provider: openai                  # null = inherit; override e.g. "openai" to pin
-    model: gpt-5.4-nano                     # null = inherit; override e.g. "gpt-5-mini"
-    max_output_tokens: 400
-    temperature: 0.0
-  query_builder:
-    provider: openai             # pinned: gpt-5.4-nano is OpenAI-only; cross-provider override
-    model: gpt-5.4-nano
-    max_output_tokens: 200
-    temperature: 0.0
+  operations:
+    extraction:
+      provider: openai                  # null = inherit app.active_provider
+      model: gpt-5.4-nano                     # null = inherit agent's current conversation model
+      max_output_tokens: 2000
+      temperature: 0.1
+    classification:
+      provider: openai                  # null = inherit; override e.g. "openai" to pin
+      model: gpt-5.4-nano                     # null = inherit; override e.g. "gpt-5-mini"
+      max_output_tokens: 400
+      temperature: 0.0
+    query_builder:
+      provider: openai             # pinned: gpt-5.4-nano is OpenAI-only; cross-provider override
+      model: gpt-5.4-nano
+      max_output_tokens: 200
+      temperature: 0.0

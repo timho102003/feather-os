@@ -417,3 +417,86 @@ registered_tools:
     assert legacy.prompt_modules == [
         "feather.core.prompts.default_agent_prompt:DEFAULT_AGENT_PROMPT",
     ]
+
+
+_GROUPED_MEMORY_YAML = """\
+database: { path: feather.db }
+storage: { temp_directory: tmp }
+logging: { path: log, level: INFO }
+compaction: { enabled: true, trigger_ratio: 0.8, context_window_tokens: 100, model: null, max_output_tokens: 100, temperature: 0.2 }
+skills: { directory: skills }
+scheduler: { enabled: true, poll_interval_seconds: 2, failure_retry_seconds: 30, max_due_jobs_per_tick: 10 }
+openai:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini
+  max_output_tokens: 100
+  temperature: 1.0
+  parallel_tool_calls: true
+memory:
+  enabled: true
+  operations:
+    extraction:
+      provider: openai
+      model: gpt-5.4-nano
+      max_output_tokens: 100
+      temperature: 0.1
+    classification:
+      provider: openai
+      model: gpt-5.4-nano
+    query_builder:
+      provider: openai
+      model: gpt-5.4-nano
+"""
+
+_FLAT_MEMORY_YAML = """\
+database: { path: feather.db }
+storage: { temp_directory: tmp }
+logging: { path: log, level: INFO }
+compaction: { enabled: true, trigger_ratio: 0.8, context_window_tokens: 100, model: null, max_output_tokens: 100, temperature: 0.2 }
+skills: { directory: skills }
+scheduler: { enabled: true, poll_interval_seconds: 2, failure_retry_seconds: 30, max_due_jobs_per_tick: 10 }
+openai:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini
+  max_output_tokens: 100
+  temperature: 1.0
+  parallel_tool_calls: true
+memory:
+  enabled: true
+  extraction:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 100
+    temperature: 0.1
+  classification:
+    provider: openai
+    model: gpt-5.4-nano
+  query_builder:
+    provider: openai
+    model: gpt-5.4-nano
+"""
+
+
+def test_loader_reads_grouped_memory_operations(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "app.yaml").write_text(
+        _GROUPED_MEMORY_YAML, encoding="utf-8"
+    )
+
+    cfg = load_app_config(tmp_path)
+
+    assert cfg.memory.extraction.provider == "openai"
+    assert cfg.memory.extraction.model == "gpt-5.4-nano"
+    assert cfg.memory.classification.model == "gpt-5.4-nano"
+    assert cfg.memory.query_builder.model == "gpt-5.4-nano"
+
+
+def test_loader_still_reads_legacy_flat_memory_operations(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "app.yaml").write_text(
+        _FLAT_MEMORY_YAML, encoding="utf-8"
+    )
+
+    cfg = load_app_config(tmp_path)
+
+    assert cfg.memory.extraction.provider == "openai"

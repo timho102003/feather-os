@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+_FLAT_MEMORY_OPS_WARNED = False
+
 import yaml
 
 from feather.memory.config import (
@@ -452,14 +454,35 @@ def _parse_memory_config(raw: dict[str, Any]) -> MemoryConfig:
             trigger_raw.get("max_concurrent_extractions_per_session", 1)
         ),
     )
+    operations_raw = raw.get("operations") or {}
+    extraction_raw = operations_raw.get("extraction") or raw.get("extraction") or {}
+    classification_raw = (
+        operations_raw.get("classification") or raw.get("classification") or {}
+    )
+    query_builder_raw = (
+        operations_raw.get("query_builder") or raw.get("query_builder") or {}
+    )
+    global _FLAT_MEMORY_OPS_WARNED
+    if not operations_raw and any(
+        raw.get(k) for k in ("extraction", "classification", "query_builder")
+    ):
+        if not _FLAT_MEMORY_OPS_WARNED:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "memory.{extraction,classification,query_builder} flat shape is "
+                "deprecated; move under memory.operations.{...} (loader still "
+                "accepts both for now)."
+            )
+            _FLAT_MEMORY_OPS_WARNED = True
     extraction = _parse_operation_model(
-        raw.get("extraction") or {}, default_max=2000, default_temp=0.1
+        extraction_raw, default_max=2000, default_temp=0.1
     )
     classification = _parse_operation_model(
-        raw.get("classification") or {}, default_max=2000, default_temp=0.1
+        classification_raw, default_max=2000, default_temp=0.1
     )
     query_builder = _parse_operation_model(
-        raw.get("query_builder") or {}, default_max=2000, default_temp=0.1
+        query_builder_raw, default_max=2000, default_temp=0.1
     )
     return MemoryConfig(
         enabled=bool(raw.get("enabled", False)),
