@@ -232,7 +232,6 @@ class ConfigScreen(ModalScreen[None]):
         sections = self._subsections()
         if not sections:
             return "(no fields)"
-        prefix = self._tabs[self._active_tab_index].section_prefix
         active_section = sections[self._active_section_index % len(sections)]
         fields = self._fields_in_section()
         rows: list[str] = []
