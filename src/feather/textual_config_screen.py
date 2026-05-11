@@ -129,6 +129,7 @@ class ConfigScreen(ModalScreen[None]):
         overflow-y: scroll;
     }
     #config-footer {
+        dock: bottom;
         height: 1;
         padding: 0 1;
         background: $primary 10%;
