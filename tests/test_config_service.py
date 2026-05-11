@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from feather.config import load_app_config
+from feather.config_paths import PathScope
 from feather.config_service import ConfigService, ValueSource
 from feather.paths import FeatherPaths
 
@@ -52,3 +53,73 @@ def test_get_unknown_path_raises(tmp_path: Path) -> None:
     svc = _service(tmp_path)
     with pytest.raises(KeyError):
         svc.get("app.nope.foo")
+
+
+# ---------------------------------------------------------------------------
+# Task 16: ConfigService.validate + set
+# ---------------------------------------------------------------------------
+
+
+def test_validate_accepts_valid_enum(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.validate("app.active_provider", "claude")
+
+    assert result.ok
+
+
+def test_validate_rejects_unknown_enum(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.validate("app.active_provider", "anthropic")
+
+    assert not result.ok
+    assert "openai" in (result.error or "")
+
+
+def test_validate_rejects_negative_for_positive_validator(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.validate("app.memory.retrieval.top_k_tool", -1)
+
+    assert not result.ok
+
+
+def test_validate_coerces_strings_to_int(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.validate("app.memory.retrieval.top_k_tool", "12")
+
+    assert result.ok
+    assert result.coerced == 12
+
+
+def test_set_writes_to_global_by_default(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.set("app.active_provider", "claude")
+
+    assert result.ok
+    overlay = svc.paths.global_config_dir / "app.yaml"
+    assert overlay.exists()
+    assert "claude" in overlay.read_text(encoding="utf-8")
+
+
+def test_set_writes_to_project_when_flagged(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.set("app.active_provider", "claude", scope=PathScope.PROJECT)
+
+    assert result.ok
+    proj = tmp_path / "proj" / "config" / "app.yaml"
+    assert proj.exists()
+
+
+def test_set_rejects_invalid_value(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.set("app.active_provider", "anthropic")
+
+    assert not result.ok
+    overlay = svc.paths.global_config_dir / "app.yaml"
+    assert not overlay.exists() or "anthropic" not in overlay.read_text(encoding="utf-8")

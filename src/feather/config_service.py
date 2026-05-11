@@ -21,7 +21,7 @@ from typing import Any
 import yaml
 
 from feather.config_paths import ConfigPathResolver, PathScope
-from feather.config_schema import ConfigField, REGISTRY, lookup
+from feather.config_schema import ConfigField, FieldType, REGISTRY, lookup
 from feather.models import AppConfig
 from feather.paths import FeatherPaths
 
@@ -59,6 +59,57 @@ class ConfigRow:
     field: ConfigField
     current: Any
     source: ValueSource
+
+
+@dataclass(slots=True, frozen=True)
+class ValidateResult:
+    """Result of :meth:`ConfigService.validate`."""
+
+    ok: bool
+    coerced: Any = None
+    error: str | None = None
+
+
+def _coerce(value: Any, field_def: ConfigField) -> Any:
+    """Coerce ``value`` to the wire type declared in ``field_def``.
+
+    Args:
+        value: Raw user-supplied value (possibly a string).
+        field_def: Registry entry whose type governs the coercion.
+
+    Returns:
+        The coerced value.
+
+    Raises:
+        ValueError: If coercion fails (e.g. non-boolean string for a
+            BOOLEAN field, or value not in the allowed enum list).
+        TypeError: If the value cannot be converted.
+    """
+
+    if field_def.type is FieldType.INTEGER:
+        return int(value)
+    if field_def.type is FieldType.FLOAT:
+        return float(value)
+    if field_def.type is FieldType.BOOLEAN:
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("true", "yes", "on", "1"):
+                return True
+            if v in ("false", "no", "off", "0"):
+                return False
+            raise ValueError(f"not a boolean: {value!r}")
+        return bool(value)
+    if field_def.type is FieldType.STRING_LIST:
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return list(value)
+    if field_def.type is FieldType.ENUM:
+        if value not in (field_def.enum or ()):
+            raise ValueError(
+                f"value {value!r} not in allowed: {sorted(field_def.enum or ())}"
+            )
+        return value
+    return str(value)
 
 
 class ConfigService:
@@ -102,6 +153,66 @@ class ConfigService:
             raise KeyError(dotted)
         current, source = self._resolve_value(field_def)
         return ConfigValue(field=field_def, current=current, source=source)
+
+    def validate(self, dotted: str, value: Any) -> ValidateResult:
+        """Coerce + validate ``value`` against the registry entry for ``dotted``.
+
+        Args:
+            dotted: Registry path to validate against.
+            value: Raw value (possibly a string from CLI input).
+
+        Returns:
+            :class:`ValidateResult` with ``ok=True`` and the coerced value,
+            or ``ok=False`` and a human-readable error.
+        """
+
+        field_def = lookup(dotted)
+        if field_def is None:
+            return ValidateResult(ok=False, error=f"unknown path: {dotted}")
+
+        try:
+            coerced = _coerce(value, field_def)
+        except (TypeError, ValueError) as exc:
+            return ValidateResult(ok=False, error=str(exc))
+
+        if field_def.validator is not None:
+            try:
+                field_def.validator(coerced)
+            except ValueError as exc:
+                return ValidateResult(ok=False, error=str(exc))
+
+        return ValidateResult(ok=True, coerced=coerced)
+
+    def set(
+        self,
+        dotted: str,
+        value: Any,
+        *,
+        scope: PathScope = PathScope.GLOBAL,
+    ) -> WriteResult:
+        """Validate ``value`` and write it to the resolved YAML file.
+
+        Args:
+            dotted: Registry path to write.
+            value: New value (will be coerced + validated first).
+            scope: Target scope — global overlay or project config.
+
+        Returns:
+            :class:`WriteResult` indicating success or the error message.
+        """
+
+        from feather.config_writer import write_yaml_value
+
+        validate = self.validate(dotted, value)
+        if not validate.ok:
+            return WriteResult(ok=False, path=dotted, error=validate.error)
+
+        res = self._resolver.resolve(dotted, scope=scope)
+        try:
+            write_yaml_value(res.file, res.yaml_path, validate.coerced)
+        except OSError as exc:
+            return WriteResult(ok=False, path=dotted, error=str(exc))
+        return WriteResult(ok=True, path=dotted)
 
     # ----- internal value lookup ---------------------------------
 
