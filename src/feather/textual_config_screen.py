@@ -185,6 +185,18 @@ class ConfigScreen(ModalScreen[None]):
             for i, tab in enumerate(self._tabs)
         )
 
+    @staticmethod
+    def _section_label(path: str, prefix: str) -> str:
+        """Return the synthetic subsection label for ``path`` under ``prefix``.
+
+        Leaves directly under the prefix (no further dot) collapse to the
+        synthetic label ``"agent"``; nested entries return the first
+        dotted segment after the prefix.
+        """
+
+        tail = path[len(prefix):]
+        return tail.split(".", 1)[0] if "." in tail else "agent"
+
     def _subsections(self) -> list[str]:
         """Return unique subsection labels under the active tab.
 
@@ -203,8 +215,7 @@ class ConfigScreen(ModalScreen[None]):
         for f in REGISTRY:
             if not f.path.startswith(prefix):
                 continue
-            tail = f.path[len(prefix):]
-            label = tail.split(".", 1)[0] if "." in tail else "agent"
+            label = self._section_label(f.path, prefix)
             if label not in out:
                 out.append(label)
         return out
@@ -262,15 +273,12 @@ class ConfigScreen(ModalScreen[None]):
             return []
         prefix = self._tabs[self._active_tab_index].section_prefix
         active_section = sections[self._active_section_index % len(sections)]
-        result: list[ConfigField] = []
-        for f in REGISTRY:
-            if not f.path.startswith(prefix):
-                continue
-            tail = f.path[len(prefix):]
-            section = tail.split(".", 1)[0] if "." in tail else "agent"
-            if section == active_section:
-                result.append(f)
-        return result
+        return [
+            f
+            for f in REGISTRY
+            if f.path.startswith(prefix)
+            and self._section_label(f.path, prefix) == active_section
+        ]
 
     def _refresh_body(self) -> None:
         """Re-render sidebar and form in place."""
