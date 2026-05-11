@@ -19,6 +19,10 @@ Three independent coroutines run concurrently:
   agent. Each agent run streams ``RuntimeEvent``s through ``event_sink``
   (one JSON line per event), then a control event ``_run_complete`` or
   ``_run_failed`` marks the call's terminal state.
+* ``ConfigReloadCommand`` is handled serially by the command loop between
+  turns: it calls :meth:`FeatherRuntime.reload_config` (and optionally
+  :meth:`FeatherRuntime.rebuild_agent` for ``next_turn`` class), then
+  emits a ``_config_reload_ack`` control event.
 
 Shutdown sources, all unified through ``shutdown_event``:
 
@@ -38,12 +42,14 @@ import contextlib
 import logging
 import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from feather.core.input_queue import UserInputQueue
 from feather.core.runtime_event_codec import encode_event
 from feather.core.worker_command_codec import (
+    CONFIG_RELOAD_ACK_KIND,
     CommandCodecError,
+    ConfigReloadCommand,
     EnqueueUserInputCommand,
     ResumeOnInboxCommand,
     RunCommand,
@@ -53,6 +59,9 @@ from feather.core.worker_command_codec import (
 )
 from feather.models import AgentRunResult, RuntimeEvent, WorkerStatus
 from feather.storage.worker_heartbeat_store import WorkerHeartbeatStore
+
+if TYPE_CHECKING:
+    from feather.runtime import FeatherRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +101,7 @@ class WorkerCore:
         heartbeat_interval: float,
         command_source: AsyncIterator[str],
         event_sink: EventSink,
+        runtime: "FeatherRuntime | None" = None,
     ) -> None:
         if heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval must be positive")
@@ -103,6 +113,7 @@ class WorkerCore:
         self._heartbeat_interval = heartbeat_interval
         self._command_source = command_source
         self._event_sink = event_sink
+        self._runtime = runtime
         self._command_queue: asyncio.Queue[WorkerCommand] = asyncio.Queue()
         self._shutdown_event = asyncio.Event()
 
@@ -243,6 +254,8 @@ class WorkerCore:
                     "resume_on_inbox",
                     self._agent.resume_on_inbox(cmd.session_id, self._stream_event),
                 )
+            elif isinstance(cmd, ConfigReloadCommand):
+                await self._handle_reload_config(cmd)
             # EnqueueUserInputCommand should never reach the loop — the
             # pump dispatches it directly. Defensive log if it does.
             else:  # pragma: no cover — defensive
@@ -300,6 +313,97 @@ class WorkerCore:
         self._emit_control_event(
             "_run_complete",
             payload=_serialize_result(method_name, result),
+        )
+
+    async def _handle_reload_config(self, cmd: ConfigReloadCommand) -> None:
+        """Handle a :class:`ConfigReloadCommand` between agent turns.
+
+        Implements a validate-then-swap strategy:
+
+        1. Snapshot the current ``_app_config`` so it can be restored on error.
+        2. Call :meth:`FeatherRuntime.reload_config` to swap ``_app_config`` from
+           disk.
+        3. For ``next_turn`` reload class, perform a **dry-run** agent rebuild
+           using the factory before committing.  If the rebuild raises
+           (e.g. invalid ``active_provider`` missing its config block), the prior
+           config is restored and an error ack is emitted.
+        4. Emit a ``_config_reload_ack`` control event with the outcome so the
+           supervisor can unblock its waiting :meth:`request_config_reload` call.
+
+        When no runtime is attached (unit-test mode without a real
+        :class:`FeatherRuntime`), the ack is emitted with ``ok=False`` and an
+        explanatory error so tests that intentionally omit the runtime see a
+        clear failure rather than a silent no-op.
+
+        Args:
+            cmd: The decoded :class:`ConfigReloadCommand` from the supervisor.
+        """
+
+        if self._runtime is None:
+            logger.warning(
+                "worker received reload_config but no runtime attached "
+                "correlation_id=%s — emitting error ack",
+                cmd.correlation_id,
+            )
+            self._emit_control_event(
+                CONFIG_RELOAD_ACK_KIND,
+                payload={
+                    "correlation_id": cmd.correlation_id,
+                    "ok": False,
+                    "applied_paths": [],
+                    "error": "WorkerCore has no runtime attached",
+                },
+            )
+            return
+
+        prior_config = self._runtime.config
+        try:
+            await self._runtime.reload_config()
+            if cmd.reload_class == "next_turn":
+                # Dry-run: attempt to build each cached agent with the new
+                # config.  If any build raises, we roll back before committing.
+                for agent_name in list(self._runtime._agents):
+                    self._runtime._agent_factory.build(agent_name)
+                # Dry-run succeeded — commit by calling rebuild_agent which
+                # replaces the cached instance.
+                for agent_name in list(self._runtime._agents):
+                    self._runtime.rebuild_agent(agent_name)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "worker reload_config failed — rolling back "
+                "correlation_id=%s error=%s",
+                cmd.correlation_id,
+                exc,
+            )
+            # Roll back: restore prior config on the runtime so the agent
+            # keeps running against the known-good config.
+            self._runtime._app_config = prior_config
+            self._emit_control_event(
+                CONFIG_RELOAD_ACK_KIND,
+                payload={
+                    "correlation_id": cmd.correlation_id,
+                    "ok": False,
+                    "applied_paths": [],
+                    "error": str(exc),
+                },
+            )
+            return
+
+        logger.info(
+            "worker reload_config applied reload_class=%s paths=%r "
+            "correlation_id=%s",
+            cmd.reload_class,
+            cmd.changed_paths,
+            cmd.correlation_id,
+        )
+        self._emit_control_event(
+            CONFIG_RELOAD_ACK_KIND,
+            payload={
+                "correlation_id": cmd.correlation_id,
+                "ok": True,
+                "applied_paths": list(cmd.changed_paths),
+                "error": None,
+            },
         )
 
     def _stream_event(self, event: RuntimeEvent) -> None:
