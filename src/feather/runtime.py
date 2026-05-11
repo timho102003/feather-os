@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from feather.config import load_app_config
+from feather.config_schema import ReloadClass
+from feather.config_schema import lookup as _lookup_field
 from feather.core.agent_factory import AgentFactory
 from feather.core.base_agent import BaseAgent
 from feather.core.cron_scheduler import CronScheduler
@@ -45,6 +48,22 @@ from feather.storage.task_store import TaskStore
 from feather.storage.tool_output_store import ToolOutputStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class ConfigApplyResult:
+    """Outcome of :meth:`FeatherRuntime.apply_config_change`.
+
+    Attributes:
+        applied: Paths that were applied (LIVE or NEXT_TURN class).
+        needs_restart_lead: Paths that require a lead-agent restart.
+        needs_restart_app: Paths that require a full application restart.
+    """
+
+    applied: list[str]
+    needs_restart_lead: list[str]
+    needs_restart_app: list[str]
+
 
 _TERMINAL_TASK_STATUSES = {
     TaskStatus.COMPLETED_WITH_REPORT,
@@ -431,6 +450,61 @@ class FeatherRuntime:
         self._app_config = new_config
         logger.info(
             "runtime.config.reloaded active_provider=%s", new_config.active_provider
+        )
+
+    async def apply_config_change(
+        self, changed_paths: list[str]
+    ) -> ConfigApplyResult:
+        """Apply the cumulative reload effect of ``changed_paths``.
+
+        Looks up each path's :class:`~feather.config_schema.ReloadClass` from
+        the registry and fans out accordingly:
+
+        - ``LIVE``-only changes → :meth:`reload_config` only.
+        - Any ``NEXT_TURN`` → :meth:`reload_config` + :meth:`rebuild_agent`
+          for every cached agent.
+        - ``RESTART_LEAD`` / ``RESTART_APP`` paths are surfaced in the
+          returned :class:`ConfigApplyResult`; the caller (TUI) shows the
+          appropriate banner.
+
+        Args:
+            changed_paths: Dotted config paths that were written to disk
+                (e.g. ``["app.active_provider", "app.openai.model"]``).
+
+        Returns:
+            A :class:`ConfigApplyResult` describing what was applied and what
+            requires a manual restart.
+        """
+
+        live: list[str] = []
+        next_turn: list[str] = []
+        restart_lead: list[str] = []
+        restart_app: list[str] = []
+
+        for path in changed_paths:
+            field_def = _lookup_field(path)
+            if field_def is None:
+                continue
+            bucket = {
+                ReloadClass.LIVE: live,
+                ReloadClass.NEXT_TURN: next_turn,
+                ReloadClass.RESTART_LEAD: restart_lead,
+                ReloadClass.RESTART_APP: restart_app,
+            }[field_def.reload]
+            bucket.append(path)
+
+        applied = list(live)
+        if live or next_turn:
+            await self.reload_config()
+            applied.extend(next_turn)
+            if next_turn:
+                for agent_name in list(self._agents):
+                    self.rebuild_agent(agent_name)
+
+        return ConfigApplyResult(
+            applied=applied,
+            needs_restart_lead=restart_lead,
+            needs_restart_app=restart_app,
         )
 
     async def start_background_services(

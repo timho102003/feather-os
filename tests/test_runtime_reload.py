@@ -187,3 +187,100 @@ async def test_build_agent_populates_cache(tmp_path: Path) -> None:
         assert runtime.get_agent("lead") is agent
     finally:
         await runtime.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 20 — apply_config_change
+# ---------------------------------------------------------------------------
+
+
+async def test_apply_config_change_live_reload_only(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        (project / "config" / "app.yaml").write_text(
+            _MINIMAL_YAML.replace("trigger_ratio: 0.8", "trigger_ratio: 0.5"),
+            encoding="utf-8",
+        )
+
+        result = await runtime.apply_config_change(
+            ["app.compaction.trigger_ratio"]
+        )
+
+        assert result.applied == ["app.compaction.trigger_ratio"]
+        assert result.needs_restart_lead == []
+        assert result.needs_restart_app == []
+        assert runtime.config.compaction.trigger_ratio == 0.5
+    finally:
+        await runtime.close()
+
+
+async def test_apply_config_change_next_turn_rebuilds_agent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+    _write_minimal_agent_yaml(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-before")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-after")
+
+    runtime = await FeatherRuntime.create(project)
+    try:
+        agent_before = runtime.build_agent("lead")
+        before_id = id(agent_before)
+
+        (project / "config" / "app.yaml").write_text(
+            _MINIMAL_YAML.replace("active_provider: openai", "active_provider: claude"),
+            encoding="utf-8",
+        )
+
+        result = await runtime.apply_config_change(["app.active_provider"])
+
+        assert "app.active_provider" in result.applied
+        assert id(runtime.get_agent("lead")) != before_id
+    finally:
+        await runtime.close()
+
+
+async def test_apply_config_change_flags_restart_lead(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        result = await runtime.apply_config_change(
+            ["app.claude.request_timeout_seconds"]
+        )
+
+        assert "app.claude.request_timeout_seconds" in result.needs_restart_lead
+    finally:
+        await runtime.close()
+
+
+async def test_apply_config_change_flags_restart_app(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        result = await runtime.apply_config_change(["app.database.path"])
+
+        assert "app.database.path" in result.needs_restart_app
+    finally:
+        await runtime.close()
