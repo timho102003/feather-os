@@ -179,14 +179,11 @@ class ConfigScreen(ModalScreen[None]):
     def _render_tab_bar(self) -> str:
         """Render the top tab bar with the active tab highlighted."""
 
-        parts: list[str] = []
-        for i, tab in enumerate(self._tabs):
-            label = tab.label
-            if i == self._active_tab_index:
-                parts.append(f"[reverse]{label}[/reverse]")
-            else:
-                parts.append(label)
-        return "   ".join(parts)
+        active = self._active_tab_index
+        return "   ".join(
+            f"[reverse]{tab.label}[/reverse]" if i == active else tab.label
+            for i, tab in enumerate(self._tabs)
+        )
 
     def _subsections(self) -> list[str]:
         """Return unique subsection labels under the active tab.
@@ -220,11 +217,11 @@ class ConfigScreen(ModalScreen[None]):
             return "(no fields)"
         # Clamp cursor in case the tab switch changed section count.
         self._active_section_index = self._active_section_index % len(sections)
-        parts: list[str] = []
-        for i, name in enumerate(sections):
-            marker = "▶" if i == self._active_section_index else " "
-            parts.append(f"{marker} {name}")
-        return "\n".join(parts)
+        active = self._active_section_index
+        return "\n".join(
+            f"{'▶' if i == active else ' '} {name}"
+            for i, name in enumerate(sections)
+        )
 
     def _render_form(self) -> str:
         """Render the right-hand form rows for the active subsection."""
