@@ -101,4 +101,20 @@ class ConfigField:
 
 
 REGISTRY: tuple[ConfigField, ...] = ()
-IGNORED_PATHS: frozenset[str] = frozenset()
+IGNORED_PATHS: frozenset[str] = frozenset({
+    # Provider-internal cache plumbing (not a user-facing knob)
+    "app.openai.prompt_cache_key",
+    "app.openai.prompt_cache_retention",
+    "app.openai.store",
+    # MCP servers managed via a different (future) UI surface
+    "app.mcp.servers",
+    # Phase 1 keeps prompt_modules read-only — changing it risks
+    # loading a non-existent module mid-session.
+    "agents.*.prompt_modules",
+    # Phase 3 — agent-level MCP overrides
+    "agents.*.mcp_servers",
+    # Internal: agents.*.description/inline_prompt are spec-defined
+    # but not surfaced in Phase 1
+    "agents.*.description",
+    "agents.*.inline_prompt",
+})
