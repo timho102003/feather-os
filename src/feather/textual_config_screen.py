@@ -281,6 +281,11 @@ class ConfigScreen(ModalScreen[None]):
         self.query_one("#config-sidebar", Static).update(self._render_sidebar())
         self.query_one("#config-form", Static).update(self._render_form())
 
+    def _set_footer(self, text: str) -> None:
+        """Update the footer status line in place."""
+
+        self.query_one("#config-footer", Static).update(text)
+
     # ------------------------------------------------------------------
     # Tab navigation
     # ------------------------------------------------------------------
@@ -388,9 +393,7 @@ class ConfigScreen(ModalScreen[None]):
 
         validate = self._service.validate(field.path, event.value)
         if not validate.ok:
-            self.query_one("#config-footer", Static).update(
-                f"INVALID: {validate.error}   esc=cancel"
-            )
+            self._set_footer(f"INVALID: {validate.error}   esc=cancel")
             event.input.remove()
             self._pending_edit = None
             return
@@ -399,7 +402,7 @@ class ConfigScreen(ModalScreen[None]):
         self._pending_edit = None
         event.input.remove()
         self._refresh_body()
-        self.query_one("#config-footer", Static).update(self._render_footer())
+        self._set_footer(self._render_footer())
 
     # ------------------------------------------------------------------
     # Save
@@ -409,14 +412,12 @@ class ConfigScreen(ModalScreen[None]):
         """Write all dirty fields through ConfigService and show a banner."""
 
         if not self._dirty:
-            self.query_one("#config-footer", Static).update(
-                "no dirty fields  esc=close"
-            )
+            self._set_footer("no dirty fields  esc=close")
             return
 
         # self_repair.enabled requires a y-confirm first.
         if "app.self_repair.enabled" in self._dirty and not self._self_repair_confirmed:
-            self.query_one("#config-footer", Static).update(
+            self._set_footer(
                 "self_repair.enabled change is RESTART-APP. Press 'y' to confirm, esc to cancel."
             )
             return
@@ -456,7 +457,7 @@ class ConfigScreen(ModalScreen[None]):
         if errors:
             parts.append(f"{len(errors)} errors")
 
-        self.query_one("#config-footer", Static).update(
+        self._set_footer(
             "Saved: " + (", ".join(parts) or "nothing") + "   esc=close"
         )
         self._refresh_body()
@@ -465,7 +466,6 @@ class ConfigScreen(ModalScreen[None]):
         applied_paths = list(live) + list(next_turn)
         if applied_paths and self._runtime is not None:
             runtime = self._runtime
-            footer_widget = self.query_one("#config-footer", Static)
 
             async def _apply() -> None:
                 outcome = await runtime.apply_config_change(applied_paths)
@@ -480,9 +480,7 @@ class ConfigScreen(ModalScreen[None]):
                     msg_parts.append(
                         f"restart-app: {', '.join(outcome.needs_restart_app)}"
                     )
-                footer_widget.update(
-                    " | ".join(msg_parts) or "no changes applied"
-                )
+                self._set_footer(" | ".join(msg_parts) or "no changes applied")
 
             self.app.run_worker(_apply(), exclusive=False)
 
@@ -522,9 +520,7 @@ class ConfigScreen(ModalScreen[None]):
         self._dirty.pop(field.path, None)
         self._service.reset(field.path)
         self._refresh_body()
-        self.query_one("#config-footer", Static).update(
-            f"reset {field.path}   esc=close"
-        )
+        self._set_footer(f"reset {field.path}   esc=close")
 
     # ------------------------------------------------------------------
     # Close / Esc
@@ -535,7 +531,7 @@ class ConfigScreen(ModalScreen[None]):
 
         if self._dirty and not self._confirm_close:
             self._confirm_close = True
-            self.query_one("#config-footer", Static).update(
+            self._set_footer(
                 f"{len(self._dirty)} dirty — press Esc again to discard"
             )
             return
