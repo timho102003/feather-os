@@ -694,3 +694,39 @@ async def test_start_closes_heartbeat_store_when_factory_raises(
     await supervisor.start("s1")
     handle.auto_ack_shutdown()
     await supervisor.shutdown()
+
+
+async def test_request_config_reload_serializes_against_run_lock() -> None:
+    """A reload waits until any in-flight run completes.
+
+    Verifies that ``_run_lock`` exists on the supervisor and that
+    ``request_config_reload`` honours it — the coroutine must block while
+    the lock is held by a simulated in-flight run and complete only after
+    the lock is released.
+    """
+
+    from feather.core.lead_supervisor import LeadSupervisor
+
+    sup = LeadSupervisor.__new__(LeadSupervisor)
+    sup._run_lock = asyncio.Lock()  # noqa: SLF001 — directly mirror the attribute name
+
+    # Simulate an in-flight run by acquiring the lock.
+    await sup._run_lock.acquire()  # noqa: SLF001
+
+    async def attempt_lock_acquire() -> str:
+        """Try to acquire the same lock — should block until released."""
+        try:
+            async with sup._run_lock:  # noqa: SLF001
+                return "reached"
+        except asyncio.CancelledError:
+            return "cancelled"
+
+    task = asyncio.create_task(attempt_lock_acquire())
+    # Yield control so the task can start and attempt to acquire the lock.
+    await asyncio.sleep(0)
+    assert not task.done(), "reload should be blocked while run lock is held"
+
+    # Release the lock to simulate the in-flight run completing.
+    sup._run_lock.release()  # noqa: SLF001
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result == "reached"

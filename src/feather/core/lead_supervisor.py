@@ -396,12 +396,14 @@ class LeadSupervisor:
         to the worker subprocess and waits up to ``timeout`` seconds for the
         corresponding ``_config_reload_ack`` control event.
 
-        The ack is routed through the shared ``_event_queue``.  If a
-        ``run`` or ``resume_on_inbox`` call is in flight, its
-        ``_await_run_terminal`` loop will receive and re-queue the ack via
-        ``_pending_reload_acks`` so neither side loses the message.  To
-        avoid blocking the agent-run path, callers should prefer to invoke
-        this method between turns rather than concurrently with one.
+        The method acquires ``_run_lock`` before touching the event queue,
+        so it serializes with any in-flight :meth:`run` /
+        :meth:`resume_on_inbox` call.  A reload that arrives while a run is
+        in progress will wait until the turn completes ("defer until between
+        turns" guarantee).  A new run that arrives while the reload is in
+        progress will wait until the ack is received.  Because both sides
+        hold the same lock, ``_await_config_reload_ack`` and
+        ``_await_run_terminal`` never drain ``_event_queue`` concurrently.
 
         Args:
             changed_paths: Dotted config paths that were written to disk.
@@ -418,19 +420,20 @@ class LeadSupervisor:
             SupervisorError: If the worker exits before sending the ack.
         """
 
-        handle = self._require_handle()
-        correlation_id = uuid.uuid4().hex
-        cmd = ConfigReloadCommand(
-            correlation_id=correlation_id,
-            changed_paths=list(changed_paths),
-            reload_class=reload_class,
-        )
-        await handle.send_command(cmd)
-        # Await the correlated ack from the event queue.
-        return await asyncio.wait_for(
-            self._await_config_reload_ack(correlation_id),
-            timeout=timeout,
-        )
+        async with self._run_lock:
+            handle = self._require_handle()
+            correlation_id = uuid.uuid4().hex
+            cmd = ConfigReloadCommand(
+                correlation_id=correlation_id,
+                changed_paths=list(changed_paths),
+                reload_class=reload_class,
+            )
+            await handle.send_command(cmd)
+            # Await the correlated ack from the event queue.
+            return await asyncio.wait_for(
+                self._await_config_reload_ack(correlation_id),
+                timeout=timeout,
+            )
 
     # ------------------------------------------------------------------ #
     # Liveness
