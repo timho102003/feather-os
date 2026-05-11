@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from feather.core.worker_command_codec import (
+    CONFIG_RELOAD_ACK_KIND,
     CommandCodecError,
+    ConfigReloadCommand,
     EnqueueUserInputCommand,
     ResumeOnInboxCommand,
     RunCommand,
@@ -81,3 +85,79 @@ def test_decode_rejects_run_missing_required_fields() -> None:
 def test_decode_rejects_run_with_non_string_text() -> None:
     with pytest.raises(CommandCodecError):
         decode_command('{"cmd": "run", "session_id": "s1", "incoming_text": 42}')
+
+
+# ---------------------------------------------------------------------------
+# Task 21 — ConfigReloadCommand round-trips
+# ---------------------------------------------------------------------------
+
+
+def test_config_reload_command_round_trips_live() -> None:
+    """Live-class reload command encodes and decodes correctly."""
+    cmd = ConfigReloadCommand(
+        correlation_id="abc123",
+        changed_paths=["app.compaction.trigger_ratio"],
+        reload_class="live",
+    )
+    assert _roundtrip(cmd) == cmd
+
+
+def test_config_reload_command_round_trips_next_turn() -> None:
+    """Next-turn-class reload command encodes and decodes correctly."""
+    cmd = ConfigReloadCommand(
+        correlation_id="xyz789",
+        changed_paths=["app.active_provider", "app.openai.model"],
+        reload_class="next_turn",
+    )
+    assert _roundtrip(cmd) == cmd
+
+
+def test_config_reload_command_preserves_empty_paths() -> None:
+    """Empty changed_paths list is faithfully preserved."""
+    cmd = ConfigReloadCommand(
+        correlation_id="empty",
+        changed_paths=[],
+        reload_class="live",
+    )
+    assert _roundtrip(cmd) == cmd
+
+
+def test_config_reload_command_wire_format() -> None:
+    """Encoded JSON contains all required fields with correct types."""
+    cmd = ConfigReloadCommand(
+        correlation_id="c1",
+        changed_paths=["app.openai.model"],
+        reload_class="next_turn",
+    )
+    raw = json.loads(encode_command(cmd))
+    assert raw["cmd"] == "reload_config"
+    assert raw["correlation_id"] == "c1"
+    assert raw["changed_paths"] == ["app.openai.model"]
+    assert raw["reload_class"] == "next_turn"
+
+
+def test_decode_rejects_config_reload_missing_correlation_id() -> None:
+    with pytest.raises(CommandCodecError, match="correlation_id"):
+        decode_command(
+            '{"cmd": "reload_config", "changed_paths": [], "reload_class": "live"}'
+        )
+
+
+def test_decode_rejects_config_reload_non_list_changed_paths() -> None:
+    with pytest.raises(CommandCodecError, match="changed_paths"):
+        decode_command(
+            '{"cmd": "reload_config", "correlation_id": "x", '
+            '"changed_paths": "oops", "reload_class": "live"}'
+        )
+
+
+def test_decode_rejects_config_reload_missing_reload_class() -> None:
+    with pytest.raises(CommandCodecError, match="reload_class"):
+        decode_command(
+            '{"cmd": "reload_config", "correlation_id": "x", "changed_paths": []}'
+        )
+
+
+def test_config_reload_ack_kind_constant() -> None:
+    """CONFIG_RELOAD_ACK_KIND is the string the worker uses in control events."""
+    assert CONFIG_RELOAD_ACK_KIND == "_config_reload_ack"
