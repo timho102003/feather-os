@@ -20,6 +20,7 @@ def test_sanitizer_strips_minimum_at_top_level() -> None:
         },
         "required": ["limit"],
     }
+    snapshot = copy.deepcopy(schema)
 
     cleaned = sanitize_anthropic_tool_schema(schema)
 
@@ -27,6 +28,10 @@ def test_sanitizer_strips_minimum_at_top_level() -> None:
     assert "maximum" not in cleaned["properties"]["limit"]
     assert cleaned["properties"]["limit"]["type"] == "integer"
     assert cleaned["required"] == ["limit"]
+    # Non-mutation: input dict unchanged.
+    assert schema == snapshot
+    # Identity: result is a distinct object.
+    assert cleaned is not schema
 
 
 def test_sanitizer_does_not_recurse_into_default_values() -> None:
