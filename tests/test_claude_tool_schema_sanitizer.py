@@ -146,3 +146,30 @@ def test_sanitizer_handles_exclusive_minimum_maximum() -> None:
 
     assert "exclusiveMinimum" not in cleaned["properties"]["ratio"]
     assert "exclusiveMaximum" not in cleaned["properties"]["ratio"]
+
+
+def test_sanitizer_is_idempotent() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "limit": {"type": ["integer", "null"], "minimum": 1},
+            "pages": {"type": "array", "items": {"type": "integer", "minimum": 1}},
+        },
+    }
+
+    once = sanitize_anthropic_tool_schema(schema)
+    twice = sanitize_anthropic_tool_schema(once)
+
+    assert once == twice
+
+
+def test_sanitizer_does_not_mutate_input() -> None:
+    schema = {
+        "type": "object",
+        "properties": {"limit": {"type": "integer", "minimum": 1}},
+    }
+    snapshot = copy.deepcopy(schema)
+
+    sanitize_anthropic_tool_schema(schema)
+
+    assert schema == snapshot
