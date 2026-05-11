@@ -59,17 +59,21 @@ class ConfigPathResolver:
         """
 
         parts = dotted.split(".")
-        if len(parts) < 3:
-            raise ValueError(
-                f"config path must have at least 3 segments, got {dotted!r}"
-            )
-
         head, *rest = parts
+
         if head == "app":
+            if len(parts) < 2:
+                raise ValueError(
+                    f"app config path must have at least 2 segments, got {dotted!r}"
+                )
             base = self._app_yaml_dir(scope) / "app.yaml"
             return PathResolution(file=base, yaml_path=rest, scope=scope)
 
         if head == "agents":
+            if len(parts) < 3:
+                raise ValueError(
+                    f"agents config path must have at least 3 segments, got {dotted!r}"
+                )
             agent_name, *yaml_path = rest
             base = self._app_yaml_dir(scope) / "agents" / f"{agent_name}.yaml"
             return PathResolution(file=base, yaml_path=yaml_path, scope=scope)
