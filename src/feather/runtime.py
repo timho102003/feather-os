@@ -6,7 +6,10 @@ import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from feather.core.lead_supervisor import LeadSupervisor
 
 import httpx
 
@@ -117,6 +120,7 @@ class FeatherRuntime:
         self._shutdown_timeout_s = shutdown_timeout_s
         self._session_event_handlers: dict[str, EventHandler] = {}
         self._agents: dict[str, BaseAgent] = {}
+        self._supervisor: "LeadSupervisor | None" = None
 
     @classmethod
     async def create(
@@ -379,6 +383,29 @@ class FeatherRuntime:
         logger.info("runtime.agent.rebuilt name=%s provider=%s", name, active)
         return new_agent
 
+    def attach_supervisor(self, supervisor: "LeadSupervisor") -> None:
+        """Register a :class:`~feather.core.lead_supervisor.LeadSupervisor`.
+
+        When a supervisor is attached, :meth:`apply_config_change` fans out
+        the reload to the lead worker subprocess in addition to applying it
+        in-process (so the TUI process's config view stays consistent).
+
+        Args:
+            supervisor: The running supervisor that owns the lead worker.
+        """
+
+        self._supervisor = supervisor
+        logger.info("runtime.supervisor.attached")
+
+    def detach_supervisor(self) -> None:
+        """Unregister the attached supervisor.
+
+        Safe to call even when no supervisor is attached.
+        """
+
+        self._supervisor = None
+        logger.info("runtime.supervisor.detached")
+
     @property
     def input_queue(self) -> UserInputQueue:
         """Return the shared per-session user-input queue."""
@@ -500,6 +527,39 @@ class FeatherRuntime:
             if next_turn:
                 for agent_name in list(self._agents):
                     self.rebuild_agent(agent_name)
+
+        # Worker-mode fanout: when a supervisor is attached, propagate the same
+        # reload to the lead worker subprocess.  The in-process reload above
+        # keeps the TUI process's config view consistent; the worker handles
+        # its own validate-then-swap internally.
+        if self._supervisor is not None and (live or next_turn):
+            reload_class = "next_turn" if next_turn else "live"
+            worker_paths = list(live) + list(next_turn)
+            try:
+                ack = await self._supervisor.request_config_reload(
+                    worker_paths, reload_class
+                )
+                if not ack.ok:
+                    logger.warning(
+                        "runtime.apply_config_change worker reload failed: %s",
+                        ack.error,
+                    )
+                    # Return empty applied list so the caller knows the
+                    # worker-side apply did not succeed.
+                    return ConfigApplyResult(
+                        applied=[],
+                        needs_restart_lead=restart_lead,
+                        needs_restart_app=restart_app,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "runtime.apply_config_change supervisor fanout error: %s", exc
+                )
+                return ConfigApplyResult(
+                    applied=[],
+                    needs_restart_lead=restart_lead,
+                    needs_restart_app=restart_app,
+                )
 
         return ConfigApplyResult(
             applied=applied,

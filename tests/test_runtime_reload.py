@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from feather.core.lead_supervisor import ConfigReloadAckResult
 from feather.models import ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.runtime import FeatherRuntime
@@ -282,5 +283,148 @@ async def test_apply_config_change_flags_restart_app(tmp_path: Path) -> None:
         result = await runtime.apply_config_change(["app.database.path"])
 
         assert "app.database.path" in result.needs_restart_app
+    finally:
+        await runtime.close()
+
+
+# ---------------------------------------------------------------------------
+# Task 24 — apply_config_change worker-mode fanout
+# ---------------------------------------------------------------------------
+
+
+class _FakeSupervisor:
+    """Minimal stand-in for LeadSupervisor that records reload requests."""
+
+    def __init__(self, *, ok: bool = True, error: str | None = None) -> None:
+        self._ok = ok
+        self._error = error
+        self.calls: list[tuple[list[str], str]] = []
+
+    async def request_config_reload(
+        self,
+        changed_paths: list[str],
+        reload_class: str,
+        *,
+        timeout: float = 10.0,
+    ) -> ConfigReloadAckResult:
+        self.calls.append((list(changed_paths), reload_class))
+        return ConfigReloadAckResult(
+            ok=self._ok,
+            applied_paths=list(changed_paths) if self._ok else [],
+            error=self._error,
+            correlation_id="fake-corr",
+        )
+
+
+async def test_attach_supervisor_is_called_on_live_apply(tmp_path: Path) -> None:
+    """When a supervisor is attached, apply_config_change calls request_config_reload."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        supervisor = _FakeSupervisor(ok=True)
+        runtime.attach_supervisor(supervisor)
+
+        (project / "config" / "app.yaml").write_text(
+            _MINIMAL_YAML.replace("trigger_ratio: 0.8", "trigger_ratio: 0.5"),
+            encoding="utf-8",
+        )
+
+        result = await runtime.apply_config_change(["app.compaction.trigger_ratio"])
+
+        assert result.applied == ["app.compaction.trigger_ratio"]
+        assert len(supervisor.calls) == 1
+        paths, reload_class = supervisor.calls[0]
+        assert "app.compaction.trigger_ratio" in paths
+        assert reload_class == "live"
+    finally:
+        runtime.detach_supervisor()
+        await runtime.close()
+
+
+async def test_attach_supervisor_not_called_for_restart_class(tmp_path: Path) -> None:
+    """RESTART_LEAD paths do not trigger the supervisor fanout (nothing to reload)."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        supervisor = _FakeSupervisor(ok=True)
+        runtime.attach_supervisor(supervisor)
+
+        result = await runtime.apply_config_change(["app.database.path"])
+
+        assert "app.database.path" in result.needs_restart_app
+        # Supervisor fanout not called — no live/next_turn paths.
+        assert supervisor.calls == []
+    finally:
+        runtime.detach_supervisor()
+        await runtime.close()
+
+
+async def test_supervisor_error_ack_returns_empty_applied(tmp_path: Path) -> None:
+    """When the worker ack reports ok=False, applied list is empty."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        supervisor = _FakeSupervisor(ok=False, error="worker blown up")
+        runtime.attach_supervisor(supervisor)
+
+        (project / "config" / "app.yaml").write_text(
+            _MINIMAL_YAML.replace("trigger_ratio: 0.8", "trigger_ratio: 0.5"),
+            encoding="utf-8",
+        )
+
+        result = await runtime.apply_config_change(["app.compaction.trigger_ratio"])
+
+        assert result.applied == []
+    finally:
+        runtime.detach_supervisor()
+        await runtime.close()
+
+
+async def test_detach_supervisor_stops_fanout(tmp_path: Path) -> None:
+    """After detach_supervisor, apply_config_change no longer fans out to the worker."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+
+    runtime = await FeatherRuntime.create(
+        project, provider_factory=_fake_provider_factory
+    )
+    try:
+        supervisor = _FakeSupervisor(ok=True)
+        runtime.attach_supervisor(supervisor)
+        runtime.detach_supervisor()
+
+        (project / "config" / "app.yaml").write_text(
+            _MINIMAL_YAML.replace("trigger_ratio: 0.8", "trigger_ratio: 0.5"),
+            encoding="utf-8",
+        )
+
+        result = await runtime.apply_config_change(["app.compaction.trigger_ratio"])
+
+        assert result.applied == ["app.compaction.trigger_ratio"]
+        assert supervisor.calls == []  # no fanout after detach
     finally:
         await runtime.close()
