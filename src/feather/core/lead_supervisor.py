@@ -37,13 +37,17 @@ import contextlib
 import logging
 import signal
 import sys
+import uuid
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
 from feather.core.runtime_event_codec import EventCodecError, decode_event
 from feather.core.worker_command_codec import (
+    CONFIG_RELOAD_ACK_KIND,
+    ConfigReloadCommand,
     EnqueueUserInputCommand,
     ResumeOnInboxCommand,
     RunCommand,
@@ -70,6 +74,24 @@ _SHUTDOWN_ACK = "_shutdown_ack"
 _DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1.0
 _DEFAULT_STALENESS_THRESHOLD_SECONDS = 5.0
 _DEFAULT_SHUTDOWN_GRACE_SECONDS = 2.0
+_DEFAULT_CONFIG_RELOAD_TIMEOUT_SECONDS = 10.0
+
+
+@dataclass(slots=True, frozen=True)
+class ConfigReloadAckResult:
+    """Outcome of :meth:`LeadSupervisor.request_config_reload`.
+
+    Attributes:
+        ok: True when the worker applied the reload without error.
+        applied_paths: Dotted paths the worker successfully reloaded.
+        error: Error message when ``ok`` is False; ``None`` otherwise.
+        correlation_id: Echoed back from the command for traceability.
+    """
+
+    ok: bool
+    applied_paths: list[str]
+    error: str | None
+    correlation_id: str
 # Cap the event queue so a chatty worker can't grow it unbounded inside
 # the supervisor process: stdout reads naturally backpressure on the OS
 # pipe buffer once the queue is full. 1024 covers ~10s of streaming text
@@ -361,6 +383,55 @@ class LeadSupervisor:
             EnqueueUserInputCommand(session_id=session_id, text=text)
         )
 
+    async def request_config_reload(
+        self,
+        changed_paths: list[str],
+        reload_class: str,
+        *,
+        timeout: float = _DEFAULT_CONFIG_RELOAD_TIMEOUT_SECONDS,
+    ) -> ConfigReloadAckResult:
+        """Send a config-reload request to the worker and await the ack.
+
+        Dispatches a :class:`~feather.core.worker_command_codec.ConfigReloadCommand`
+        to the worker subprocess and waits up to ``timeout`` seconds for the
+        corresponding ``_config_reload_ack`` control event.
+
+        The ack is routed through the shared ``_event_queue``.  If a
+        ``run`` or ``resume_on_inbox`` call is in flight, its
+        ``_await_run_terminal`` loop will receive and re-queue the ack via
+        ``_pending_reload_acks`` so neither side loses the message.  To
+        avoid blocking the agent-run path, callers should prefer to invoke
+        this method between turns rather than concurrently with one.
+
+        Args:
+            changed_paths: Dotted config paths that were written to disk.
+            reload_class: ``"live"`` or ``"next_turn"``.
+            timeout: Seconds to wait for the worker ack before raising
+                :class:`asyncio.TimeoutError`.
+
+        Returns:
+            A :class:`ConfigReloadAckResult` with the worker's outcome.
+
+        Raises:
+            RuntimeError: If the supervisor has not been started.
+            asyncio.TimeoutError: If the ack does not arrive within ``timeout``.
+            SupervisorError: If the worker exits before sending the ack.
+        """
+
+        handle = self._require_handle()
+        correlation_id = uuid.uuid4().hex
+        cmd = ConfigReloadCommand(
+            correlation_id=correlation_id,
+            changed_paths=list(changed_paths),
+            reload_class=reload_class,
+        )
+        await handle.send_command(cmd)
+        # Await the correlated ack from the event queue.
+        return await asyncio.wait_for(
+            self._await_config_reload_ack(correlation_id),
+            timeout=timeout,
+        )
+
     # ------------------------------------------------------------------ #
     # Liveness
     # ------------------------------------------------------------------ #
@@ -475,6 +546,61 @@ class LeadSupervisor:
                     logger.exception(
                         "lead_supervisor event_handler raised — continuing"
                     )
+
+    async def _await_config_reload_ack(
+        self, correlation_id: str
+    ) -> "ConfigReloadAckResult":
+        """Drain the event queue until the correlated ``_config_reload_ack`` arrives.
+
+        This is only safe to call between agent runs (i.e. when no
+        :meth:`run` / :meth:`resume_on_inbox` call is in progress), because it
+        consumes events from the shared queue directly.  Non-ack events are
+        discarded; UI events emitted in this narrow window are not expected.
+
+        Args:
+            correlation_id: The id echoed back by the worker in the ack payload.
+
+        Returns:
+            A :class:`ConfigReloadAckResult` decoded from the ack payload.
+
+        Raises:
+            SupervisorError: If the worker exits (EOF) before the ack arrives.
+        """
+
+        while True:
+            event = await self._event_queue.get()
+            if event is None:
+                raise SupervisorError(
+                    f"worker exited before config_reload_ack "
+                    f"correlation_id={correlation_id!r} "
+                    f"session_id={self._session_id!r}"
+                )
+            if event.kind != CONFIG_RELOAD_ACK_KIND:
+                # Drop non-ack events (there should be none between turns).
+                logger.debug(
+                    "lead_supervisor _await_config_reload_ack swallowed "
+                    "unexpected event kind=%s",
+                    event.kind,
+                )
+                continue
+            payload = event.payload or {}
+            if payload.get("correlation_id") != correlation_id:
+                # Stale ack from a previous reload — discard and keep waiting.
+                logger.debug(
+                    "lead_supervisor _await_config_reload_ack ignoring stale ack "
+                    "correlation_id=%s expected=%s",
+                    payload.get("correlation_id"),
+                    correlation_id,
+                )
+                continue
+            applied_raw = payload.get("applied_paths", [])
+            applied = list(applied_raw) if isinstance(applied_raw, list) else []
+            return ConfigReloadAckResult(
+                ok=bool(payload.get("ok", False)),
+                applied_paths=applied,
+                error=payload.get("error") or None,
+                correlation_id=correlation_id,
+            )
 
     async def _drain_until_kind(self, kind: str) -> RuntimeEvent | None:
         """Drain the event queue until ``kind`` arrives (or EOF).
