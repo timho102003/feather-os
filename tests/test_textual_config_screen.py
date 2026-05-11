@@ -516,11 +516,35 @@ async def test_esc_without_dirty_closes_immediately(service: ConfigService) -> N
 
 
 async def test_tab_cycles_field_focus(service: ConfigService) -> None:
-    """Tab increments the field cursor."""
+    """Tab increments the field cursor within a multi-field section."""
 
     async with _Host(service).run_test() as pilot:
         screen = pilot.app.screen
         assert isinstance(screen, ConfigScreen)
+        assert screen._active_field_index == 0
+
+        # Navigate to a section with multiple fields (compaction has 6 fields).
+        from feather.config_schema import REGISTRY as REG
+        sections: list[str] = []
+        for f in REG:
+            if not f.path.startswith("app."):
+                continue
+            tail = f.path[len("app."):]
+            label = tail.split(".", 1)[0] if "." in tail else "agent"
+            if label not in sections:
+                sections.append(label)
+
+        target = "compaction"
+        if target in sections:
+            for _ in range(sections.index(target)):
+                await pilot.press("down")
+            await pilot.pause()
+
+        # Should now be in compaction with multiple fields.
+        fields_before = screen._fields_in_section()
+        assert len(fields_before) > 1, (
+            f"expected multiple fields in 'compaction', got {len(fields_before)}"
+        )
         assert screen._active_field_index == 0
 
         await pilot.press("tab")
@@ -530,16 +554,36 @@ async def test_tab_cycles_field_focus(service: ConfigService) -> None:
 
 
 async def test_shift_tab_cycles_field_focus_backward(service: ConfigService) -> None:
-    """Shift+Tab decrements the field cursor (wraps)."""
+    """Shift+Tab decrements the field cursor within a multi-field section."""
 
     async with _Host(service).run_test() as pilot:
         screen = pilot.app.screen
         assert isinstance(screen, ConfigScreen)
-        initial = screen._active_field_index
 
-        # Go to index 1, then shift+tab back
+        # Navigate to compaction (multiple fields).
+        from feather.config_schema import REGISTRY as REG
+        sections: list[str] = []
+        for f in REG:
+            if not f.path.startswith("app."):
+                continue
+            tail = f.path[len("app."):]
+            label = tail.split(".", 1)[0] if "." in tail else "agent"
+            if label not in sections:
+                sections.append(label)
+
+        target = "compaction"
+        if target in sections:
+            for _ in range(sections.index(target)):
+                await pilot.press("down")
+            await pilot.pause()
+
+        initial = screen._active_field_index  # 0
+
+        # Go to index 1, then shift+tab back to 0.
         await pilot.press("tab")
         await pilot.pause()
+        assert screen._active_field_index == 1
+
         await pilot.press("shift+tab")
         await pilot.pause()
 

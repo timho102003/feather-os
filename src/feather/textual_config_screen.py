@@ -95,8 +95,8 @@ class ConfigScreen(ModalScreen[None]):
         Binding("s", "save", "Save", show=True),
         Binding("d", "diff", "Diff", show=True),
         Binding("r", "reset", "Reset", show=True),
-        Binding("tab", "field_next", "Next field", show=False),
-        Binding("shift+tab", "field_prev", "Prev field", show=False),
+        Binding("tab", "field_next", "Next field", show=False, priority=True),
+        Binding("shift+tab", "field_prev", "Prev field", show=False, priority=True),
         Binding("y", "confirm_self_repair", "Confirm", show=False),
     ]
 
