@@ -356,6 +356,26 @@ class FeatherRuntime:
 
         return self._app_config
 
+    async def reload_config(self) -> None:
+        """Re-read app.yaml + global overlay from disk and swap ``_app_config``.
+
+        This is the LIVE-class reload path. Provider-bound state (HTTP clients,
+        models, reasoning config) is NOT reconstructed — call
+        :meth:`rebuild_agent` for NEXT_TURN-class changes.
+        """
+
+        from feather.paths import FeatherPaths
+
+        # Re-derive paths using the same resolution the constructor used.
+        # The runtime stores ``_root`` already; FeatherPaths resolves the
+        # global state dir from ``~/.feather`` automatically.
+        paths = FeatherPaths(project_root=self._root)
+        new_config = load_app_config(self._root, paths=paths)
+        self._app_config = new_config
+        logger.info(
+            "runtime.config.reloaded active_provider=%s", new_config.active_provider
+        )
+
     async def start_background_services(
         self, *, lead_in_subprocess: bool = False
     ) -> None:
