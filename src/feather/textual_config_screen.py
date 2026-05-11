@@ -464,17 +464,16 @@ class ConfigScreen(ModalScreen[None]):
 
             async def _apply() -> None:
                 outcome = await runtime.apply_config_change(applied_paths)
-                msg_parts: list[str] = []
-                if outcome.applied:
-                    msg_parts.append(f"applied: {', '.join(outcome.applied)}")
-                if outcome.needs_restart_lead:
-                    msg_parts.append(
-                        f"restart-lead: {', '.join(outcome.needs_restart_lead)}"
-                    )
-                if outcome.needs_restart_app:
-                    msg_parts.append(
-                        f"restart-app: {', '.join(outcome.needs_restart_app)}"
-                    )
+                sections: list[tuple[str, list[str]]] = [
+                    ("applied", outcome.applied),
+                    ("restart-lead", outcome.needs_restart_lead),
+                    ("restart-app", outcome.needs_restart_app),
+                ]
+                msg_parts = [
+                    f"{label}: {', '.join(paths)}"
+                    for label, paths in sections
+                    if paths
+                ]
                 self._set_footer(" | ".join(msg_parts) or "no changes applied")
 
             self.app.run_worker(_apply(), exclusive=False)
