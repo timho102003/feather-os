@@ -178,3 +178,29 @@ def test_reset_no_op_when_no_overlay(tmp_path: Path) -> None:
     result = svc.reset("app.active_provider")
 
     assert result.ok
+
+
+# ---------------------------------------------------------------------------
+# Task 7: self_repair.enabled force carve-out
+# ---------------------------------------------------------------------------
+
+
+def test_set_self_repair_without_force_refuses(tmp_path: Path) -> None:
+    """ConfigService.set rejects self_repair.enabled unless force=True."""
+
+    svc = _service(tmp_path)
+
+    result = svc.set("app.self_repair.enabled", True)
+
+    assert not result.ok
+    assert "force" in (result.error or "").lower()
+
+
+def test_set_self_repair_with_force_succeeds(tmp_path: Path) -> None:
+    """ConfigService.set accepts self_repair.enabled when force=True."""
+
+    svc = _service(tmp_path)
+
+    result = svc.set("app.self_repair.enabled", True, force=True)
+
+    assert result.ok

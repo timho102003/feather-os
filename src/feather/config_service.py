@@ -189,17 +189,35 @@ class ConfigService:
         value: Any,
         *,
         scope: PathScope = PathScope.GLOBAL,
+        force: bool = False,
     ) -> WriteResult:
         """Validate ``value`` and write it to the resolved YAML file.
+
+        ``app.self_repair.enabled`` is a special carve-out: flipping it
+        requires a full TUI restart and may corrupt mid-session worker
+        state. The caller must pass ``force=True`` to acknowledge this.
 
         Args:
             dotted: Registry path to write.
             value: New value (will be coerced + validated first).
             scope: Target scope — global overlay or project config.
+            force: Must be ``True`` when writing ``app.self_repair.enabled``;
+                ignored for all other paths.
 
         Returns:
             :class:`WriteResult` indicating success or the error message.
         """
+
+        if dotted == "app.self_repair.enabled" and not force:
+            return WriteResult(
+                ok=False,
+                path=dotted,
+                error=(
+                    "self_repair.enabled change requires a full TUI restart "
+                    "and may corrupt mid-session worker state. Re-run with "
+                    "--force to acknowledge."
+                ),
+            )
 
         from feather.config_writer import write_yaml_value
 

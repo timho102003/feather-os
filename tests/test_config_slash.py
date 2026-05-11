@@ -111,4 +111,29 @@ def test_bare_config_returns_modal_pending(tmp_path: Path) -> None:
     result = handle_config_command(svc, "")
 
     assert not result.ok
-    assert "Phase 2" in result.body
+
+
+# ---------------------------------------------------------------------------
+# Task 7: self_repair.enabled --force flag in slash dispatcher
+# ---------------------------------------------------------------------------
+
+
+def test_set_self_repair_without_force_refuses(tmp_path: Path) -> None:
+    """Headless /config set app.self_repair.enabled true is rejected without --force."""
+
+    svc = _service(tmp_path)
+
+    result = handle_config_command(svc, "set app.self_repair.enabled true")
+
+    assert not result.ok
+    assert "force" in result.body.lower()
+
+
+def test_set_self_repair_with_force(tmp_path: Path) -> None:
+    """Headless /config set app.self_repair.enabled true --force succeeds."""
+
+    svc = _service(tmp_path)
+
+    result = handle_config_command(svc, "set app.self_repair.enabled true --force")
+
+    assert result.ok

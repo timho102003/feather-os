@@ -84,31 +84,37 @@ def _cmd_get(service: ConfigService, rest: list[str]) -> ConfigCommandResult:
     return ConfigCommandResult(ok=True, body=body)
 
 
-def _parse_scope(rest: list[str]) -> tuple[PathScope, list[str]]:
-    """Split ``--global`` / ``--project`` flags out of ``rest``.
+def _parse_scope(rest: list[str]) -> tuple[PathScope, bool, list[str]]:
+    """Split ``--global`` / ``--project`` / ``--force`` flags out of ``rest``.
 
     Args:
-        rest: Token list that may contain scope flags.
+        rest: Token list that may contain scope and force flags.
 
     Returns:
         Tuple of (resolved :class:`~feather.config_paths.PathScope`,
-        remaining positional tokens).
+        force flag, remaining positional tokens).
     """
 
     scope = PathScope.GLOBAL
+    force = False
     remaining: list[str] = []
     for token in rest:
         if token == "--global":
             scope = PathScope.GLOBAL
         elif token == "--project":
             scope = PathScope.PROJECT
+        elif token == "--force":
+            force = True
         else:
             remaining.append(token)
-    return scope, remaining
+    return scope, force, remaining
 
 
 def _cmd_set(service: ConfigService, rest: list[str]) -> ConfigCommandResult:
-    """Handle ``/config set <path> <value> [--project|--global]``.
+    """Handle ``/config set <path> <value> [--project|--global] [--force]``.
+
+    The ``--force`` flag is required when setting ``app.self_repair.enabled``
+    to acknowledge that the change requires a full TUI restart.
 
     Args:
         service: Config service instance.
@@ -119,14 +125,15 @@ def _cmd_set(service: ConfigService, rest: list[str]) -> ConfigCommandResult:
         that need to be applied, or an error body.
     """
 
-    scope, positional = _parse_scope(rest)
+    scope, force, positional = _parse_scope(rest)
     if len(positional) < 2:
         return ConfigCommandResult(
-            ok=False, body="usage: /config set <path> <value> [--project|--global]"
+            ok=False,
+            body="usage: /config set <path> <value> [--project|--global] [--force]",
         )
     path, *value_parts = positional
     value = " ".join(value_parts)
-    write = service.set(path, value, scope=scope)
+    write = service.set(path, value, scope=scope, force=force)
     if not write.ok:
         return ConfigCommandResult(ok=False, body=f"{path}: {write.error}")
     return ConfigCommandResult(
@@ -194,7 +201,7 @@ def _cmd_reset(service: ConfigService, rest: list[str]) -> ConfigCommandResult:
         that needs to be applied, or an error body.
     """
 
-    scope, positional = _parse_scope(rest)
+    scope, _force, positional = _parse_scope(rest)
     if len(positional) != 1:
         return ConfigCommandResult(
             ok=False, body="usage: /config reset <path> [--project|--global]"
