@@ -55,7 +55,7 @@ from feather.models import (
 logger = logging.getLogger(__name__)
 
 
-_ANTHROPIC_REJECTED_INTEGER_KEYWORDS: frozenset[str] = frozenset(
+_ANTHROPIC_REJECTED_NUMERIC_KEYWORDS: frozenset[str] = frozenset(
     {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
 )
 
@@ -109,7 +109,7 @@ def _sanitize_node(node: Any) -> Any:
                     "the wire untouched (Anthropic may reject)",
                     non_null,
                 )
-        for keyword in _ANTHROPIC_REJECTED_INTEGER_KEYWORDS:
+        for keyword in _ANTHROPIC_REJECTED_NUMERIC_KEYWORDS:
             node.pop(keyword, None)
         for key, value in list(node.items()):
             if key in _JSON_SCHEMA_INSTANCE_DATA_KEYS:
