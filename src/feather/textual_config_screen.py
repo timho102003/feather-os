@@ -158,6 +158,7 @@ class ConfigScreen(ModalScreen[None]):
         self._self_repair_confirmed: bool = False
         self._confirm_close: bool = False
         self._pending_edit: ConfigField | None = None
+        self._apply_in_flight: bool = False
 
     # ------------------------------------------------------------------
     # Compose
@@ -417,6 +418,10 @@ class ConfigScreen(ModalScreen[None]):
     def action_save(self) -> None:
         """Write all dirty fields through ConfigService and show a banner."""
 
+        if self._apply_in_flight:
+            self._set_footer("apply in progress — wait for previous save to complete")
+            return
+
         if not self._dirty:
             self._set_footer("no dirty fields  esc=close")
             return
@@ -461,21 +466,29 @@ class ConfigScreen(ModalScreen[None]):
         # Schedule apply_config_change for immediately applicable fields.
         applied_paths = buckets[ReloadClass.LIVE] + buckets[ReloadClass.NEXT_TURN]
         if applied_paths and self._runtime is not None:
+            self._apply_in_flight = True
             runtime = self._runtime
 
             async def _apply() -> None:
-                outcome = await runtime.apply_config_change(applied_paths)
-                sections: list[tuple[str, list[str]]] = [
-                    ("applied", outcome.applied),
-                    ("restart-lead", outcome.needs_restart_lead),
-                    ("restart-app", outcome.needs_restart_app),
-                ]
-                msg_parts = [
-                    f"{label}: {', '.join(paths)}"
-                    for label, paths in sections
-                    if paths
-                ]
-                self._set_footer(" | ".join(msg_parts) or "no changes applied")
+                try:
+                    try:
+                        outcome = await runtime.apply_config_change(applied_paths)
+                    except Exception as exc:  # noqa: BLE001 - surface apply errors to user
+                        self._set_footer(f"apply error: {type(exc).__name__}: {exc}")
+                        return
+                    sections: list[tuple[str, list[str]]] = [
+                        ("applied", outcome.applied),
+                        ("restart-lead", outcome.needs_restart_lead),
+                        ("restart-app", outcome.needs_restart_app),
+                    ]
+                    msg_parts = [
+                        f"{label}: {', '.join(paths)}"
+                        for label, paths in sections
+                        if paths
+                    ]
+                    self._set_footer(" | ".join(msg_parts) or "no changes applied")
+                finally:
+                    self._apply_in_flight = False
 
             self.app.run_worker(_apply(), exclusive=False)
 

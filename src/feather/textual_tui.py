@@ -1640,9 +1640,17 @@ class FeatherTextualApp(App[None]):
             runtime = self._runtime
 
             async def _apply() -> None:
-                outcome = await runtime.apply_config_change(
-                    list(result.requires_apply or [])
-                )
+                try:
+                    outcome = await runtime.apply_config_change(
+                        list(result.requires_apply or [])
+                    )
+                except Exception as exc:  # noqa: BLE001 - surface apply errors to user
+                    self._write_marker(
+                        "Config apply error",
+                        f"apply error: {type(exc).__name__}: {exc}",
+                        style="red",
+                    )
+                    return
                 msg_parts: list[str] = []
                 if outcome.applied:
                     msg_parts.append(f"Applied: {', '.join(outcome.applied)}")
