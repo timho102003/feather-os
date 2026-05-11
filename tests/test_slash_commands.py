@@ -253,3 +253,11 @@ def test_parse_double_slash_is_unknown_command_not_exception() -> None:
     # registry will reject it cleanly. The point is no crash and no
     # silent loss.
     assert "doublelash" in (parsed.name_token + parsed.args)
+
+
+def test_default_registry_includes_config() -> None:
+    registry = default_registry()
+    cmd = registry.find("config")
+    assert cmd is not None
+    assert cmd.summary
+    assert cmd.usage and "get" in cmd.usage and "set" in cmd.usage
