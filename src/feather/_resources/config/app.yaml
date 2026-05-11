@@ -111,42 +111,8 @@ parallel:
 
 mcp:
   enabled: false
-  servers:
-    # MCP servers are progressive: agents see `list_mcp_servers` and
-    # `register_mcp_server`, then activate only the server needed for the
-    # current session. Leave this block disabled until you want MCPs available.
-    #
-    # Example HTTP MCP. OpenAI can receive HTTP MCP servers natively; OpenRouter
-    # uses Feather's proxy tool after session registration.
-    # docs:
-    #   url: https://developers.openai.com/mcp
-    #   description: OpenAI developer documentation
-    #   providers: [openai, openrouter]
-    #   agents: [Lead]
-    #   allowed_tools: [search_openai_docs, fetch_openai_doc]
-    #   require_approval: never
-    #
-    # Example stdio MCP. Feather starts this command only when the session
-    # registers the server; the user does not need to start a separate server.
-    # playwright:
-    #   command: npx
-    #   args: ["-y", "@playwright/mcp@latest"]
-    #   description: Browser automation through Playwright
-    #   providers: [openai, openrouter]
-    #   agents: [Lead]
-    #   require_approval: never
-    #
-    # Example private HTTP MCP with an auth header sourced from the environment.
-    # Put the complete header value in PRIVATE_DOCS_AUTH_HEADER, e.g.
-    # "Bearer <token>". Do not paste secrets directly into this YAML file.
-    # private_docs:
-    #   url: https://example.com/mcp
-    #   description: Private company documentation
-    #   providers: [openai]
-    #   agents: [Lead]
-    #   header_envs:
-    #     Authorization: PRIVATE_DOCS_AUTH_HEADER
-    #   require_approval: never
+  servers: {}
+  # See _resources/config/examples/mcp.example.yaml for HTTP and stdio templates.
 
 memory:
   enabled: true                  # global gate — lead agent further opts in via memory_enabled
