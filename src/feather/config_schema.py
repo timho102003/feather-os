@@ -1247,3 +1247,29 @@ IGNORED_PATHS: frozenset[str] = frozenset({
     "agents.*.name",
     "agents.*.role",
 })
+
+
+def lookup(path: str) -> ConfigField | None:
+    """Return the registry entry for ``path``, or ``None``.
+
+    Resolves both literal paths (``app.openai.model``) and per-agent
+    paths (``agents.Lead.model`` matches a stored ``agents.Lead.model``
+    entry — the agent name is part of the literal path, not a wildcard).
+    """
+
+    for field in REGISTRY:
+        if field.path == path:
+            return field
+    return None
+
+
+__all__ = (
+    "ConfigField",
+    "FieldType",
+    "IGNORED_PATHS",
+    "REGISTRY",
+    "ReloadClass",
+    "Scope",
+    "WidgetHint",
+    "lookup",
+)
