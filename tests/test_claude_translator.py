@@ -609,3 +609,49 @@ def test_translate_response_handles_empty_usage() -> None:
         message_id=None, blocks=[], output_text="", usage=None
     )
     assert turn.usage is None
+
+
+# -------------------------------------------------------- translate_tools sanitizer
+
+
+def test_translate_tools_strips_anthropic_rejected_keywords() -> None:
+    tools = [
+        {
+            "type": "function",
+            "name": "grep",
+            "description": "search files",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "max_results": {"type": ["integer", "null"], "minimum": 1},
+                },
+                "required": ["max_results"],
+            },
+        },
+    ]
+
+    translated = translate_tools(tools)
+
+    schema = translated[0]["input_schema"]
+    assert schema["properties"]["max_results"]["type"] == "integer"
+    assert "minimum" not in schema["properties"]["max_results"]
+
+
+def test_translate_tools_sanitizes_passthrough_anthropic_native() -> None:
+    tools = [
+        {
+            "name": "grep",
+            "description": "search files",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "max_results": {"type": "integer", "minimum": 1},
+                },
+            },
+        },
+    ]
+
+    translated = translate_tools(tools)
+
+    schema = translated[0]["input_schema"]
+    assert "minimum" not in schema["properties"]["max_results"]

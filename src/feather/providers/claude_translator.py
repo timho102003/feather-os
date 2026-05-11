@@ -162,14 +162,17 @@ def translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for tool in tools:
         if "input_schema" in tool:
-            out.append(tool)
+            translated = dict(tool)
+            translated["input_schema"] = sanitize_anthropic_tool_schema(
+                tool["input_schema"]
+            )
+            out.append(translated)
             continue
-        translated: dict[str, Any] = {
+        parameters = tool.get("parameters", {"type": "object", "properties": {}})
+        translated = {
             "name": tool["name"],
             "description": tool.get("description", ""),
-            "input_schema": tool.get(
-                "parameters", {"type": "object", "properties": {}}
-            ),
+            "input_schema": sanitize_anthropic_tool_schema(parameters),
         }
         if tool.get("strict"):
             translated["strict"] = True
