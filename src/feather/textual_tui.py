@@ -1599,6 +1599,10 @@ class FeatherTextualApp(App[None]):
     def _cmd_config(self, args: str) -> None:
         """Dispatch the `/config <sub> [args]` slash command.
 
+        When invoked with no arguments (bare ``/config``), pushes the
+        interactive :class:`~feather.textual_config_screen.ConfigScreen`
+        modal. With subcommands, falls through to the headless dispatcher.
+
         Args:
             args: Raw argument string after the ``/config`` token, e.g.
                 ``"get app.active_provider"`` or ``"set app.active_provider claude"``.
@@ -1617,6 +1621,14 @@ class FeatherTextualApp(App[None]):
             paths=paths,
             app_config=self._runtime.config,
         )
+
+        # Bare /config → open the interactive modal (Phase 2).
+        if not args.strip():
+            from feather.textual_config_screen import ConfigScreen
+
+            self.push_screen(ConfigScreen(service=service, runtime=self._runtime))
+            return
+
         result = handle_config_command(service, args)
         self._write_marker(
             "Config",
