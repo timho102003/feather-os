@@ -100,7 +100,163 @@ class ConfigField:
                 )
 
 
-REGISTRY: tuple[ConfigField, ...] = ()
+def _ratio(v: float) -> None:
+    if not 0.0 <= v <= 1.0:
+        raise ValueError(f"must be in [0.0, 1.0], got {v}")
+
+
+def _positive(v: float) -> None:
+    if v <= 0:
+        raise ValueError(f"must be positive, got {v}")
+
+
+def _non_negative_int(v: int) -> None:
+    if v < 0:
+        raise ValueError(f"must be >= 0, got {v}")
+
+
+REGISTRY: tuple[ConfigField, ...] = (
+    # Infrastructure --------------------------------------------------
+    ConfigField(
+        path="app.database.path",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="SQLite database path (relative to project root or absolute).",
+    ),
+    ConfigField(
+        path="app.storage.temp_directory",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Directory where oversized tool outputs are spilled.",
+    ),
+    ConfigField(
+        path="app.logging.path",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Log file path.",
+    ),
+    ConfigField(
+        path="app.logging.level",
+        type=FieldType.ENUM,
+        widget=WidgetHint.DROPDOWN,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Log level.",
+        enum=("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"),
+    ),
+    # Behavioural defaults -------------------------------------------
+    ConfigField(
+        path="app.compaction.enabled",
+        type=FieldType.BOOLEAN,
+        widget=WidgetHint.TOGGLE,
+        reload=ReloadClass.LIVE,
+        scope=Scope.APP,
+        description="Automatically compact context when usage exceeds trigger_ratio.",
+    ),
+    ConfigField(
+        path="app.compaction.trigger_ratio",
+        type=FieldType.FLOAT,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.LIVE,
+        scope=Scope.APP,
+        description="Fraction of context window before compaction fires (0.0-1.0).",
+        validator=_ratio,
+    ),
+    ConfigField(
+        path="app.compaction.context_window_tokens",
+        type=FieldType.INTEGER,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.LIVE,
+        scope=Scope.APP,
+        description="Context-window size used to compute usage_ratio.",
+        validator=_positive,
+    ),
+    ConfigField(
+        path="app.compaction.model",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.RESTART_LEAD,
+        scope=Scope.APP,
+        description="Override the model used for compaction summaries (blank inherits).",
+    ),
+    ConfigField(
+        path="app.compaction.max_output_tokens",
+        type=FieldType.INTEGER,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.RESTART_LEAD,
+        scope=Scope.APP,
+        description="Max output tokens for compaction summaries.",
+        validator=_positive,
+    ),
+    ConfigField(
+        path="app.compaction.temperature",
+        type=FieldType.FLOAT,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.RESTART_LEAD,
+        scope=Scope.APP,
+        description="Temperature for compaction summaries.",
+    ),
+    ConfigField(
+        path="app.skills.directory",
+        type=FieldType.STRING,
+        widget=WidgetHint.TEXT,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Project-relative directory where SKILL.md files live.",
+    ),
+    ConfigField(
+        path="app.scheduler.enabled",
+        type=FieldType.BOOLEAN,
+        widget=WidgetHint.TOGGLE,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Run the background cron scheduler.",
+    ),
+    ConfigField(
+        path="app.scheduler.poll_interval_seconds",
+        type=FieldType.FLOAT,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="How often the scheduler polls for due jobs.",
+        validator=_positive,
+    ),
+    ConfigField(
+        path="app.scheduler.failure_retry_seconds",
+        type=FieldType.FLOAT,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Delay before retrying a failed scheduled job.",
+        validator=_positive,
+    ),
+    ConfigField(
+        path="app.scheduler.max_due_jobs_per_tick",
+        type=FieldType.INTEGER,
+        widget=WidgetHint.NUMERIC,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description="Max jobs picked up per scheduler tick.",
+        validator=_positive,
+    ),
+    ConfigField(
+        path="app.self_repair.enabled",
+        type=FieldType.BOOLEAN,
+        widget=WidgetHint.TOGGLE,
+        reload=ReloadClass.RESTART_APP,
+        scope=Scope.APP,
+        description=(
+            "Run the lead in a worker subprocess for hang detection and self-repair. "
+            "Flipping requires a full TUI restart; cannot be applied mid-session."
+        ),
+    ),
+)
 IGNORED_PATHS: frozenset[str] = frozenset({
     # Provider-internal cache plumbing (not a user-facing knob)
     "app.openai.prompt_cache_key",
