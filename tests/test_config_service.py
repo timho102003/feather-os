@@ -123,3 +123,58 @@ def test_set_rejects_invalid_value(tmp_path: Path) -> None:
     assert not result.ok
     overlay = svc.paths.global_config_dir / "app.yaml"
     assert not overlay.exists() or "anthropic" not in overlay.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Task 17: ConfigService.list, diff, reset
+# ---------------------------------------------------------------------------
+
+
+def test_list_filters_by_section(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    rows = svc.list(section="app.openai")
+
+    paths = [r.field.path for r in rows]
+    assert "app.openai.model" in paths
+    assert all(p.startswith("app.openai") for p in paths)
+
+
+def test_list_returns_all_when_section_blank(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    rows = svc.list(section="")
+
+    assert len(rows) >= 50
+
+
+def test_diff_shows_global_vs_default(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    svc.set("app.active_provider", "claude")
+    svc.set("app.openai.temperature", 0.3)
+
+    diff = svc.diff()
+
+    assert "app.active_provider" in diff
+    old, new = diff["app.active_provider"]
+    assert new == "claude"
+    assert old != new
+
+
+def test_reset_removes_overlay(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+    svc.set("app.active_provider", "claude")
+
+    result = svc.reset("app.active_provider")
+
+    assert result.ok
+    diff = svc.diff()
+    assert "app.active_provider" not in diff
+
+
+def test_reset_no_op_when_no_overlay(tmp_path: Path) -> None:
+    svc = _service(tmp_path)
+
+    result = svc.reset("app.active_provider")
+
+    assert result.ok

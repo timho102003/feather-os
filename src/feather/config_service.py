@@ -214,6 +214,68 @@ class ConfigService:
             return WriteResult(ok=False, path=dotted, error=str(exc))
         return WriteResult(ok=True, path=dotted)
 
+    def list(self, section: str = "") -> list[ConfigRow]:
+        """Return registry rows whose path starts with ``section``.
+
+        Args:
+            section: Dotted prefix to filter by. Empty string returns
+                every entry.
+
+        Returns:
+            List of :class:`ConfigRow` in registry order.
+        """
+
+        out: list[ConfigRow] = []
+        for field_def in REGISTRY:
+            if section and not field_def.path.startswith(section):
+                continue
+            current, source = self._resolve_value(field_def)
+            out.append(ConfigRow(field=field_def, current=current, source=source))
+        return out
+
+    def diff(self) -> dict[str, tuple[Any, Any]]:
+        """Return paths whose effective value differs from the packaged default.
+
+        Returns:
+            Mapping of ``path → (default_value, current_value)`` for every
+            field that has been overridden and whose override differs from
+            the compiled-in default.
+        """
+
+        out: dict[str, tuple[Any, Any]] = {}
+        for field_def in REGISTRY:
+            current, source = self._resolve_value(field_def)
+            if source is ValueSource.DEFAULT:
+                continue
+            default = self._dig_app_config(field_def.path)
+            # When the overlay restored the default explicitly, skip.
+            if default == current:
+                continue
+            out[field_def.path] = (default, current)
+        return out
+
+    def reset(
+        self, dotted: str, *, scope: PathScope = PathScope.GLOBAL
+    ) -> WriteResult:
+        """Remove the overlay value for ``dotted``.
+
+        Args:
+            dotted: Registry path to reset.
+            scope: Which overlay file to remove the value from.
+
+        Returns:
+            :class:`WriteResult` indicating success or the error message.
+        """
+
+        field_def = lookup(dotted)
+        if field_def is None:
+            return WriteResult(ok=False, path=dotted, error=f"unknown path: {dotted}")
+        from feather.config_writer import delete_yaml_value
+
+        res = self._resolver.resolve(dotted, scope=scope)
+        delete_yaml_value(res.file, res.yaml_path)
+        return WriteResult(ok=True, path=dotted)
+
     # ----- internal value lookup ---------------------------------
 
     def _resolve_value(self, field_def: ConfigField) -> tuple[Any, ValueSource]:
