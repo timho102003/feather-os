@@ -23,7 +23,11 @@ from typing import Any
 
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Container, Horizontal
+
+
+class _FocusableContainer(Container, can_focus=True):
+    """Container root that accepts focus so screen bindings receive keys."""
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
@@ -169,7 +173,7 @@ class ConfigScreen(ModalScreen[None]):
     def compose(self) -> ComposeResult:
         """Build the modal widget tree."""
 
-        with Vertical(id="config-root"):
+        with _FocusableContainer(id="config-root"):
             yield Static(self._render_tab_bar(), id="config-tabs")
             with Horizontal(id="config-body"):
                 yield Static(self._render_sidebar(), id="config-sidebar")
@@ -177,15 +181,16 @@ class ConfigScreen(ModalScreen[None]):
             yield Static(self._render_footer(), id="config-footer")
 
     def on_mount(self) -> None:
-        """Take focus on the screen itself so Enter/arrow bindings fire.
+        """Focus the modal root so Enter/arrow/Esc bindings fire here, not in
+        the background TUI's composer Input.
 
-        Without this, focus can stay on the background TUI's composer Input
-        after ``push_screen`` and keys are consumed there instead of reaching
-        the modal's bindings.
+        ``Vertical(can_focus=True)`` makes ``#config-root`` a real focus
+        target; without it, focus would stay on the background composer and
+        modal keys would never arrive.
         """
 
         try:
-            self.focus()
+            self.query_one("#config-root", Container).focus()
         except Exception:  # noqa: BLE001 — focus failure is non-fatal
             pass
 
@@ -380,12 +385,14 @@ class ConfigScreen(ModalScreen[None]):
     # Inline editor
     # ------------------------------------------------------------------
 
-    def action_edit_field(self) -> None:
+    async def action_edit_field(self) -> None:
         """Open the inline Input widget for the focused field.
 
-        Hides the footer Static so that only the editor's ``dock: bottom``
-        is active at a time, ensuring the editor lands at the modal's interior
-        bottom row rather than overlapping or extending past the border.
+        Async because Textual's ``mount()`` returns an ``AwaitMount`` that
+        must be awaited before the new widget is in the DOM — calling
+        ``editor.focus()`` synchronously after a sync ``mount()`` focuses an
+        un-mounted widget and the user's keystrokes then hit the screen
+        bindings instead of the Input.
         """
 
         fields = self._fields_in_section()
@@ -393,15 +400,11 @@ class ConfigScreen(ModalScreen[None]):
             return
         field = fields[self._active_field_index % len(fields)]
         # Don't open a second editor if one is already mounted.
-        existing = self.query("#config-inline-editor")
-        if existing:
+        if self.query("#config-inline-editor"):
             return
         self._pending_edit = field
         footer_static = self.query_one("#config-footer", Static)
-        # Save the footer's current status text so we can restore it later.
         self._saved_footer_text = self._render_footer()
-        # Orient the user BEFORE hiding the footer, then hide so only one
-        # dock:bottom widget exists at a time inside #config-root.
         footer_static.update(
             f"editing {field.path}  Enter=save  Esc=cancel"
         )
@@ -410,11 +413,11 @@ class ConfigScreen(ModalScreen[None]):
             placeholder=f"new value for {field.path}",
             id="config-inline-editor",
         )
-        # Mount inside #config-root so that dock:bottom pins the editor to the
-        # modal container's bottom, not the terminal's bottom row.
-        config_root = self.query_one("#config-root")
-        config_root.mount(editor)
-        editor.focus()
+        config_root = self.query_one("#config-root", Container)
+        await config_root.mount(editor)
+        # Defer focus to the next refresh so the Input is fully wired into
+        # the focus chain before claiming focus.
+        self.call_after_refresh(editor.focus)
 
     def _restore_footer(self) -> None:
         """Re-show the footer Static after the inline editor is dismissed."""
@@ -606,7 +609,7 @@ class ConfigScreen(ModalScreen[None]):
             return
         self.dismiss(None)
 
-    def on_key(self, event: Any) -> None:  # type: ignore[override]
+    async def on_key(self, event: Any) -> None:  # type: ignore[override]
         """Catch Enter/Return as a fallback + reset close-confirm flag.
 
         Some terminals + Textual focus states do not deliver Enter to the
@@ -620,7 +623,7 @@ class ConfigScreen(ModalScreen[None]):
         if key != "escape":
             self._confirm_close = False
         if key in ("enter", "return") and self._pending_edit is None:
-            self.action_edit_field()
+            await self.action_edit_field()
             try:
                 event.stop()
             except Exception:  # noqa: BLE001
