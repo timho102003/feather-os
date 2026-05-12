@@ -115,6 +115,82 @@ def _non_negative_int(v: int) -> None:
         raise ValueError(f"must be >= 0, got {v}")
 
 
+def _agent_fields(name: str) -> tuple[ConfigField, ...]:
+    """Return the 7 standard per-agent :class:`ConfigField` entries for ``name``.
+
+    Args:
+        name: Agent name as it appears in the YAML ``name:`` field (e.g.
+            ``"Lead"``, ``"Explore"``).  The exact capitalisation is used
+            in all generated paths so it must match the agent YAML.
+
+    Returns:
+        Tuple of seven :class:`ConfigField` instances covering personality,
+        memory_enabled, provider, model, reasoning.effort, reasoning.summary,
+        and registered_tools.
+    """
+
+    return (
+        ConfigField(
+            path=f"agents.{name}.personality",
+            type=FieldType.STRING,
+            widget=WidgetHint.TEXT,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="One-line personality / voice description.",
+        ),
+        ConfigField(
+            path=f"agents.{name}.memory_enabled",
+            type=FieldType.BOOLEAN,
+            widget=WidgetHint.TOGGLE,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="Agent-level memory opt-in (also gated by app.memory.enabled).",
+        ),
+        ConfigField(
+            path=f"agents.{name}.provider",
+            type=FieldType.STRING,
+            widget=WidgetHint.TEXT,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="Override the app-level provider for this agent (blank inherits).",
+        ),
+        ConfigField(
+            path=f"agents.{name}.model",
+            type=FieldType.STRING,
+            widget=WidgetHint.TEXT,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="Override the provider's default model for this agent (blank inherits).",
+        ),
+        ConfigField(
+            path=f"agents.{name}.reasoning.effort",
+            type=FieldType.ENUM,
+            widget=WidgetHint.DROPDOWN,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="Per-agent reasoning effort override.",
+            enum=("none", "minimal", "low", "medium", "high"),
+        ),
+        ConfigField(
+            path=f"agents.{name}.reasoning.summary",
+            type=FieldType.ENUM,
+            widget=WidgetHint.DROPDOWN,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="Per-agent reasoning summary verbosity.",
+            enum=("auto", "concise", "detailed"),
+        ),
+        ConfigField(
+            path=f"agents.{name}.registered_tools",
+            type=FieldType.STRING_LIST,
+            widget=WidgetHint.LIST_EDITOR,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description="List of tool names this agent may call.",
+        ),
+    )
+
+
 REGISTRY: tuple[ConfigField, ...] = (
     # Infrastructure --------------------------------------------------
     ConfigField(
@@ -1124,65 +1200,11 @@ REGISTRY: tuple[ConfigField, ...] = (
         scope=Scope.APP,
         description="Temperature for query builder.",
     ),
-    # Agent: Lead ----------------------------------------------------
-    ConfigField(
-        path="agents.Lead.personality",
-        type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="One-line personality / voice description.",
-    ),
-    ConfigField(
-        path="agents.Lead.memory_enabled",
-        type=FieldType.BOOLEAN,
-        widget=WidgetHint.TOGGLE,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="Agent-level memory opt-in (also gated by app.memory.enabled).",
-    ),
-    ConfigField(
-        path="agents.Lead.provider",
-        type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="Override the app-level provider for this agent (blank inherits).",
-    ),
-    ConfigField(
-        path="agents.Lead.model",
-        type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="Override the provider's default model for this agent (blank inherits).",
-    ),
-    ConfigField(
-        path="agents.Lead.reasoning.effort",
-        type=FieldType.ENUM,
-        widget=WidgetHint.DROPDOWN,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="Per-agent reasoning effort override.",
-        enum=("none", "minimal", "low", "medium", "high"),
-    ),
-    ConfigField(
-        path="agents.Lead.reasoning.summary",
-        type=FieldType.ENUM,
-        widget=WidgetHint.DROPDOWN,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="Per-agent reasoning summary verbosity.",
-        enum=("auto", "concise", "detailed"),
-    ),
-    ConfigField(
-        path="agents.Lead.registered_tools",
-        type=FieldType.STRING_LIST,
-        widget=WidgetHint.LIST_EDITOR,
-        reload=ReloadClass.NEXT_TURN,
-        scope=Scope.AGENT,
-        description="List of tool names this agent may call.",
-    ),
+    # Agent: Lead, Explore, Research, Validate -----------------------
+    *_agent_fields("Lead"),
+    *_agent_fields("Explore"),
+    *_agent_fields("Research"),
+    *_agent_fields("Validate"),
 )
 IGNORED_PATHS: frozenset[str] = frozenset({
     # Provider-internal cache plumbing (not a user-facing knob)
