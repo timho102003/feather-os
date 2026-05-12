@@ -159,6 +159,8 @@ class ConfigScreen(ModalScreen[None]):
         self._confirm_close: bool = False
         self._pending_edit: ConfigField | None = None
         self._apply_in_flight: bool = False
+        # Saved footer text restored when the inline editor is dismissed.
+        self._saved_footer_text: str = self._render_footer()
 
     # ------------------------------------------------------------------
     # Compose
@@ -366,7 +368,12 @@ class ConfigScreen(ModalScreen[None]):
     # ------------------------------------------------------------------
 
     def action_edit_field(self) -> None:
-        """Open the inline Input widget for the focused field."""
+        """Open the inline Input widget for the focused field.
+
+        Hides the footer Static so that only the editor's ``dock: bottom``
+        is active at a time, ensuring the editor lands at the modal's interior
+        bottom row rather than overlapping or extending past the border.
+        """
 
         fields = self._fields_in_section()
         if not fields:
@@ -377,12 +384,31 @@ class ConfigScreen(ModalScreen[None]):
         if existing:
             return
         self._pending_edit = field
+        footer_static = self.query_one("#config-footer", Static)
+        # Save the footer's current status text so we can restore it later.
+        self._saved_footer_text = self._render_footer()
+        # Orient the user BEFORE hiding the footer, then hide so only one
+        # dock:bottom widget exists at a time inside #config-root.
+        footer_static.update(
+            f"editing {field.path}  Enter=save  Esc=cancel"
+        )
+        footer_static.display = False
         editor = Input(
             placeholder=f"new value for {field.path}",
             id="config-inline-editor",
         )
-        self.mount(editor)
+        # Mount inside #config-root so that dock:bottom pins the editor to the
+        # modal container's bottom, not the terminal's bottom row.
+        config_root = self.query_one("#config-root")
+        config_root.mount(editor)
         editor.focus()
+
+    def _restore_footer(self) -> None:
+        """Re-show the footer Static after the inline editor is dismissed."""
+
+        footer_static = self.query_one("#config-footer", Static)
+        footer_static.display = True
+        footer_static.update(self._saved_footer_text)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Handle submission of the inline editor.
@@ -396,18 +422,21 @@ class ConfigScreen(ModalScreen[None]):
         field = self._pending_edit
         if field is None:
             event.input.remove()
+            self._restore_footer()
             return
 
         validate = self._service.validate(field.path, event.value)
         if not validate.ok:
-            self._set_footer(f"INVALID: {validate.error}   esc=cancel")
             event.input.remove()
             self._pending_edit = None
+            self._restore_footer()
+            self._set_footer(f"INVALID: {validate.error}   esc=cancel")
             return
 
         self._dirty[field.path] = validate.coerced
         self._pending_edit = None
         event.input.remove()
+        self._restore_footer()
         self._refresh_body()
         self._set_footer(self._render_footer())
 
@@ -552,6 +581,7 @@ class ConfigScreen(ModalScreen[None]):
             if editor is not None:
                 editor.remove()
             self._pending_edit = None
+            self._restore_footer()
             self._set_footer("edit cancelled  esc=close")
             return
 

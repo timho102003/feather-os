@@ -93,8 +93,11 @@ async def test_arrow_right_cycles_tabs(service: ConfigService) -> None:
         assert screen._active_tab_index == 1
         assert screen._tabs[1].label == "Lead"
 
-        await pilot.press("right")  # wraps back to App
-        await pilot.pause()
+        # Cycle through all remaining tabs and confirm we wrap back to App.
+        n_tabs = len(screen._tabs)
+        for _ in range(n_tabs - 1):
+            await pilot.press("right")
+            await pilot.pause()
 
         assert screen._active_tab_index == 0
 
@@ -105,11 +108,11 @@ async def test_arrow_left_cycles_backwards(service: ConfigService) -> None:
         assert isinstance(screen, ConfigScreen)
         assert screen._active_tab_index == 0
 
-        await pilot.press("left")  # wraps to last (Lead)
+        await pilot.press("left")  # wraps to last tab
         await pilot.pause()
 
         assert screen._active_tab_index == len(screen._tabs) - 1
-        assert screen._tabs[screen._active_tab_index].label == "Lead"
+        assert screen._tabs[screen._active_tab_index].label == "Validate"
 
 
 # ---------------------------------------------------------------------------
