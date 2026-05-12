@@ -91,7 +91,7 @@ class ConfigScreen(ModalScreen[None]):
         Binding("right", "next_tab", "→ tab", show=True),
         Binding("up", "section_prev", "↑ section", show=True),
         Binding("down", "section_next", "↓ section", show=True),
-        Binding("enter", "edit_field", "Edit", show=True),
+        Binding("enter,return", "edit_field", "Edit", show=True),
         Binding("s", "save", "Save", show=True),
         Binding("d", "diff", "Diff", show=True),
         Binding("r", "reset", "Reset", show=True),
@@ -175,6 +175,19 @@ class ConfigScreen(ModalScreen[None]):
                 yield Static(self._render_sidebar(), id="config-sidebar")
                 yield Static(self._render_form(), id="config-form")
             yield Static(self._render_footer(), id="config-footer")
+
+    def on_mount(self) -> None:
+        """Take focus on the screen itself so Enter/arrow bindings fire.
+
+        Without this, focus can stay on the background TUI's composer Input
+        after ``push_screen`` and keys are consumed there instead of reaching
+        the modal's bindings.
+        """
+
+        try:
+            self.focus()
+        except Exception:  # noqa: BLE001 — focus failure is non-fatal
+            pass
 
     # ------------------------------------------------------------------
     # Rendering helpers
@@ -594,14 +607,24 @@ class ConfigScreen(ModalScreen[None]):
         self.dismiss(None)
 
     def on_key(self, event: Any) -> None:  # type: ignore[override]
-        """Reset the close-confirm flag on any non-Esc key press.
+        """Catch Enter/Return as a fallback + reset close-confirm flag.
 
-        Args:
-            event: Textual ``Key`` event.
+        Some terminals + Textual focus states do not deliver Enter to the
+        screen's BINDINGS table — explicitly handle it here so editing always
+        works, while Enter inside the inline ``Input`` widget continues to
+        flow to ``on_input_submitted`` (the Input has focus and consumes the
+        key before this handler fires).
         """
 
-        if getattr(event, "key", None) != "escape":
+        key = getattr(event, "key", None)
+        if key != "escape":
             self._confirm_close = False
+        if key in ("enter", "return") and self._pending_edit is None:
+            self.action_edit_field()
+            try:
+                event.stop()
+            except Exception:  # noqa: BLE001
+                pass
 
 
 __all__ = ("ConfigScreen",)

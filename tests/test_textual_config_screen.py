@@ -607,7 +607,9 @@ def test_config_screen_has_required_bindings() -> None:
     assert "right" in keys
     assert "up" in keys
     assert "down" in keys
-    assert "enter" in keys
+    # Enter is bound under both "enter" and "return" key names so terminals
+    # that emit one or the other both trigger edit.
+    assert any("enter" in k for k in keys)
     assert "s" in keys
     assert "d" in keys
     assert "r" in keys
