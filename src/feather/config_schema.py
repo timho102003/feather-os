@@ -214,13 +214,55 @@ MODEL_CATALOG: dict[str, tuple[str, ...]] = {
 #: schema + modal + tests use the same string.
 INHERIT_SENTINEL = "(inherit)"
 
-#: Choices for agent-level provider override. Includes the inherit sentinel
-#: so the picker offers "(inherit)" without a separate widget mode.
-_AGENT_PROVIDER_CHOICES: tuple[str, ...] = (
+#: Choices for any field that overrides a provider with an inherit option:
+#: agents.<name>.provider AND app.memory.operations.<op>.provider. Picker
+#: order matches the conceptual hierarchy (inherit first, then concrete
+#: providers in their canonical app-level ordering).
+_PROVIDER_OVERRIDE_CHOICES: tuple[str, ...] = (
     INHERIT_SENTINEL,
     "openai",
     "openrouter",
     "claude",
+)
+
+
+def _url(v: str) -> None:
+    """Validator: value must look like an HTTP(S) URL.
+
+    Doesn't go beyond the prefix check — full URL parsing belongs to the
+    HTTP client; this catches the obvious "user pasted ``api.example.com``"
+    mistake at edit time.
+    """
+
+    if not isinstance(v, str) or not v.strip():
+        raise ValueError("URL must be a non-empty string")
+    if not v.startswith(("http://", "https://")):
+        raise ValueError("URL must start with http:// or https://")
+
+
+#: Suggested Gemini ``task_type`` values for the embedding API.
+GEMINI_TASK_TYPES: tuple[str, ...] = (
+    "RETRIEVAL_DOCUMENT",
+    "RETRIEVAL_QUERY",
+    "SEMANTIC_SIMILARITY",
+    "CLASSIFICATION",
+    "CLUSTERING",
+)
+
+#: Suggested tiktoken encoding names — newest first.
+TIKTOKEN_ENCODINGS: tuple[str, ...] = (
+    "o200k_base",
+    "cl100k_base",
+    "p50k_base",
+    "r50k_base",
+)
+
+#: Suggested embedding model slugs — kept short; user can still type any
+#: model via /config set since these are choices (non-strict).
+EMBEDDING_MODEL_CATALOG: tuple[str, ...] = (
+    "gemini-embedding-2-preview",
+    "text-embedding-3-large",
+    "text-embedding-3-small",
 )
 
 
@@ -262,7 +304,7 @@ def _agent_fields(name: str) -> tuple[ConfigField, ...]:
             reload=ReloadClass.NEXT_TURN,
             scope=Scope.AGENT,
             description="Override the app-level provider for this agent (pick (inherit) to use app default).",
-            choices=_AGENT_PROVIDER_CHOICES,
+            choices=_PROVIDER_OVERRIDE_CHOICES,
         ),
         ConfigField(
             path=f"agents.{name}.model",
@@ -568,6 +610,8 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.RESTART_LEAD,
         scope=Scope.APP,
         description="OpenRouter API base URL.",
+        validator=_url,
+        hint="https://...",
     ),
     ConfigField(
         path="app.openrouter.http_referer",
@@ -707,6 +751,8 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.RESTART_LEAD,
         scope=Scope.APP,
         description="Anthropic API base URL.",
+        validator=_url,
+        hint="https://...",
     ),
     ConfigField(
         path="app.claude.anthropic_version",
@@ -882,6 +928,8 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Qdrant server URL (QDRANT_URL env overrides at boot).",
+        validator=_url,
+        hint="http(s)://host:port",
     ),
     ConfigField(
         path="app.memory.qdrant.api_key_env",
@@ -1009,10 +1057,11 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.memory.embedding.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Embedding model name.",
+        choices=EMBEDDING_MODEL_CATALOG,
     ),
     ConfigField(
         path="app.memory.embedding.output_dimensionality",
@@ -1026,18 +1075,20 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.memory.embedding.task_type_document",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Gemini task_type for document embeddings.",
+        choices=GEMINI_TASK_TYPES,
     ),
     ConfigField(
         path="app.memory.embedding.task_type_query",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Gemini task_type for query embeddings.",
+        choices=GEMINI_TASK_TYPES,
     ),
     ConfigField(
         path="app.memory.embedding.normalize_reduced_dims",
@@ -1104,10 +1155,11 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.memory.chunking.tokenizer_encoding",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Tokenizer encoding (e.g. o200k_base).",
+        choices=TIKTOKEN_ENCODINGS,
     ),
     # Memory: retrieval ----------------------------------------------
     ConfigField(
@@ -1245,18 +1297,22 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.memory.operations.extraction.provider",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
-        description="Provider for memory extraction (blank inherits active_provider).",
+        description="Provider for memory extraction (pick (inherit) to use active_provider).",
+        choices=_PROVIDER_OVERRIDE_CHOICES,
     ),
     ConfigField(
         path="app.memory.operations.extraction.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
-        description="Model for memory extraction.",
+        description="Model for memory extraction (pick (inherit) to use provider default).",
+        # Dynamic choices computed by the modal: catalog of the resolved
+        # op-provider, prefixed with (inherit). Same mechanism as agent.model.
+        choices=(INHERIT_SENTINEL,),
     ),
     ConfigField(
         path="app.memory.operations.extraction.max_output_tokens",
@@ -1278,18 +1334,20 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.memory.operations.classification.provider",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
-        description="Provider for relevance classification.",
+        description="Provider for relevance classification (pick (inherit) to use active_provider).",
+        choices=_PROVIDER_OVERRIDE_CHOICES,
     ),
     ConfigField(
         path="app.memory.operations.classification.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
-        description="Model for relevance classification.",
+        description="Model for relevance classification (pick (inherit) to use provider default).",
+        choices=(INHERIT_SENTINEL,),
     ),
     ConfigField(
         path="app.memory.operations.classification.max_output_tokens",
@@ -1311,18 +1369,20 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.memory.operations.query_builder.provider",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
-        description="Provider for query builder.",
+        description="Provider for query builder (pick (inherit) to use active_provider).",
+        choices=_PROVIDER_OVERRIDE_CHOICES,
     ),
     ConfigField(
         path="app.memory.operations.query_builder.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
-        description="Model for query builder.",
+        description="Model for query builder (pick (inherit) to use provider default).",
+        choices=(INHERIT_SENTINEL,),
     ),
     ConfigField(
         path="app.memory.operations.query_builder.max_output_tokens",
@@ -1428,13 +1488,16 @@ def lookup(path: str) -> ConfigField | None:
 
 __all__ = (
     "ConfigField",
+    "EMBEDDING_MODEL_CATALOG",
     "FieldType",
+    "GEMINI_TASK_TYPES",
     "IGNORED_PATHS",
     "INHERIT_SENTINEL",
     "MODEL_CATALOG",
     "REGISTRY",
     "ReloadClass",
     "Scope",
+    "TIKTOKEN_ENCODINGS",
     "WidgetHint",
     "hint_for",
     "lookup",

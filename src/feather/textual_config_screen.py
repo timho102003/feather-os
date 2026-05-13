@@ -420,18 +420,32 @@ class ConfigScreen(ModalScreen[None]):
     def _display_value(self, field: ConfigField, current: Any) -> str:
         """Pretty-print ``current`` for a form row.
 
-        Agent provider/model fields render ``None`` and the pending
-        ``INHERIT_SENTINEL`` as ``(inherit)`` so the row reads
-        unambiguously. Everything else falls back to ``repr()``.
+        Fields that support an "inherit from layer below" semantics
+        (agent provider/model, memory.operations.<op> provider/model)
+        render ``None`` and the pending ``INHERIT_SENTINEL`` as
+        ``(inherit)`` so the row reads unambiguously instead of the
+        confusing ``None``. Everything else falls back to ``repr()``.
         """
 
         if current == INHERIT_SENTINEL:
             return INHERIT_SENTINEL
-        if current is None and field.path.startswith("agents.") and (
-            field.path.endswith(".provider") or field.path.endswith(".model")
-        ):
+        if current is None and self._supports_inherit(field.path):
             return INHERIT_SENTINEL
         return repr(current)
+
+    @staticmethod
+    def _supports_inherit(path: str) -> bool:
+        """Whether ``path`` semantically supports an "inherit" value of None."""
+
+        if path.startswith("agents.") and (
+            path.endswith(".provider") or path.endswith(".model")
+        ):
+            return True
+        if path.startswith("app.memory.operations.") and (
+            path.endswith(".provider") or path.endswith(".model")
+        ):
+            return True
+        return False
 
     def _render_footer(self) -> str:
         """Render the footer status line."""
@@ -600,11 +614,17 @@ class ConfigScreen(ModalScreen[None]):
             current = self._dirty.get(field.path, self._service.get(field.path).current)
             if field.widget is WidgetHint.TOGGLE:
                 current_str = self._bool_to_choice(current)
-            elif current == INHERIT_SENTINEL or current is None:
-                # None or pending inherit → land cursor on the sentinel
-                # option (which we always prepend for fields supporting
-                # inherit) so Enter without navigating keeps "inherit".
+            elif current == INHERIT_SENTINEL or (
+                current is None and self._supports_inherit(field.path)
+            ):
+                # None or pending inherit on an inherit-supporting field →
+                # land cursor on the sentinel option so Enter without
+                # navigating keeps "inherit".
                 current_str = INHERIT_SENTINEL
+            elif current is None:
+                # Non-inherit DROPDOWN with no current value: leave cursor
+                # at the top so the user picks explicitly.
+                current_str = ""
             else:
                 current_str = str(current)
             picker = _ChoicePicker(
@@ -655,6 +675,9 @@ class ConfigScreen(ModalScreen[None]):
         * ``agents.<name>.model`` → ``(INHERIT_SENTINEL,) + catalog.slugs_for(resolved_provider)``.
           The agent's resolved provider is its own ``provider`` field if
           set (or pending in dirty), else ``app.active_provider``.
+        * ``app.memory.operations.<op>.model`` → same shape, but the
+          resolved provider is the op's own ``.provider`` (dirty > persisted)
+          falling back to ``app.active_provider``.
         * Other ``DROPDOWN`` → ``field.enum`` (strict) or ``field.choices``.
         """
 
@@ -664,9 +687,48 @@ class ConfigScreen(ModalScreen[None]):
             agent_name = field.path.split(".")[1]
             provider = self._resolved_agent_provider(agent_name)
             catalog_key = self._provider_to_catalog_key(provider)
-            slugs = self._catalog.slugs_for(catalog_key)
-            return (INHERIT_SENTINEL, *slugs)
+            return (INHERIT_SENTINEL, *self._catalog.slugs_for(catalog_key))
+        if self._is_op_model_field(field.path):
+            op_name = field.path.split(".")[3]
+            provider = self._resolved_op_provider(op_name)
+            catalog_key = self._provider_to_catalog_key(provider)
+            return (INHERIT_SENTINEL, *self._catalog.slugs_for(catalog_key))
         return field.enum or field.choices or ()
+
+    @staticmethod
+    def _is_op_model_field(path: str) -> bool:
+        """Match ``app.memory.operations.<op>.model`` exactly."""
+
+        parts = path.split(".")
+        return (
+            len(parts) == 5
+            and parts[0] == "app"
+            and parts[1] == "memory"
+            and parts[2] == "operations"
+            and parts[4] == "model"
+        )
+
+    def _resolved_op_provider(self, op_name: str) -> str:
+        """Return the provider for ``app.memory.operations.<op_name>``.
+
+        Order: dirty edit on ``.provider`` (excluding inherit sentinel) →
+        persisted value → ``app.active_provider``.
+        """
+
+        provider_path = f"app.memory.operations.{op_name}.provider"
+        dirty = self._dirty.get(provider_path)
+        if dirty and dirty != INHERIT_SENTINEL:
+            return str(dirty).strip().lower()
+        try:
+            persisted = self._service.get(provider_path).current
+        except KeyError:
+            persisted = None
+        if persisted:
+            return str(persisted).strip().lower()
+        try:
+            return str(self._service.get("app.active_provider").current).strip().lower()
+        except KeyError:
+            return "openai"
 
     @staticmethod
     def _is_agent_model_field(path: str) -> bool:

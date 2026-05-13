@@ -1297,6 +1297,126 @@ async def test_agent_temperature_editable_when_resolved_model_is_chat(
         assert "0.0" in editor.placeholder and "2.0" in editor.placeholder
 
 
+async def test_memory_operations_extraction_provider_picker_uses_inherit_sentinel(
+    service: ConfigService,
+) -> None:
+    """app.memory.operations.<op>.provider opens the same dropdown as
+    agents.*.provider — the user shouldn't have to remember which slug
+    spelling counts for app.active_provider vs an op override."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(
+            screen, "app.memory.operations.extraction.provider"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        assert tuple(picker._choices) == (
+            "(inherit)",
+            "openai",
+            "openrouter",
+            "claude",
+        )
+
+
+async def test_memory_operations_extraction_model_picker_scoped_to_op_provider(
+    service: ConfigService,
+) -> None:
+    """When an op pins provider=openai, its model picker shows only the
+    openai catalog (plus inherit) — even if app.active_provider is set to
+    something else."""
+
+    from feather.config_paths import PathScope
+
+    service.set("app.active_provider", "claude", scope=PathScope.GLOBAL)
+    service.set(
+        "app.memory.operations.extraction.provider", "openai", scope=PathScope.GLOBAL
+    )
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(
+            screen, "app.memory.operations.extraction.model"
+        )
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        # Inherit comes first; then openai catalog only.
+        assert picker._choices[0] == "(inherit)"
+        assert "gpt-5-mini" in picker._choices  # openai catalog
+        assert "claude-opus-4-7" not in picker._choices  # anthropic absent
+
+
+def test_embedding_model_is_dropdown_with_known_catalog() -> None:
+    """app.memory.embedding.model is a DROPDOWN with the small embedding catalog."""
+
+    from feather.config_schema import EMBEDDING_MODEL_CATALOG, lookup
+
+    field = lookup("app.memory.embedding.model")
+    assert field is not None
+    assert field.widget.value == "dropdown"
+    assert field.choices is not None
+    assert set(EMBEDDING_MODEL_CATALOG).issubset(field.choices)
+
+
+def test_gemini_task_types_are_dropdown() -> None:
+    """app.memory.embedding.task_type_{document,query} are DROPDOWN."""
+
+    from feather.config_schema import GEMINI_TASK_TYPES, lookup
+
+    for path in (
+        "app.memory.embedding.task_type_document",
+        "app.memory.embedding.task_type_query",
+    ):
+        field = lookup(path)
+        assert field is not None
+        assert field.widget.value == "dropdown"
+        assert field.choices is not None
+        assert set(GEMINI_TASK_TYPES).issubset(field.choices)
+
+
+def test_tokenizer_encoding_is_dropdown() -> None:
+    """app.memory.chunking.tokenizer_encoding is a DROPDOWN with known encodings."""
+
+    from feather.config_schema import TIKTOKEN_ENCODINGS, lookup
+
+    field = lookup("app.memory.chunking.tokenizer_encoding")
+    assert field is not None
+    assert field.widget.value == "dropdown"
+    assert field.choices is not None
+    assert set(TIKTOKEN_ENCODINGS).issubset(field.choices)
+
+
+def test_url_fields_have_url_validator() -> None:
+    """openrouter/claude base URLs and qdrant URL reject non-http(s) inputs."""
+
+    from feather.config_schema import lookup
+
+    for path in (
+        "app.openrouter.base_url",
+        "app.claude.base_url",
+        "app.memory.qdrant.url",
+    ):
+        field = lookup(path)
+        assert field is not None
+        assert field.validator is not None
+        # Rejects naked hostnames.
+        import pytest as _pytest
+
+        with _pytest.raises(ValueError):
+            field.validator("api.example.com")
+        # Accepts http and https.
+        field.validator("https://api.example.com")
+        field.validator("http://localhost:6333")
+
+
 def test_agent_provider_field_is_dropdown_with_inherit_sentinel() -> None:
     """Schema: agents.*.provider is a DROPDOWN whose choices include inherit."""
 
