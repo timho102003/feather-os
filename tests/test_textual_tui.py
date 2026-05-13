@@ -333,3 +333,62 @@ def test_textual_tui_cmd_config_apply_handles_exceptions() -> None:
     assert "apply error" in src or "try:" in src, (
         "_cmd_config's _apply worker must catch exceptions from apply_config_change"
     )
+
+
+def test_app_priority_bindings_muted_under_modal_screen(monkeypatch) -> None:
+    """App-level priority Enter/Esc bindings must be disabled while a
+    ModalScreen is active; otherwise they preempt the modal's own bindings
+    and the user cannot edit fields or close the modal.
+
+    Regression test for the bug where `/config` opened the modal but Enter
+    never opened the inline editor and Esc never closed the modal — both
+    keys were being eaten by the App's priority bindings.
+    """
+
+    from unittest.mock import MagicMock
+
+    from textual.screen import ModalScreen, Screen
+
+    app = FeatherTextualApp(root=Path("/tmp"))
+
+    # The actions that must be silenced under a modal include at minimum the
+    # two that block the config TUI (submit, interrupt).
+    assert "submit" in FeatherTextualApp._ACTIONS_MUTED_UNDER_MODAL
+    assert "interrupt" in FeatherTextualApp._ACTIONS_MUTED_UNDER_MODAL
+
+    # When the active screen is a ModalScreen, check_action returns False
+    # for the muted actions — which tells Textual to skip the binding.
+    fake_modal = MagicMock(spec=ModalScreen)
+    monkeypatch.setattr(
+        FeatherTextualApp, "screen", property(lambda self: fake_modal)
+    )
+    assert app.check_action("submit", ()) is False
+    assert app.check_action("interrupt", ()) is False
+
+    # When the active screen is a non-modal Screen, the actions are NOT
+    # muted (check_action returns None → default behavior, which the parent
+    # class's check_action returns).
+    fake_screen = MagicMock(spec=Screen)
+    monkeypatch.setattr(
+        FeatherTextualApp, "screen", property(lambda self: fake_screen)
+    )
+    assert app.check_action("submit", ()) is not False
+    assert app.check_action("interrupt", ()) is not False
+
+
+def test_app_unrelated_actions_not_muted_under_modal(monkeypatch) -> None:
+    """Actions outside the mute set (e.g. copy_selection_or_transcript)
+    must not be disabled when a modal is on top — Ctrl+C still copies."""
+
+    from unittest.mock import MagicMock
+
+    from textual.screen import ModalScreen
+
+    app = FeatherTextualApp(root=Path("/tmp"))
+    fake_modal = MagicMock(spec=ModalScreen)
+    monkeypatch.setattr(
+        FeatherTextualApp, "screen", property(lambda self: fake_modal)
+    )
+
+    # copy_selection_or_transcript is not in the mute set
+    assert app.check_action("copy_selection_or_transcript", ()) is not False

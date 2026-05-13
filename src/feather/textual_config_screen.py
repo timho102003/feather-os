@@ -24,15 +24,15 @@ from typing import Any
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
-
-
-class _FocusableContainer(Container, can_focus=True):
-    """Container root that accepts focus so screen bindings receive keys."""
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
 from feather.config_schema import ConfigField, REGISTRY, ReloadClass, Scope, lookup
 from feather.config_service import ConfigService
+
+
+class _FocusableContainer(Container, can_focus=True):
+    """Container root that accepts focus so screen bindings receive keys."""
 
 
 @dataclass(slots=True, frozen=True)

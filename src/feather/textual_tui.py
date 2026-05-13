@@ -16,6 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.geometry import Region
+from textual.screen import ModalScreen
 from textual.widgets import RichLog, Static, TextArea
 
 from feather.attachments import parse_attachment_drops, render_attachment_message
@@ -592,6 +593,41 @@ class FeatherTextualApp(App[None]):
         Binding("ctrl+c", "copy_selection_or_transcript", "Copy", priority=True, show=False),
         Binding("ctrl+y", "copy_transcript", "Copy transcript", priority=True, show=False),
     ]
+
+    # Actions disabled while a ModalScreen (e.g. ConfigScreen) is on top —
+    # otherwise the App's priority Enter/Esc bindings preempt the modal's
+    # own bindings and the user can't edit fields or close the modal.
+    _ACTIONS_MUTED_UNDER_MODAL = frozenset(
+        {
+            "submit",
+            "interrupt",
+            "conversation_page_up",
+            "conversation_page_down",
+            "conversation_home",
+            "conversation_end",
+            "work_page_up",
+            "work_page_down",
+            "work_home",
+            "work_end",
+        }
+    )
+
+    def check_action(
+        self, action: str, parameters: tuple[object, ...]
+    ) -> bool | None:
+        """Disable App-level priority bindings while a ModalScreen is active.
+
+        Textual fires App-level priority bindings before the focused screen's
+        bindings, so without this override Enter/Esc inside a modal would hit
+        the composer's submit/interrupt actions instead of the modal's own
+        Enter (edit) / Esc (close) bindings.
+        """
+
+        if action in self._ACTIONS_MUTED_UNDER_MODAL and isinstance(
+            self.screen, ModalScreen
+        ):
+            return False
+        return super().check_action(action, parameters)
 
     def __init__(
         self,
