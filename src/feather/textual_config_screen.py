@@ -386,7 +386,11 @@ class ConfigScreen(ModalScreen[None]):
         )
 
     def _render_form(self) -> str:
-        """Render the right-hand form rows for the active subsection."""
+        """Render the right-hand form rows for the active subsection.
+
+        Each row carries a ``[N/A]`` badge for fields the currently-resolved
+        model doesn't accept, plus a ``[DIRTY]`` badge for pending edits.
+        """
 
         if not self._subsections():
             return "(no fields)"
@@ -397,6 +401,8 @@ class ConfigScreen(ModalScreen[None]):
             badge_src = f"[{cv.source.value}]"
             badge_rl = f"[{f.reload.value}]"
             dirty_badge = " [DIRTY]" if f.path in self._dirty else ""
+            editable, _ = self._can_edit_field(f)
+            na_badge = "" if editable else " [N/A]"
             cursor_marker = "▶" if idx == (self._active_field_index % max(1, len(fields))) else " "
             current = self._dirty.get(f.path, cv.current)
             # Render None (or the queued inherit sentinel) for agent
@@ -405,7 +411,7 @@ class ConfigScreen(ModalScreen[None]):
             # confusing `None`.
             display = self._display_value(f, current)
             rows.append(
-                f"{cursor_marker} {f.path}   {badge_src}{dirty_badge}   {badge_rl}\n"
+                f"{cursor_marker} {f.path}   {badge_src}{dirty_badge}{na_badge}   {badge_rl}\n"
                 f"   ▸ {display}\n"
                 f"   {f.description}"
             )
@@ -578,6 +584,12 @@ class ConfigScreen(ModalScreen[None]):
             )
             return
 
+        # Capability gating: refuse fields the resolved model doesn't accept.
+        editable, reason = self._can_edit_field(field)
+        if not editable:
+            self._set_footer(f"N/A: {reason}")
+            return
+
         self._pending_edit = field
         footer_static = self.query_one("#config-footer", Static)
         self._saved_footer_text = self._render_footer()
@@ -609,9 +621,12 @@ class ConfigScreen(ModalScreen[None]):
             return
 
         # Default: free-text Input. NUMERIC and TEXT both land here; the
-        # hint differentiates ranges/help in the placeholder.
+        # hint differentiates ranges/help in the placeholder. For
+        # temperature fields, the model's catalog-declared range takes
+        # precedence over the generic validator-derived hint — gpt-4o
+        # accepts 0-2 while claude-opus-4-7 caps at 1.
         placeholder = f"new value for {field.path}"
-        hint = hint_for(field)
+        hint = self._model_aware_hint(field) or hint_for(field)
         if hint:
             placeholder += f"  ({hint})"
         editor = Input(placeholder=placeholder, id="config-inline-editor")
@@ -697,6 +712,122 @@ class ConfigScreen(ModalScreen[None]):
         """
 
         return "anthropic" if provider == "claude" else provider
+
+    # ------------------------------------------------------------------
+    # Capability-driven field gating
+    # ------------------------------------------------------------------
+
+    def _resolve_field_capability(
+        self, field: ConfigField
+    ) -> Any:  # ModelCapability | None
+        """Return the :class:`~feather.models_catalog.ModelCapability` that
+        applies to ``field``, or ``None`` when the field isn't model-scoped.
+
+        Lookup rules:
+
+        * ``app.<openai|openrouter|claude>.<knob>`` → capability of the model
+          currently configured at ``app.<provider>.model``.
+        * ``agents.<name>.<knob>`` → capability of the agent's resolved model:
+          its own ``agents.<name>.model`` (dirty edit wins over persisted),
+          falling back to the resolved provider's ``app.<provider>.model``
+          if the agent inherits.
+        * Anything else (paths, log levels, scheduler knobs, etc.) → ``None``
+          (no model-scoped capability means no gating).
+        """
+
+        path = field.path
+        if path.startswith("app."):
+            parts = path.split(".")
+            if len(parts) >= 3 and parts[1] in ("openai", "openrouter", "claude"):
+                provider = parts[1]
+                model = self._service.get(f"app.{provider}.model").current
+                if model:
+                    return self._catalog.capability(
+                        self._provider_to_catalog_key(provider), str(model)
+                    )
+            return None
+        if path.startswith("agents."):
+            parts = path.split(".")
+            if len(parts) < 3:
+                return None
+            agent_name = parts[1]
+            provider = self._resolved_agent_provider(agent_name)
+            catalog_key = self._provider_to_catalog_key(provider)
+            model = self._resolved_agent_model(agent_name, provider)
+            if model:
+                return self._catalog.capability(catalog_key, str(model))
+        return None
+
+    def _resolved_agent_model(self, agent_name: str, provider: str) -> str | None:
+        """Resolve which model this agent will use.
+
+        Order: dirty edit on ``agents.<name>.model`` (excluding sentinel) →
+        persisted value → ``app.<provider>.model`` (the inherit fallback).
+        """
+
+        model_path = f"agents.{agent_name}.model"
+        dirty = self._dirty.get(model_path)
+        if dirty and dirty != INHERIT_SENTINEL:
+            return str(dirty)
+        try:
+            persisted = self._service.get(model_path).current
+        except KeyError:
+            persisted = None
+        if persisted:
+            return str(persisted)
+        try:
+            inherited = self._service.get(f"app.{provider}.model").current
+        except KeyError:
+            return None
+        return str(inherited) if inherited else None
+
+    def _can_edit_field(self, field: ConfigField) -> tuple[bool, str | None]:
+        """Return ``(editable, reason)``. When not editable, ``reason``
+        is a one-liner suitable for the footer."""
+
+        cap = self._resolve_field_capability(field)
+        if cap is None:
+            return (True, None)
+        if self._catalog.can_edit(field.path, cap):
+            return (True, None)
+        return (False, self._explain_disabled(field.path, cap))
+
+    def _model_aware_hint(self, field: ConfigField) -> str | None:
+        """Return a hint derived from the resolved model's capability, or
+        ``None`` when the field isn't model-scoped or the model imposes no
+        tighter constraint than the validator already does.
+
+        Currently only :attr:`ModelCapability.temperature_range` overrides
+        the generic ``hint_for`` value — chat models accept 0.0-2.0,
+        Claude caps at 1.0, mistral at 1.5.
+        """
+
+        if not field.path.endswith(".temperature"):
+            return None
+        cap = self._resolve_field_capability(field)
+        if cap is None or cap.temperature_range is None:
+            return None
+        low, high = cap.temperature_range
+        return f"{low}-{high}"
+
+    @staticmethod
+    def _explain_disabled(path: str, cap: Any) -> str:
+        """Short human reason why ``path`` is N/A for ``cap``."""
+
+        slug = getattr(cap, "slug", "this model")
+        if path.endswith(".temperature"):
+            return f"{slug} ignores temperature (reasoning model)"
+        if path.endswith(".parallel_tool_calls"):
+            return f"{slug} does not support parallel tool calls"
+        if path.endswith(".reasoning.effort"):
+            return f"{slug} does not accept reasoning.effort"
+        if path.endswith(".reasoning.summary"):
+            return f"{slug} does not accept reasoning.summary"
+        if path.endswith(".thinking.budget_tokens"):
+            return f"{slug} is adaptive-only; budget_tokens not applicable"
+        if path.endswith(".thinking.type"):
+            return f"{slug} does not support extended thinking"
+        return f"{slug} does not support this field"
 
     @on(_ChoicePicker.Picked)
     def _handle_choice_picked(self, event: _ChoicePicker.Picked) -> None:

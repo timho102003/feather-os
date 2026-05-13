@@ -1136,6 +1136,167 @@ async def test_agent_model_picker_falls_back_to_active_provider(
         )
 
 
+# ---------------------------------------------------------------------------
+# Capability-driven field gating (Commit 1 of the catalog plan)
+# ---------------------------------------------------------------------------
+
+
+async def test_temperature_field_is_disabled_for_reasoning_model(
+    service: ConfigService,
+) -> None:
+    """When app.openai.model is a reasoning model (gpt-5-mini, the shipped
+    default), the modal must mark app.openai.temperature as N/A and refuse
+    to open the editor — the OpenAI API ignores temperature on reasoning
+    models, so letting users set it is a footgun."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.temperature")
+
+        # Form should show an N/A badge.
+        form_text = str(screen.query_one("#config-form", Static).render())
+        assert "N/A" in form_text
+
+        # Pressing Enter must NOT open an editor.
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not screen.query("#config-inline-editor")
+
+        # Footer should explain why.
+        footer = str(screen.query_one("#config-footer", Static).render()).lower()
+        assert "gpt-5-mini" in footer or "reasoning" in footer or "n/a" in footer
+
+
+async def test_temperature_field_is_editable_for_chat_model(
+    service: ConfigService,
+) -> None:
+    """When app.openai.model is a temperature-supporting chat model (gpt-4o),
+    the temperature field is editable and the placeholder shows the model's
+    actual range."""
+
+    from feather.config_paths import PathScope
+
+    service.set("app.openai.model", "gpt-4o", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.temperature")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        editor = screen.query_one("#config-inline-editor", Input)
+        # The model's range (0.0, 2.0) should appear in the placeholder hint.
+        assert "0.0" in editor.placeholder and "2.0" in editor.placeholder
+
+
+async def test_reasoning_effort_disabled_for_chat_model(
+    service: ConfigService,
+) -> None:
+    """gpt-4o is a chat model — reasoning.effort is not a valid knob, so
+    it should be marked N/A."""
+
+    from feather.config_paths import PathScope
+
+    service.set("app.openai.model", "gpt-4o", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.reasoning.effort")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not screen.query("#config-inline-editor"), (
+            "reasoning.effort should refuse to open for gpt-4o"
+        )
+
+
+async def test_parallel_tool_calls_disabled_for_o3(
+    service: ConfigService,
+) -> None:
+    """The o-series does not accept parallel_tool_calls — must be N/A."""
+
+    from feather.config_paths import PathScope
+
+    service.set("app.openai.model", "o3", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.parallel_tool_calls")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not screen.query("#config-inline-editor")
+
+
+async def test_claude_thinking_budget_tokens_disabled_for_opus_4_7(
+    service: ConfigService,
+) -> None:
+    """claude-opus-4-7 is adaptive-only — budget_tokens does not apply."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.claude.thinking.budget_tokens")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not screen.query("#config-inline-editor")
+
+
+async def test_agent_temperature_disabled_when_resolved_model_is_reasoning(
+    service: ConfigService,
+) -> None:
+    """When an agent's resolved provider+model land on a reasoning model,
+    agents.<name>.temperature must be marked N/A and refuse the editor —
+    overriding temperature on a reasoning model would silently have no
+    effect (the OpenAI API ignores it)."""
+
+    from feather.config_paths import PathScope
+
+    # Pin app to openai+gpt-5-mini so Lead (which inherits) resolves to a
+    # reasoning model regardless of what the shipped default happens to be.
+    service.set("app.active_provider", "openai", scope=PathScope.GLOBAL)
+    service.set("app.openai.model", "gpt-5-mini", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "agents.Lead.temperature")
+
+        form_text = str(screen.query_one("#config-form", Static).render())
+        assert "N/A" in form_text
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert not screen.query("#config-inline-editor")
+
+
+async def test_agent_temperature_editable_when_resolved_model_is_chat(
+    service: ConfigService,
+) -> None:
+    """If user pins an agent to a chat model, temperature becomes editable."""
+
+    from feather.config_paths import PathScope
+
+    service.set("agents.Lead.provider", "openai", scope=PathScope.GLOBAL)
+    service.set("agents.Lead.model", "gpt-4o", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "agents.Lead.temperature")
+
+        await pilot.press("enter")
+        await pilot.pause()
+        editor = screen.query_one("#config-inline-editor", Input)
+        # Placeholder reflects gpt-4o's range 0.0-2.0.
+        assert "0.0" in editor.placeholder and "2.0" in editor.placeholder
+
+
 def test_agent_provider_field_is_dropdown_with_inherit_sentinel() -> None:
     """Schema: agents.*.provider is a DROPDOWN whose choices include inherit."""
 
