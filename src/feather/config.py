@@ -566,6 +566,8 @@ def load_agent_config(
             effort=reasoning_raw.get("effort"),
             summary=reasoning_raw.get("summary"),
         )
+    temperature_raw = raw.get("temperature")
+    max_output_tokens_raw = raw.get("max_output_tokens")
     return AgentConfig(
         name=raw["name"],
         role=raw["role"],
@@ -577,6 +579,10 @@ def load_agent_config(
         inline_prompt=str(raw.get("inline_prompt") or "").strip(),
         provider=(str(provider_raw).strip().lower() if provider_raw else None),
         model=raw.get("model") or None,
+        temperature=(float(temperature_raw) if temperature_raw is not None else None),
+        max_output_tokens=(
+            int(max_output_tokens_raw) if max_output_tokens_raw is not None else None
+        ),
         reasoning=reasoning_cfg,
     )
 

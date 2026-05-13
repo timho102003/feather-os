@@ -266,6 +266,50 @@ reasoning:
     assert cfg.reasoning.summary == "detailed"
 
 
+def test_agent_config_reads_temperature_and_max_output_tokens(
+    tmp_path: Path,
+) -> None:
+    """Agent YAML may carry per-agent temperature and max_output_tokens."""
+
+    (tmp_path / "config" / "agents").mkdir(parents=True)
+    (tmp_path / "config" / "agents" / "tuned.yaml").write_text(
+        """name: Tuned
+role: lead
+personality: precise
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+registered_tools: [read_file]
+temperature: 0.2
+max_output_tokens: 8000
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_agent_config(tmp_path, "tuned")
+    assert cfg.temperature == 0.2
+    assert cfg.max_output_tokens == 8000
+
+
+def test_agent_config_omitting_overrides_yields_none(tmp_path: Path) -> None:
+    """Without temperature/max_output_tokens keys, agent inherits (None)."""
+
+    (tmp_path / "config" / "agents").mkdir(parents=True)
+    (tmp_path / "config" / "agents" / "plain.yaml").write_text(
+        """name: Plain
+role: lead
+personality: x
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+registered_tools: [read_file]
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_agent_config(tmp_path, "plain")
+    assert cfg.temperature is None
+    assert cfg.max_output_tokens is None
+
+
 def test_load_app_config_reads_openai_model_and_reasoning(tmp_path: Path) -> None:
     """App config should load the model and reasoning settings from YAML."""
 

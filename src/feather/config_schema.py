@@ -256,6 +256,29 @@ def _agent_fields(name: str) -> tuple[ConfigField, ...]:
             description="Override the provider's default model for this agent (blank inherits).",
         ),
         ConfigField(
+            path=f"agents.{name}.temperature",
+            type=FieldType.FLOAT,
+            widget=WidgetHint.NUMERIC,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description=(
+                "Per-agent sampling temperature override (blank inherits the "
+                "provider's app-level temperature)."
+            ),
+        ),
+        ConfigField(
+            path=f"agents.{name}.max_output_tokens",
+            type=FieldType.INTEGER,
+            widget=WidgetHint.NUMERIC,
+            reload=ReloadClass.NEXT_TURN,
+            scope=Scope.AGENT,
+            description=(
+                "Per-agent max output tokens override (blank inherits the "
+                "provider's app-level max_output_tokens)."
+            ),
+            validator=_positive,
+        ),
+        ConfigField(
             path=f"agents.{name}.reasoning.effort",
             type=FieldType.ENUM,
             widget=WidgetHint.DROPDOWN,

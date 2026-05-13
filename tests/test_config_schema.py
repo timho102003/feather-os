@@ -204,6 +204,18 @@ def test_choices_field_is_not_enum_validated() -> None:
     assert field.enum is None
 
 
+def test_agent_registry_exposes_temperature_and_max_output_tokens() -> None:
+    """Each agent tab carries per-agent temperature and max_output_tokens
+    overrides so users can tune one agent without touching app.* defaults."""
+
+    for name in ("Lead", "Explore", "Research", "Validate"):
+        for leaf in ("temperature", "max_output_tokens"):
+            path = f"agents.{name}.{leaf}"
+            field = lookup(path)
+            assert field is not None, f"missing {path} in registry"
+            assert field.scope.value == "agent", f"{path} should be Scope.AGENT"
+
+
 def test_dropdown_without_enum_or_choices_is_invalid() -> None:
     """A DROPDOWN field must offer either enum (strict) or choices (suggestions)."""
 
