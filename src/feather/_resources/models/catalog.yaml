@@ -1,0 +1,621 @@
+# Feather model capability catalog
+#
+# Single source of truth for what each model accepts as API parameters.
+# Drives the /config TUI: when a user picks a model, fields the model
+# doesn't support render as [N/A] in the form, and editing is refused
+# with a footer reason — making it impossible to set a flag that the
+# upstream API would reject.
+#
+# Sources (verify when updating):
+#   - OpenAI:     https://developers.openai.com/api/docs/models
+#   - Anthropic:  https://platform.claude.com/docs/en/about-claude/models/overview
+#   - OpenRouter: https://openrouter.ai/api/v1/models  (JSON list)
+#
+# Update process:
+#   1. Pull the docs above and reconcile new model IDs / deprecations.
+#   2. Add or update an entry below.
+#   3. Run `uv run pytest tests/test_model_catalog.py` — the drift test
+#      catches mismatches with MODEL_CATALOG (the bare-slug list).
+#
+# User overlay:
+#   `~/.feather/models/catalog.yaml` is deep-merged on top per (provider,
+#   slug) pair, so users can patch one capability (e.g. lower the
+#   suggested temperature) without forking the whole file.
+#
+# Last verified: 2026-05-13
+
+openai:
+  # Frontier reasoning models — temperature ignored by API, reasoning.effort
+  # is the canonical knob. parallel_tool_calls and image input both supported.
+
+  gpt-5.5:
+    family: gpt-5
+    context_window: 1000000
+    default_max_output: 128000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, low, medium, high, xhigh]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    notes: "Flagship reasoning model (Dec 2025 cutoff)."
+
+  gpt-5.5-pro:
+    family: gpt-5
+    context_window: 1000000
+    default_max_output: 128000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, low, medium, high, xhigh]
+    suggested_reasoning_effort: high
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    notes: "Responses API only — multi-turn pro variant of 5.5."
+
+  gpt-5.4:
+    family: gpt-5
+    context_window: 1000000
+    default_max_output: 128000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, low, medium, high, xhigh]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  gpt-5.4-pro:
+    family: gpt-5
+    context_window: 1000000
+    default_max_output: 128000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, low, medium, high, xhigh]
+    suggested_reasoning_effort: high
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    notes: "Responses API only."
+
+  gpt-5.4-mini:
+    family: gpt-5
+    context_window: 400000
+    default_max_output: 128000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, low, medium, high, xhigh]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  gpt-5.4-nano:
+    family: gpt-5
+    context_window: 400000
+    default_max_output: 32000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, low, medium, high]
+    suggested_reasoning_effort: low
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  # Earlier gpt-5 generation — still widely deployed.
+
+  gpt-5:
+    family: gpt-5
+    context_window: 400000
+    default_max_output: 128000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, minimal, low, medium, high]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  gpt-5-mini:
+    family: gpt-5
+    context_window: 400000
+    default_max_output: 16000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, minimal, low, medium, high]
+    suggested_reasoning_effort: low
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    notes: "Used in shipped app.yaml default."
+
+  gpt-5-nano:
+    family: gpt-5
+    context_window: 400000
+    default_max_output: 16000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [none, minimal, low, medium, high]
+    suggested_reasoning_effort: minimal
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  # Chat models — temperature is the knob, no reasoning.
+
+  gpt-4.5:
+    family: gpt-4
+    context_window: 128000
+    default_max_output: 16384
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  gpt-4o:
+    family: gpt-4
+    context_window: 128000
+    default_max_output: 16384
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  gpt-4o-mini:
+    family: gpt-4
+    context_window: 128000
+    default_max_output: 16384
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  # O-series — pure reasoning, no temperature, no parallel tool calls.
+
+  o3:
+    family: o
+    context_window: 200000
+    default_max_output: 100000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [low, medium, high]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: false
+    supports_multimodal: true
+
+  o3-mini:
+    family: o
+    context_window: 200000
+    default_max_output: 100000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [low, medium, high]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: false
+    supports_multimodal: false
+
+  o4-mini:
+    family: o
+    context_window: 200000
+    default_max_output: 100000
+    supports_temperature: false
+    supports_reasoning: true
+    reasoning_efforts: [low, medium, high]
+    suggested_reasoning_effort: medium
+    supports_parallel_tool_calls: false
+    supports_multimodal: true
+
+
+anthropic:
+  # Claude 4 frontier line — temperature 0-1, all multimodal, all cache_control.
+
+  claude-opus-4-7:
+    family: claude-4
+    context_window: 1000000
+    default_max_output: 128000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false        # Claude uses thinking, not reasoning.effort
+    supports_thinking: true
+    thinking_types: [adaptive]        # opus-4-7 is adaptive-only (no enabled+budget)
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+    notes: "Flagship. Adaptive thinking only; no enabled+budget_tokens."
+
+  claude-sonnet-4-6:
+    family: claude-4
+    context_window: 1000000
+    default_max_output: 64000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_thinking: true
+    thinking_types: [enabled, adaptive]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-haiku-4-5:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 64000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_thinking: true
+    thinking_types: [enabled]         # haiku does not support adaptive
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+    notes: "Fastest claude-4. No adaptive thinking."
+
+  # Legacy claude-4 generation — still available.
+
+  claude-opus-4-6:
+    family: claude-4
+    context_window: 1000000
+    default_max_output: 128000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled, adaptive]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-sonnet-4-5:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 64000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-opus-4-5:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 64000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-opus-4-1:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 32000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-haiku-4-1:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 32000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  # Claude 3 — long-lived legacy line, no extended thinking.
+
+  claude-3-7-sonnet-latest:
+    family: claude-3
+    context_window: 200000
+    default_max_output: 8192
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-3-5-sonnet-latest:
+    family: claude-3
+    context_window: 200000
+    default_max_output: 8192
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+
+  claude-3-5-haiku-latest:
+    family: claude-3
+    context_window: 200000
+    default_max_output: 8192
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
+    supports_cache_control: true
+
+  # Deprecated — keep for compatibility, drop after retirement date.
+
+  claude-sonnet-4-0:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 64000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+    deprecated: true
+    deprecation_date: "2026-06-15"
+
+  claude-opus-4-0:
+    family: claude-4
+    context_window: 200000
+    default_max_output: 32000
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+    supports_cache_control: true
+    deprecated: true
+    deprecation_date: "2026-06-15"
+
+
+openrouter:
+  # Frontier slugs that inherit from a direct-provider entry above. Inherits
+  # is resolved eagerly at load: the loader copies the parent's fields into
+  # the child, then applies the child's explicit overrides on top. If you
+  # need to override one field (e.g. context_window for the 1M variant),
+  # just list it here.
+
+  anthropic/claude-opus-4-7:
+    inherits: anthropic:claude-opus-4-7
+
+  anthropic/claude-opus-4-7-fast:
+    inherits: anthropic:claude-opus-4-7
+    notes: "Faster routing tier for opus-4-7; same capabilities."
+
+  anthropic/claude-sonnet-4-6:
+    inherits: anthropic:claude-sonnet-4-6
+
+  anthropic/claude-haiku-4-5:
+    inherits: anthropic:claude-haiku-4-5
+
+  openai/gpt-5.5:
+    inherits: openai:gpt-5.5
+
+  openai/gpt-5.5-pro:
+    inherits: openai:gpt-5.5-pro
+
+  openai/gpt-5.4:
+    inherits: openai:gpt-5.4
+
+  openai/gpt-5.4-pro:
+    inherits: openai:gpt-5.4-pro
+
+  openai/gpt-5.4-mini:
+    inherits: openai:gpt-5.4-mini
+
+  openai/gpt-5.4-nano:
+    inherits: openai:gpt-5.4-nano
+
+  openai/gpt-5:
+    inherits: openai:gpt-5
+
+  openai/gpt-5-mini:
+    inherits: openai:gpt-5-mini
+
+  openai/gpt-5-nano:
+    inherits: openai:gpt-5-nano
+
+  openai/o3:
+    inherits: openai:o3
+
+  # Non-direct-provider models — declared inline.
+
+  google/gemini-3.1-pro:
+    family: gemini-3
+    context_window: 1048576
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_thinking: true
+    thinking_types: [enabled]         # gemini calls it "thinking budget"
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  google/gemini-3.1-flash-lite:
+    family: gemini-3
+    context_window: 1048576
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_thinking: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  deepseek/deepseek-v4-pro:
+    family: deepseek-v4
+    context_window: 1048576
+    default_max_output: 384000
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
+
+  deepseek/deepseek-v4-flash:
+    family: deepseek-v4
+    context_window: 1048576
+    default_max_output: 384000
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
+
+  qwen/qwen3.6-plus:
+    family: qwen-3
+    context_window: 1000000
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: false    # Alibaba doesn't advertise parallel_tool_calls
+    supports_multimodal: false
+    notes: "Used in shipped app.yaml default. Thinking-mode range 0.6-0.7."
+
+  qwen/qwen3.6-flash:
+    family: qwen-3
+    context_window: 1000000
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: false
+    supports_multimodal: false
+
+  qwen/qwen3.5-flash:
+    family: qwen-3
+    context_window: 1000000
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: false
+    supports_multimodal: false
+
+  x-ai/grok-4.20:
+    family: grok-4
+    context_window: 2000000
+    default_max_output: 131072
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  x-ai/grok-4.3:
+    family: grok-4
+    context_window: 1000000
+    default_max_output: 131072
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  mistralai/mistral-medium-3.5:
+    family: mistral-3
+    context_window: 262144
+    default_max_output: 131072
+    supports_temperature: true
+    temperature_range: [0.0, 1.5]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
+
+  moonshotai/kimi-k2.6:
+    family: kimi-k2
+    context_window: 262142
+    default_max_output: 262142
+    supports_temperature: true
+    temperature_range: [0.0, 1.0]
+    suggested_temperature: 0.6
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
+
+  # Legacy openrouter slugs that the bare-slug MODEL_CATALOG still ships.
+  # When MODEL_CATALOG is replaced by catalog.slugs_for(), these can
+  # be revisited.
+
+  google/gemini-2.5-pro:
+    family: gemini-2
+    context_window: 2000000
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  google/gemini-2.5-flash:
+    family: gemini-2
+    context_window: 1048576
+    default_max_output: 65536
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 1.0
+    supports_reasoning: false
+    supports_thinking: true
+    thinking_types: [enabled]
+    supports_parallel_tool_calls: true
+    supports_multimodal: true
+
+  deepseek/deepseek-chat:
+    family: deepseek-v3
+    context_window: 131072
+    default_max_output: 8192
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
+
+  qwen/qwen3-coder-480b:
+    family: qwen-3
+    context_window: 262144
+    default_max_output: 32000
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.2
+    supports_reasoning: false
+    supports_parallel_tool_calls: false
+    supports_multimodal: false
+    notes: "Coder-tuned variant. Low temperature recommended for code tasks."
+
+  meta-llama/llama-3.3-70b:
+    family: llama-3
+    context_window: 131072
+    default_max_output: 8192
+    supports_temperature: true
+    temperature_range: [0.0, 2.0]
+    suggested_temperature: 0.7
+    supports_reasoning: false
+    supports_parallel_tool_calls: true
+    supports_multimodal: false
