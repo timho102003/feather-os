@@ -27,7 +27,8 @@ from textual.binding import Binding
 from textual.containers import Container, Horizontal
 from textual.message import Message
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Input, OptionList, Static
+from textual.widgets.option_list import Option
 
 from feather.config_schema import (
     ConfigField,
@@ -47,45 +48,49 @@ class _FocusableContainer(Container, can_focus=True):
     """Container root that accepts focus so screen bindings receive keys."""
 
 
-class _ChoicePicker(Static, can_focus=True):
+class _ChoicePicker(OptionList):
     """Inline vertical picker widget for BOOLEAN toggles and DROPDOWN choices.
 
-    The picker renders ``choices`` one per line with a cursor marker on the
-    currently-highlighted option. ↑/↓ move the cursor (wrapping at both ends),
-    Enter posts a :class:`Picked` message containing the selected value, and
-    Esc bubbles up to :meth:`ConfigScreen.action_close` (which cancels the
-    in-flight edit by removing this widget).
+    Renders ``choices`` one per line; ↑/↓ (and ←/→ for symmetry with bool
+    toggles) move the cursor and Textual's :class:`OptionList` scrolls
+    the viewport automatically when the list exceeds ``max-height``.
+    Enter posts a :class:`Picked` message containing the selected value;
+    Esc bubbles up to :meth:`ConfigScreen.action_close`, which cancels
+    the in-flight edit by removing this widget.
 
     Reused for both BOOLEAN fields (choices=``("false", "true")``) and
-    DROPDOWN fields (choices=``field.enum or field.choices``), so the modal
-    only has one code path for constrained input.
+    DROPDOWN fields (choices=``field.enum or field.choices``) so the
+    modal only has one code path for constrained input.
+
+    We extend :class:`OptionList` rather than :class:`Static` because
+    Static's renderable-measurement caps virtual-size at the widget's
+    allotted height — so a 31-row list inside ``max-height: 16`` never
+    triggers ``overflow-y: auto``, and the cursor (and its ``▶`` marker)
+    silently drops below the visible region on long catalogs.
+    OptionList scrolls the highlighted row into view as a built-in.
 
     Attributes:
-        choices: Tuple of selectable string values (in display order).
+        _choices: Tuple of selectable string values (in display order),
+            preserved for tests and the controller's commit path.
     """
 
     BINDINGS = [
-        Binding("up", "prev", show=False),
-        Binding("down", "next", show=False),
         # Left/right behave the same as up/down so bool toggles
         # (conceptually horizontal) feel natural and so arrow keys
         # don't bubble up to the screen's tab-switch bindings.
-        Binding("left", "prev", show=False),
-        Binding("right", "next", show=False),
-        Binding("enter,return", "commit", show=False, priority=True),
+        Binding("left", "cursor_up", show=False),
+        Binding("right", "cursor_down", show=False),
     ]
 
     DEFAULT_CSS = """
     _ChoicePicker {
         dock: bottom;
         height: auto;
-        /* Leave room for border + every catalog entry; longest list is
-           MODEL_CATALOG['openrouter'] at 12 entries → 12 + 2 border = 14.
-           Bump if a new catalog grows past this. */
+        /* Cap viewport at 14 content rows + 2 border = 16; longer lists
+           scroll, shorter lists collapse to their natural size. */
         max-height: 16;
         border: solid $accent;
         padding: 0 1;
-        overflow-y: auto;
     }
     """
 
@@ -103,7 +108,6 @@ class _ChoicePicker(Static, can_focus=True):
         current: str | None,
         id: str | None = None,
     ) -> None:
-        super().__init__(id=id)
         if not choices:
             raise ValueError("_ChoicePicker requires at least one choice")
         # If ``current`` isn't in the suggested choices (e.g. a custom model
@@ -114,43 +118,44 @@ class _ChoicePicker(Static, can_focus=True):
             choices = (current,) + choices
         self._choices: tuple[str, ...] = choices
         try:
-            self._index = choices.index(current) if current is not None else 0
+            initial_index = choices.index(current) if current is not None else 0
         except ValueError:  # pragma: no cover — current is now guaranteed in choices
-            self._index = 0
+            initial_index = 0
+        self._initial_index = initial_index
+        super().__init__(*[Option(c) for c in choices], id=id)
 
     def on_mount(self) -> None:
-        self.update(self._repaint())
+        # Place the cursor on the initial selection. Setting ``highlighted``
+        # also scrolls that row into view, which matters when the persisted
+        # value lives below the visible viewport on long catalogs.
+        self.highlighted = self._initial_index
 
-    def _repaint(self) -> str:
-        """Render the picker body — vertical list with a cursor marker.
+    @property
+    def _index(self) -> int:
+        """Current cursor index — proxy onto :attr:`OptionList.highlighted`.
 
-        Named ``_repaint`` (not ``_render``) to avoid colliding with
-        :meth:`Static._render`, which Textual's rendering pipeline calls
-        and which must return a :class:`textual.visual.Visual`, not a str.
+        Preserved as a public attribute name for the test suite, which
+        asserts cursor position via ``picker._index``.
         """
 
-        lines: list[str] = []
-        for i, choice in enumerate(self._choices):
-            marker = "▶" if i == self._index else " "
-            lines.append(f"{marker} {choice}")
-        return "\n".join(lines)
+        return self.highlighted if self.highlighted is not None else 0
 
-    def action_prev(self) -> None:
-        """Move the cursor up one row (wraps to last)."""
+    @_index.setter
+    def _index(self, value: int) -> None:
+        self.highlighted = value
 
-        self._index = (self._index - 1) % len(self._choices)
-        self.update(self._repaint())
+    def _on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        """Forward OptionList's selection event as a :class:`Picked` message.
 
-    def action_next(self) -> None:
-        """Move the cursor down one row (wraps to first)."""
+        The screen controller listens for :class:`_ChoicePicker.Picked`
+        rather than the OptionList event so the rest of the modal does not
+        need to know which underlying widget the picker is built from.
+        """
 
-        self._index = (self._index + 1) % len(self._choices)
-        self.update(self._repaint())
-
-    def action_commit(self) -> None:
-        """Post the :class:`Picked` message with the highlighted value."""
-
-        self.post_message(self.Picked(self._choices[self._index]))
+        event.stop()
+        self.post_message(self.Picked(self._choices[event.option_index]))
 
 
 @dataclass(slots=True, frozen=True)

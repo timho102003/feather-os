@@ -1579,3 +1579,55 @@ async def test_picker_preserves_unknown_current_value_as_first_option(
         await pilot.pause()
 
         assert screen._dirty.get("app.openai.model") == "gpt-7-experimental"
+
+
+async def test_picker_scrolls_to_keep_cursor_in_view_when_list_overflows(
+    service: ConfigService,
+) -> None:
+    """Arrow-down past the viewport must scroll the picker so the cursor row
+    (and its ``▶`` marker) stay visible.
+
+    Regression: picker's ``_index`` advanced on key-down but the scroll
+    offset did not follow, so on long lists the highlighted line dropped
+    below ``max-height: 16`` and the cursor marker disappeared.
+    """
+
+    async with _Host(service).run_test(size=(120, 30)) as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        # agents.<name>.model with provider resolved to openrouter offers
+        # (inherit) + 30 catalog slugs — well past the picker's max-height
+        # of 16. The shipped default active_provider is openrouter so the
+        # inherit-resolution lands on the openrouter slug list.
+        assert _navigate_to_field(screen, "agents.Research.model")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        assert hasattr(picker, "_choices")
+        # Only meaningful if the list actually overflows the picker viewport.
+        if len(picker._choices) <= 14:
+            pytest.skip(
+                "catalog shrank below picker max-height; "
+                "overflow scenario no longer reachable"
+            )
+
+        # Step the cursor to the last choice via repeated arrow-down.
+        last_index = len(picker._choices) - 1
+        while picker._index != last_index:
+            await pilot.press("down")
+            await pilot.pause()
+
+        # After landing on the last item, the picker must have scrolled so
+        # that the cursor row is inside the visible viewport.
+        scroll_y = int(picker.scroll_offset.y)
+        viewport_height = picker.scrollable_content_region.height
+        assert scroll_y <= picker._index < scroll_y + viewport_height, (
+            f"cursor at index {picker._index} not visible: "
+            f"scroll_y={scroll_y}, viewport_height={viewport_height}"
+        )
+        assert scroll_y > 0, (
+            "picker did not scroll — cursor on a long list never advanced past "
+            "the initial viewport"
+        )
