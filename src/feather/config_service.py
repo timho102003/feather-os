@@ -291,7 +291,12 @@ class ConfigService:
         from feather.config_writer import delete_yaml_value
 
         res = self._resolver.resolve(dotted, scope=scope)
-        delete_yaml_value(res.file, res.yaml_path)
+        try:
+            delete_yaml_value(res.file, res.yaml_path)
+        except OSError as exc:
+            # Mirror the exception handling in set() so action_save can
+            # keep iterating remaining dirty fields if one reset fails.
+            return WriteResult(ok=False, path=dotted, error=str(exc))
         return WriteResult(ok=True, path=dotted)
 
     # ----- internal value lookup ---------------------------------

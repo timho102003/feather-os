@@ -711,13 +711,16 @@ class ConfigScreen(ModalScreen[None]):
     def _resolved_op_provider(self, op_name: str) -> str:
         """Return the provider for ``app.memory.operations.<op_name>``.
 
-        Order: dirty edit on ``.provider`` (excluding inherit sentinel) →
-        persisted value → ``app.active_provider``.
+        Order: dirty edit on ``.provider`` → persisted → app.active_provider.
+        Inherit-sentinel dirty bypasses persisted (same reasoning as
+        :meth:`_resolved_agent_provider`).
         """
 
         provider_path = f"app.memory.operations.{op_name}.provider"
         dirty = self._dirty.get(provider_path)
-        if dirty and dirty != INHERIT_SENTINEL:
+        if dirty == INHERIT_SENTINEL:
+            return self._active_provider_fallback()
+        if dirty:
             return str(dirty).strip().lower()
         try:
             persisted = self._service.get(provider_path).current
@@ -725,10 +728,7 @@ class ConfigScreen(ModalScreen[None]):
             persisted = None
         if persisted:
             return str(persisted).strip().lower()
-        try:
-            return str(self._service.get("app.active_provider").current).strip().lower()
-        except KeyError:
-            return "openai"
+        return self._active_provider_fallback()
 
     @staticmethod
     def _is_agent_model_field(path: str) -> bool:
@@ -744,14 +744,22 @@ class ConfigScreen(ModalScreen[None]):
     def _resolved_agent_provider(self, agent_name: str) -> str:
         """Return the provider this agent will use after resolution.
 
-        Order: dirty edit on ``agents.<name>.provider`` (excluding the
-        inherit sentinel) → persisted ``agents.<name>.provider`` value →
-        ``app.active_provider``.
+        Order:
+          * Pending dirty edit on ``agents.<name>.provider``:
+            - the inherit sentinel BYPASSES the persisted layer entirely
+              and goes straight to ``app.active_provider`` — otherwise
+              switching an agent to (inherit) inside the modal would
+              still see the stale persisted provider until save.
+            - any other value wins.
+          * Persisted ``agents.<name>.provider``.
+          * ``app.active_provider`` fallback.
         """
 
         provider_path = f"agents.{agent_name}.provider"
         dirty = self._dirty.get(provider_path)
-        if dirty and dirty != INHERIT_SENTINEL:
+        if dirty == INHERIT_SENTINEL:
+            return self._active_provider_fallback()
+        if dirty:
             return str(dirty).strip().lower()
         try:
             persisted = self._service.get(provider_path).current
@@ -759,9 +767,15 @@ class ConfigScreen(ModalScreen[None]):
             persisted = None
         if persisted:
             return str(persisted).strip().lower()
-        # Fall back to app-level active provider.
+        return self._active_provider_fallback()
+
+    def _active_provider_fallback(self) -> str:
+        """Read ``app.active_provider`` defensively."""
+
         try:
-            return str(self._service.get("app.active_provider").current).strip().lower()
+            return (
+                str(self._service.get("app.active_provider").current).strip().lower()
+            )
         except KeyError:
             return "openai"
 
@@ -802,7 +816,12 @@ class ConfigScreen(ModalScreen[None]):
             parts = path.split(".")
             if len(parts) >= 3 and parts[1] in ("openai", "openrouter", "claude"):
                 provider = parts[1]
-                model = self._service.get(f"app.{provider}.model").current
+                # Honour pending dirty edits on app.<provider>.model so a
+                # user switching the model in the same modal session sees
+                # capability gating update immediately (otherwise dirtying
+                # gpt-4o would still leave temperature [N/A] while the
+                # persisted gpt-5-mini still wins).
+                model = self._resolved_app_model(provider)
                 if model:
                     return self._catalog.capability(
                         self._provider_to_catalog_key(provider), str(model)
@@ -823,13 +842,23 @@ class ConfigScreen(ModalScreen[None]):
     def _resolved_agent_model(self, agent_name: str, provider: str) -> str | None:
         """Resolve which model this agent will use.
 
-        Order: dirty edit on ``agents.<name>.model`` (excluding sentinel) →
-        persisted value → ``app.<provider>.model`` (the inherit fallback).
+        Order: dirty edit on ``agents.<name>.model`` → persisted →
+        ``app.<provider>.model`` inherit fallback. Inherit sentinel
+        bypasses persisted and goes straight to the provider default —
+        otherwise dirtying (inherit) while a persisted model still exists
+        would resolve to the stale persisted slug until save.
+
+        The provider-level fallback ALSO honours a pending dirty edit on
+        ``app.<provider>.model`` so that switching the app model and
+        re-evaluating an inheriting agent's capability happens in one
+        modal session.
         """
 
         model_path = f"agents.{agent_name}.model"
         dirty = self._dirty.get(model_path)
-        if dirty and dirty != INHERIT_SENTINEL:
+        if dirty == INHERIT_SENTINEL:
+            return self._resolved_app_model(provider)
+        if dirty:
             return str(dirty)
         try:
             persisted = self._service.get(model_path).current
@@ -837,11 +866,25 @@ class ConfigScreen(ModalScreen[None]):
             persisted = None
         if persisted:
             return str(persisted)
+        return self._resolved_app_model(provider)
+
+    def _resolved_app_model(self, provider: str) -> str | None:
+        """Return ``app.<provider>.model`` honouring pending dirty edits.
+
+        Used by every capability lookup whose answer depends on which
+        model the provider is currently pointing at — including dirty
+        edits that haven't been saved yet.
+        """
+
+        app_model_path = f"app.{provider}.model"
+        dirty = self._dirty.get(app_model_path)
+        if dirty and dirty != INHERIT_SENTINEL:
+            return str(dirty)
         try:
-            inherited = self._service.get(f"app.{provider}.model").current
+            persisted = self._service.get(app_model_path).current
         except KeyError:
             return None
-        return str(inherited) if inherited else None
+        return str(persisted) if persisted else None
 
     def _can_edit_field(self, field: ConfigField) -> tuple[bool, str | None]:
         """Return ``(editable, reason)``. When not editable, ``reason``
@@ -878,7 +921,7 @@ class ConfigScreen(ModalScreen[None]):
 
         slug = getattr(cap, "slug", "this model")
         if path.endswith(".temperature"):
-            return f"{slug} ignores temperature (reasoning model)"
+            return f"{slug} ignores temperature"
         if path.endswith(".parallel_tool_calls"):
             return f"{slug} does not support parallel tool calls"
         if path.endswith(".reasoning.effort"):
@@ -923,8 +966,11 @@ class ConfigScreen(ModalScreen[None]):
 
         # Inherit sentinel: stage the reset without going through validate
         # (the empty value would fail enum-strict validation, and the
-        # sentinel string isn't a real config value anyway).
-        if event.value == INHERIT_SENTINEL:
+        # sentinel string isn't a real config value anyway). Restricted
+        # to fields that semantically support inherit — otherwise a
+        # future schema mistake that lets the sentinel into a strict-enum
+        # field's choices would silently delete the overlay key.
+        if event.value == INHERIT_SENTINEL and self._supports_inherit(field.path):
             if picker is not None:
                 picker.remove()
             self._dirty[field.path] = INHERIT_SENTINEL

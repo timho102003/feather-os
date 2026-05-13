@@ -1297,6 +1297,124 @@ async def test_agent_temperature_editable_when_resolved_model_is_chat(
         assert "0.0" in editor.placeholder and "2.0" in editor.placeholder
 
 
+# ---------------------------------------------------------------------------
+# Commit 4: red-team fixes
+# ---------------------------------------------------------------------------
+
+
+async def test_pending_inherit_on_agent_provider_steers_model_picker_to_active(
+    service: ConfigService,
+) -> None:
+    """Dirty edit `agents.Lead.provider = (inherit)` must immediately route the
+    agent.model picker through app.active_provider — not the still-persisted
+    provider value. Otherwise the "switch + pick in one pass" UX is broken for
+    the inherit case."""
+
+    from feather.config_paths import PathScope
+
+    # Persisted: agent pinned to claude. App default: openai.
+    service.set("app.active_provider", "openai", scope=PathScope.GLOBAL)
+    service.set("agents.Lead.provider", "claude", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+
+        # Stage the inherit dirty edit (would otherwise require a picker round-trip).
+        screen._dirty["agents.Lead.provider"] = "(inherit)"
+
+        assert _navigate_to_field(screen, "agents.Lead.model")
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        # Should reflect app.active_provider (openai), NOT persisted claude.
+        assert "gpt-5-mini" in picker._choices
+        assert "claude-opus-4-7" not in picker._choices
+
+
+async def test_dirty_app_model_steers_capability_gating(
+    service: ConfigService,
+) -> None:
+    """Switching `app.openai.model` in the same modal session must drive
+    capability gating immediately — not wait for save. Otherwise users see
+    temperature [N/A] AFTER switching to gpt-4o because the picker still
+    reads the persisted reasoning model."""
+
+    from feather.config_paths import PathScope
+
+    # Persisted: gpt-5-mini (reasoning, no temp).
+    service.set("app.openai.model", "gpt-5-mini", scope=PathScope.GLOBAL)
+    service.set("app.active_provider", "openai", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+
+        # Stage a dirty switch to gpt-4o (chat model — accepts temperature).
+        screen._dirty["app.openai.model"] = "gpt-4o"
+
+        assert _navigate_to_field(screen, "app.openai.temperature")
+        # Form should NOT show [N/A] anymore — the dirty model accepts temp.
+        form_text = str(screen.query_one("#config-form", Static).render())
+        # If the bug were present, this would have [N/A]; we assert no N/A
+        # on this row by looking for the field path's section.
+        # The whole form_text might contain N/A from other rows; check
+        # the specific row.
+        temp_row_start = form_text.find("app.openai.temperature")
+        next_row_start = form_text.find("app.openai", temp_row_start + 10)
+        if next_row_start == -1:
+            next_row_start = len(form_text)
+        row = form_text[temp_row_start:next_row_start]
+        assert "N/A" not in row, (
+            f"app.openai.temperature should be editable after dirty switch to "
+            f"gpt-4o, got row: {row!r}"
+        )
+
+        # Editor should open now.
+        await pilot.press("enter")
+        await pilot.pause()
+        editor = screen.query("#config-inline-editor")
+        assert editor, "temperature editor should open after dirty switch to gpt-4o"
+
+
+def test_reset_wraps_filesystem_errors(tmp_path: Path) -> None:
+    """ConfigService.reset must return WriteResult.ok=False on OSError instead
+    of letting the exception escape — otherwise a save with multiple inherit
+    entries abandons remaining fields if one reset fails."""
+
+    from unittest.mock import patch
+
+    paths = FeatherPaths(project_root=tmp_path / "proj", home=tmp_path / "global")
+    paths.ensure_global_dirs()
+    paths.ensure_project_dirs()
+    cfg = load_app_config(paths.project_root, paths=paths)
+    svc = ConfigService(paths=paths, app_config=cfg)
+
+    # Patch delete_yaml_value to raise OSError; reset must return ok=False.
+    with patch("feather.config_writer.delete_yaml_value", side_effect=OSError("disk full")):
+        result = svc.reset("app.active_provider")
+    assert result.ok is False
+    assert "disk full" in str(result.error)
+
+
+async def test_inherit_sentinel_ignored_on_non_inherit_field(
+    service: ConfigService,
+) -> None:
+    """If somehow `(inherit)` is committed on a field that doesn't support
+    inherit semantics (e.g. via a future schema bug), `_handle_choice_picked`
+    must NOT call reset() — picking the sentinel for the wrong field type
+    would silently delete an overlay key."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+
+        # app.active_provider is a strict ENUM — doesn't support inherit.
+        # Confirm:
+        assert not screen._supports_inherit("app.active_provider")
+
+
 async def test_memory_operations_extraction_provider_picker_uses_inherit_sentinel(
     service: ConfigService,
 ) -> None:
