@@ -902,6 +902,61 @@ async def test_picker_left_right_navigate_within_picker_not_tabs(
         )
 
 
+async def test_bool_picker_renders_at_least_two_rows(
+    service: ConfigService,
+) -> None:
+    """Bool picker must be tall enough to show BOTH false and true.
+
+    Regression: the ID-scoped #config-inline-editor rule used to force
+    height: 3 on every editor, cropping the picker's second row so only
+    'false' was visible regardless of which value was actually selected.
+    """
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.compaction.enabled")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        # Two choice rows + 2 border rows = at least 4 visible rows.
+        # height: 3 (the old buggy cap) would fail this.
+        assert picker.region.height >= 4, (
+            f"bool picker too short ({picker.region.height} rows) — "
+            f"second choice gets cropped"
+        )
+
+
+async def test_dropdown_picker_renders_tall_enough_for_all_choices(
+    service: ConfigService,
+) -> None:
+    """DROPDOWN picker must be tall enough to show its entire choice list.
+
+    Catches the same height-cap bug as the bool case but on a long list
+    (MODEL_CATALOG['openrouter'] is the longest at 12 entries).
+    """
+
+    async with _Host(service).run_test(size=(120, 40)) as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openrouter.model")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        choices_count = len(picker._choices)
+        # Allow for overflow scrolling, but ensure the widget isn't capped
+        # at the old 3-row height — at minimum it should show >= 4 rows
+        # OR the widget must declare auto-sizing in its CSS.
+        assert picker.region.height > 3, (
+            f"dropdown picker capped at {picker.region.height} rows — "
+            f"can't display {choices_count} choices"
+        )
+
+
 async def test_picker_preserves_unknown_current_value_as_first_option(
     service: ConfigService,
 ) -> None:

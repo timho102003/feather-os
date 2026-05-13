@@ -77,9 +77,13 @@ class _ChoicePicker(Static, can_focus=True):
     _ChoicePicker {
         dock: bottom;
         height: auto;
-        max-height: 12;
+        /* Leave room for border + every catalog entry; longest list is
+           MODEL_CATALOG['openrouter'] at 12 entries → 12 + 2 border = 14.
+           Bump if a new catalog grows past this. */
+        max-height: 16;
         border: solid $accent;
         padding: 0 1;
+        overflow-y: auto;
     }
     """
 
@@ -250,7 +254,11 @@ class ConfigScreen(ModalScreen[None]):
         padding: 0 1;
         background: $primary 10%;
     }
-    #config-inline-editor {
+    /* Type-specific so the ChoicePicker (a Static) can still size itself
+       via its own DEFAULT_CSS (height: auto, max-height: 12). Without the
+       Input qualifier this rule forced the picker to 3 rows, cropping the
+       second choice in the bool picker and clipping long dropdowns. */
+    Input#config-inline-editor {
         dock: bottom;
         height: 3;
         border: solid $accent;
