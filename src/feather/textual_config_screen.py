@@ -31,6 +31,7 @@ from textual.widgets import Input, Static
 
 from feather.config_schema import (
     ConfigField,
+    INHERIT_SENTINEL,
     REGISTRY,
     ReloadClass,
     Scope,
@@ -39,6 +40,7 @@ from feather.config_schema import (
     lookup,
 )
 from feather.config_service import ConfigService
+from feather.models_catalog import ModelCatalog, load_catalog
 
 
 class _FocusableContainer(Container, can_focus=True):
@@ -270,10 +272,17 @@ class ConfigScreen(ModalScreen[None]):
         *,
         service: ConfigService,
         runtime: Any | None = None,
+        model_catalog: ModelCatalog | None = None,
     ) -> None:
         super().__init__()
         self._service = service
         self._runtime = runtime
+        # Model capability catalog drives dynamic agent.model choices and
+        # (in Commit 1) field gating. Loaded eagerly so we don't re-read
+        # YAML on every picker open. Tests can inject a custom catalog.
+        self._catalog: ModelCatalog = model_catalog or load_catalog(
+            paths=service.paths
+        )
         self._tabs = _discover_tabs(service)
         self._active_tab_index: int = 0
         self._active_section_index: int = 0
@@ -390,12 +399,33 @@ class ConfigScreen(ModalScreen[None]):
             dirty_badge = " [DIRTY]" if f.path in self._dirty else ""
             cursor_marker = "▶" if idx == (self._active_field_index % max(1, len(fields))) else " "
             current = self._dirty.get(f.path, cv.current)
+            # Render None (or the queued inherit sentinel) for agent
+            # provider/model fields as "(inherit)" so the form line tells
+            # the user what's actually going to happen — instead of the
+            # confusing `None`.
+            display = self._display_value(f, current)
             rows.append(
                 f"{cursor_marker} {f.path}   {badge_src}{dirty_badge}   {badge_rl}\n"
-                f"   ▸ {current!r}\n"
+                f"   ▸ {display}\n"
                 f"   {f.description}"
             )
         return "\n\n".join(rows) or "(no fields)"
+
+    def _display_value(self, field: ConfigField, current: Any) -> str:
+        """Pretty-print ``current`` for a form row.
+
+        Agent provider/model fields render ``None`` and the pending
+        ``INHERIT_SENTINEL`` as ``(inherit)`` so the row reads
+        unambiguously. Everything else falls back to ``repr()``.
+        """
+
+        if current == INHERIT_SENTINEL:
+            return INHERIT_SENTINEL
+        if current is None and field.path.startswith("agents.") and (
+            field.path.endswith(".provider") or field.path.endswith(".model")
+        ):
+            return INHERIT_SENTINEL
+        return repr(current)
 
     def _render_footer(self) -> str:
         """Render the footer status line."""
@@ -556,7 +586,15 @@ class ConfigScreen(ModalScreen[None]):
         if field.widget in (WidgetHint.TOGGLE, WidgetHint.DROPDOWN):
             choices = self._picker_choices_for(field)
             current = self._dirty.get(field.path, self._service.get(field.path).current)
-            current_str = self._bool_to_choice(current) if field.widget is WidgetHint.TOGGLE else str(current)
+            if field.widget is WidgetHint.TOGGLE:
+                current_str = self._bool_to_choice(current)
+            elif current == INHERIT_SENTINEL or current is None:
+                # None or pending inherit → land cursor on the sentinel
+                # option (which we always prepend for fields supporting
+                # inherit) so Enter without navigating keeps "inherit".
+                current_str = INHERIT_SENTINEL
+            else:
+                current_str = str(current)
             picker = _ChoicePicker(
                 choices=choices,
                 current=current_str,
@@ -593,17 +631,72 @@ class ConfigScreen(ModalScreen[None]):
         text = str(value).strip().lower()
         return "true" if text in ("true", "yes", "on", "1") else "false"
 
-    @staticmethod
-    def _picker_choices_for(field: ConfigField) -> tuple[str, ...]:
+    def _picker_choices_for(self, field: ConfigField) -> tuple[str, ...]:
         """Return the picker's display choices for ``field``.
 
-        TOGGLE fields render as ``("false", "true")``. DROPDOWN fields prefer
-        ``field.enum`` (strict) over ``field.choices`` (suggestions).
+        Resolution order:
+
+        * ``TOGGLE`` → always ``("false", "true")``.
+        * ``agents.<name>.model`` → ``(INHERIT_SENTINEL,) + catalog.slugs_for(resolved_provider)``.
+          The agent's resolved provider is its own ``provider`` field if
+          set (or pending in dirty), else ``app.active_provider``.
+        * Other ``DROPDOWN`` → ``field.enum`` (strict) or ``field.choices``.
         """
 
         if field.widget is WidgetHint.TOGGLE:
             return ("false", "true")
+        if self._is_agent_model_field(field.path):
+            agent_name = field.path.split(".")[1]
+            provider = self._resolved_agent_provider(agent_name)
+            catalog_key = self._provider_to_catalog_key(provider)
+            slugs = self._catalog.slugs_for(catalog_key)
+            return (INHERIT_SENTINEL, *slugs)
         return field.enum or field.choices or ()
+
+    @staticmethod
+    def _is_agent_model_field(path: str) -> bool:
+        """Match ``agents.<name>.model`` exactly (excludes ``temperature`` etc)."""
+
+        parts = path.split(".")
+        return (
+            len(parts) == 3
+            and parts[0] == "agents"
+            and parts[2] == "model"
+        )
+
+    def _resolved_agent_provider(self, agent_name: str) -> str:
+        """Return the provider this agent will use after resolution.
+
+        Order: dirty edit on ``agents.<name>.provider`` (excluding the
+        inherit sentinel) → persisted ``agents.<name>.provider`` value →
+        ``app.active_provider``.
+        """
+
+        provider_path = f"agents.{agent_name}.provider"
+        dirty = self._dirty.get(provider_path)
+        if dirty and dirty != INHERIT_SENTINEL:
+            return str(dirty).strip().lower()
+        try:
+            persisted = self._service.get(provider_path).current
+        except KeyError:
+            persisted = None
+        if persisted:
+            return str(persisted).strip().lower()
+        # Fall back to app-level active provider.
+        try:
+            return str(self._service.get("app.active_provider").current).strip().lower()
+        except KeyError:
+            return "openai"
+
+    @staticmethod
+    def _provider_to_catalog_key(provider: str) -> str:
+        """Map an app-level provider key to the metadata catalog's vendor key.
+
+        ``app.active_provider`` uses ``claude`` for Anthropic; the metadata
+        catalog uses ``anthropic`` to match the SDK's vendor name.
+        """
+
+        return "anthropic" if provider == "claude" else provider
 
     @on(_ChoicePicker.Picked)
     def _handle_choice_picked(self, event: _ChoicePicker.Picked) -> None:
@@ -617,6 +710,11 @@ class ConfigScreen(ModalScreen[None]):
         Mirrors :meth:`on_input_submitted` but skips the Input-specific
         plumbing. Validates the picked value through the service, marks the
         field dirty on success, and restores the footer in all cases.
+
+        The ``INHERIT_SENTINEL`` is treated as a special "clear the
+        overlay" instruction — stored in ``_dirty`` as the literal
+        sentinel string so :meth:`action_save` can call
+        :meth:`ConfigService.reset` for it instead of ``set``.
         """
 
         field = self._pending_edit
@@ -628,6 +726,19 @@ class ConfigScreen(ModalScreen[None]):
             if picker is not None:
                 picker.remove()
             self._restore_footer()
+            return
+
+        # Inherit sentinel: stage the reset without going through validate
+        # (the empty value would fail enum-strict validation, and the
+        # sentinel string isn't a real config value anyway).
+        if event.value == INHERIT_SENTINEL:
+            if picker is not None:
+                picker.remove()
+            self._dirty[field.path] = INHERIT_SENTINEL
+            self._pending_edit = None
+            self._restore_footer()
+            self._refresh_body()
+            self._set_footer(self._render_footer())
             return
 
         validate = self._service.validate(field.path, event.value)
@@ -709,7 +820,15 @@ class ConfigScreen(ModalScreen[None]):
 
         for path, value in list(self._dirty.items()):
             force = path == "app.self_repair.enabled"
-            result = self._service.set(path, value, force=force)
+            if value == INHERIT_SENTINEL:
+                # Inherit sentinel maps to "remove this key from the
+                # overlay so the layer below provides the value". For
+                # agent fields, that layer is the agent YAML's default
+                # (which the loader treats null as "inherit from app");
+                # for app fields it's the packaged default.
+                result = self._service.reset(path)
+            else:
+                result = self._service.set(path, value, force=force)
             if not result.ok:
                 errors.append(f"{path}: {result.error}")
                 continue

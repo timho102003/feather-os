@@ -372,8 +372,10 @@ class ConfigService:
             from feather.config import load_agent_config
 
             try:
+                # Agent filenames are lowercase even though the registry
+                # path's agent segment uses the capitalized display name.
                 agent_cfg = load_agent_config(
-                    self._paths.project_root, agent_name, paths=self._paths
+                    self._paths.project_root, agent_name.lower(), paths=self._paths
                 )
             except FileNotFoundError:
                 return None

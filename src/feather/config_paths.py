@@ -75,7 +75,13 @@ class ConfigPathResolver:
                     f"agents config path must have at least 3 segments, got {dotted!r}"
                 )
             agent_name, *yaml_path = rest
-            base = self._app_yaml_dir(scope) / "agents" / f"{agent_name}.yaml"
+            # Shipped agent YAMLs use lowercase filenames (lead.yaml,
+            # explore.yaml) even though their YAML `name:` field is
+            # capitalized ("Lead", "Explore") and the registry paths
+            # use that capitalized form. Lowercase here so writes via
+            # `/config set agents.Explore.<knob>` land in the file the
+            # loader actually reads.
+            base = self._app_yaml_dir(scope) / "agents" / f"{agent_name.lower()}.yaml"
             return PathResolution(file=base, yaml_path=yaml_path, scope=scope)
 
         raise ValueError(f"unknown config path prefix: {head!r}")

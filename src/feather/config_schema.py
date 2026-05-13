@@ -208,8 +208,24 @@ MODEL_CATALOG: dict[str, tuple[str, ...]] = {
 }
 
 
+#: Sentinel value the modal's picker writes when the user chooses
+#: "(inherit)" — translates to a reset of the overlay key, so the lower
+#: layer's value (e.g. app.active_provider) takes effect. Defined here so
+#: schema + modal + tests use the same string.
+INHERIT_SENTINEL = "(inherit)"
+
+#: Choices for agent-level provider override. Includes the inherit sentinel
+#: so the picker offers "(inherit)" without a separate widget mode.
+_AGENT_PROVIDER_CHOICES: tuple[str, ...] = (
+    INHERIT_SENTINEL,
+    "openai",
+    "openrouter",
+    "claude",
+)
+
+
 def _agent_fields(name: str) -> tuple[ConfigField, ...]:
-    """Return the 7 standard per-agent :class:`ConfigField` entries for ``name``.
+    """Return the 9 standard per-agent :class:`ConfigField` entries for ``name``.
 
     Args:
         name: Agent name as it appears in the YAML ``name:`` field (e.g.
@@ -217,9 +233,9 @@ def _agent_fields(name: str) -> tuple[ConfigField, ...]:
             in all generated paths so it must match the agent YAML.
 
     Returns:
-        Tuple of seven :class:`ConfigField` instances covering personality,
-        memory_enabled, provider, model, reasoning.effort, reasoning.summary,
-        and registered_tools.
+        Tuple of nine :class:`ConfigField` instances covering personality,
+        memory_enabled, provider, model, temperature, max_output_tokens,
+        reasoning.effort, reasoning.summary, and registered_tools.
     """
 
     return (
@@ -242,18 +258,24 @@ def _agent_fields(name: str) -> tuple[ConfigField, ...]:
         ConfigField(
             path=f"agents.{name}.provider",
             type=FieldType.STRING,
-            widget=WidgetHint.TEXT,
+            widget=WidgetHint.DROPDOWN,
             reload=ReloadClass.NEXT_TURN,
             scope=Scope.AGENT,
-            description="Override the app-level provider for this agent (blank inherits).",
+            description="Override the app-level provider for this agent (pick (inherit) to use app default).",
+            choices=_AGENT_PROVIDER_CHOICES,
         ),
         ConfigField(
             path=f"agents.{name}.model",
             type=FieldType.STRING,
-            widget=WidgetHint.TEXT,
+            widget=WidgetHint.DROPDOWN,
             reload=ReloadClass.NEXT_TURN,
             scope=Scope.AGENT,
-            description="Override the provider's default model for this agent (blank inherits).",
+            description="Override the provider's default model for this agent (pick (inherit) to use provider default).",
+            # Choices are computed dynamically by the modal at picker-open
+            # time — they depend on the agent's resolved provider, which
+            # the schema cannot know. A placeholder marker keeps the
+            # DROPDOWN-requires-enum-or-choices invariant satisfied.
+            choices=(INHERIT_SENTINEL,),
         ),
         ConfigField(
             path=f"agents.{name}.temperature",
@@ -1408,6 +1430,7 @@ __all__ = (
     "ConfigField",
     "FieldType",
     "IGNORED_PATHS",
+    "INHERIT_SENTINEL",
     "MODEL_CATALOG",
     "REGISTRY",
     "ReloadClass",

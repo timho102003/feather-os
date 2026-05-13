@@ -595,19 +595,33 @@ def _resolve_agent_yaml(
 ) -> dict[str, Any]:
     """Find an agent YAML across project, global, and packaged sources.
 
-    Returns the parsed mapping from the first source that has it. Order
-    intentionally matches :func:`load_agent_config`'s docstring.
+    Resolution order:
+
+    1. Project-staged ``<root>/config/agents/<name>.yaml`` if present —
+       returned as the **full replacement** (team-shared explicit config,
+       same semantics as ``<root>/config/app.yaml``).
+    2. Otherwise, start from the packaged default and **deep-merge** any
+       ``<global>/config/agents/<name>.yaml`` overlay on top. This lets
+       ``/config set agents.Lead.provider openai`` write a sparse global
+       file with just one key and still load correctly — without the
+       deep-merge, the partial overlay would shadow the packaged default
+       entirely and fail validation for missing required fields like
+       ``prompt_modules``.
     """
 
     project_path = root / "config" / "agents" / f"{agent_name}.yaml"
     if project_path.exists():
         return _read_yaml(project_path)
+    base: dict[str, Any] = {}
+    if has_packaged_agent(agent_name):
+        base = yaml.safe_load(packaged_agent_yaml_text(agent_name)) or {}
     if paths is not None:
         global_path = paths.global_agents_dir / f"{agent_name}.yaml"
         if global_path.exists():
-            return _read_yaml(global_path)
-    if has_packaged_agent(agent_name):
-        return yaml.safe_load(packaged_agent_yaml_text(agent_name)) or {}
+            overlay = _read_yaml(global_path)
+            base = _deep_merge(base, overlay)
+    if base:
+        return base
     raise FileNotFoundError(
         f"Agent config '{agent_name}' not found in project ({project_path}), "
         "global, or packaged sources"

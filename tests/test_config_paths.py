@@ -33,9 +33,13 @@ def test_resolve_app_path_project(tmp_path: Path) -> None:
 
 
 def test_resolve_agent_path(tmp_path: Path) -> None:
+    """Registry uses the agent's capitalized display name (`Lead`) but the
+    shipped YAMLs are lowercase (`lead.yaml`). The resolver lowercases on
+    the way to disk so writes land in the file the loader actually reads."""
+
     resolver = ConfigPathResolver(_paths(tmp_path))
     res = resolver.resolve("agents.Lead.model", scope=PathScope.GLOBAL)
-    assert res.file == tmp_path / "global" / "config" / "agents" / "Lead.yaml"
+    assert res.file == tmp_path / "global" / "config" / "agents" / "lead.yaml"
     assert res.yaml_path == ["model"]
 
 
