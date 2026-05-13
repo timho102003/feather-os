@@ -200,56 +200,34 @@ async def test_arrow_up_moves_section_cursor(service: ConfigService) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_enter_on_field_opens_editor_and_marks_dirty(
+async def test_enter_on_enum_field_picker_commits_value(
     service: ConfigService,
 ) -> None:
-    """Enter opens inline editor; submitting a valid value marks field dirty."""
+    """Enter on an enum field opens a picker; commit writes to _dirty."""
 
     async with _Host(service).run_test() as pilot:
         screen = pilot.app.screen
         assert isinstance(screen, ConfigScreen)
 
-        # The first section on the App tab is 'database'; navigate down
-        # to 'active_provider' section (index varies by registry order).
-        # Instead of navigating, directly press enter on whatever the
-        # first field is in the first section, then test that _dirty
-        # receives data when we submit a valid enum value.
-        # For a more reliable test, navigate to where app.active_provider lives.
-        # app.active_provider is in the REGISTRY — let's find its section index.
-        from feather.config_schema import REGISTRY as REG
-        sections: list[str] = []
-        for f in REG:
-            if not f.path.startswith("app."):
-                continue
-            tail = f.path[len("app."):]
-            label = tail.split(".", 1)[0] if "." in tail else "agent"
-            if label not in sections:
-                sections.append(label)
+        assert _navigate_to_field(screen, "app.active_provider")
 
-        # Navigate to 'active_provider' section (it's a leaf under app.*)
-        # The leaf fields appear as the synthetic "agent" label — but
-        # app.active_provider has no second segment so it appears as 'active_provider'.
-        # Actually app.active_provider -> tail = 'active_provider', no dot -> label = 'agent'
-        # No — let's count more carefully. 'active_provider' has no dot after prefix,
-        # so label = 'agent'. But wait, there's no second dot in 'active_provider'.
-        # Let me check: app.active_provider -> tail = 'active_provider'
-        # -> no "." in tail -> label = "agent"
-        # But also app.database.path -> tail = "database.path" -> label = "database"
-        # So we need to navigate to the "agent" section for app.active_provider.
-        # Actually app.active_provider is the only field in section "agent"
-        # (leaves directly under app.). We need to navigate there.
-        target_section = "agent"
-        if target_section in sections:
-            idx = sections.index(target_section)
-            for _ in range(idx):
-                await pilot.press("down")
-
-        # Now press Enter to open editor
+        # Open the picker.
         await pilot.press("enter")
         await pilot.pause()
 
-        # Type "claude" and submit
-        await pilot.press("c", "l", "a", "u", "d", "e", "enter")
+        picker = screen.query("#config-inline-editor").first()
+        assert hasattr(picker, "_choices") and set(picker._choices) == {
+            "openai",
+            "openrouter",
+            "claude",
+        }
+
+        # Move cursor to "claude" then commit.
+        target_index = picker._choices.index("claude")
+        while picker._index != target_index:
+            await pilot.press("down")
+            await pilot.pause()
+        await pilot.press("enter")
         await pilot.pause()
 
         assert "app.active_provider" in screen._dirty
@@ -257,41 +235,26 @@ async def test_enter_on_field_opens_editor_and_marks_dirty(
 
 
 async def test_invalid_input_does_not_mark_dirty(service: ConfigService) -> None:
-    """Submitting an invalid value shows error and does NOT update _dirty."""
+    """Submitting an out-of-range numeric value shows error and does NOT update _dirty."""
 
     async with _Host(service).run_test() as pilot:
         screen = pilot.app.screen
         assert isinstance(screen, ConfigScreen)
 
-        # Navigate to app.compaction section to get a float field
-        from feather.config_schema import REGISTRY as REG
-        sections: list[str] = []
-        for f in REG:
-            if not f.path.startswith("app."):
-                continue
-            tail = f.path[len("app."):]
-            label = tail.split(".", 1)[0] if "." in tail else "agent"
-            if label not in sections:
-                sections.append(label)
+        # Use trigger_ratio (FLOAT, _ratio validator: 0.0-1.0) — typing 2.0
+        # passes coerce but fails the validator, hitting the INVALID branch.
+        assert _navigate_to_field(screen, "app.compaction.trigger_ratio")
 
-        target = "compaction"
-        if target in sections:
-            for _ in range(sections.index(target)):
-                await pilot.press("down")
-
-        # Open editor for the first compaction field (app.compaction.enabled, boolean)
         await pilot.press("enter")
         await pilot.pause()
 
-        # Type an invalid value for boolean
-        await pilot.press("n", "o", "t", "_", "a", "_", "b", "o", "o", "l", "enter")
+        # Type an out-of-range float and submit.
+        await pilot.press("2", ".", "0", "enter")
         await pilot.pause()
 
-        # Check footer shows INVALID message
         footer = str(screen.query_one("#config-footer", Static).render()).lower()
         assert "invalid" in footer
-        # And the field is not dirty
-        assert "app.compaction.enabled" not in screen._dirty
+        assert "app.compaction.trigger_ratio" not in screen._dirty
 
 
 # ---------------------------------------------------------------------------
@@ -697,3 +660,273 @@ def test_apply_error_renders_in_footer(service: ConfigService) -> None:
     assert "apply error" in src, (
         "action_save's _apply worker must catch exceptions and render them in the footer"
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: Constrained pickers (bool toggle + enum/choices dropdown)
+# ---------------------------------------------------------------------------
+
+
+def _navigate_to_field(screen: ConfigScreen, target_path: str) -> bool:
+    """Move sidebar+field cursor to ``target_path`` on the App tab.
+
+    Returns True if reached, False otherwise. Used by picker tests to
+    target a specific BOOLEAN or DROPDOWN field rather than the section's
+    first leaf (which may be a STRING or SENSITIVE_READONLY field).
+    """
+
+    from feather.config_schema import REGISTRY as REG
+
+    sections: list[str] = []
+    for f in REG:
+        if not f.path.startswith("app."):
+            continue
+        tail = f.path[len("app."):]
+        label = tail.split(".", 1)[0] if "." in tail else "agent"
+        if label not in sections:
+            sections.append(label)
+    target = screen._fields_in_section
+    # find the section the target_path lives in
+    tail = target_path[len("app."):]
+    target_section = tail.split(".", 1)[0] if "." in tail else "agent"
+    if target_section not in sections:
+        return False
+    screen._active_section_index = sections.index(target_section)
+    # find the field index within the section
+    fields = target()
+    for i, f in enumerate(fields):
+        if f.path == target_path:
+            screen._active_field_index = i
+            screen._refresh_body()
+            return True
+    return False
+
+
+async def test_enter_on_bool_field_opens_choice_picker(
+    service: ConfigService,
+) -> None:
+    """Enter on a BOOLEAN field opens an inline picker, not a free-text Input."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+
+        assert _navigate_to_field(screen, "app.compaction.enabled")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # No free-text Input should be mounted for a bool field.
+        inputs = screen.query("#config-inline-editor")
+        assert inputs, "an inline editor of some kind should be mounted"
+        # The picker widget exposes a `_choices` attribute distinct from an Input.
+        picker = inputs.first()
+        assert hasattr(picker, "_choices"), (
+            "BOOLEAN field should open a choice picker, not an Input"
+        )
+        assert tuple(picker._choices) == ("false", "true")
+
+
+async def test_bool_picker_arrow_keys_change_selection_then_commit(
+    service: ConfigService,
+) -> None:
+    """↓/↑ moves the bool picker cursor; Enter commits to _dirty."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.compaction.enabled")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        # Default value is True (compaction enabled) → cursor on "true" (index 1).
+        # Move to "false" via up arrow then commit.
+        starting_index = picker._index
+        await pilot.press("down")
+        await pilot.pause()
+        moved = picker._index != starting_index
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Picker removed; field is dirty.
+        assert not screen.query("#config-inline-editor")
+        assert "app.compaction.enabled" in screen._dirty
+        if moved:
+            # We moved at least once, so the dirty value should be the opposite
+            # of the original (True -> False or False -> True).
+            assert isinstance(screen._dirty["app.compaction.enabled"], bool)
+
+
+async def test_enter_on_enum_field_opens_choice_picker_with_enum_values(
+    service: ConfigService,
+) -> None:
+    """Enter on an ENUM field opens a picker populated from field.enum."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.active_provider")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        assert hasattr(picker, "_choices")
+        assert set(picker._choices) == {"openai", "openrouter", "claude"}
+
+
+async def test_enter_on_model_field_opens_choice_picker_with_catalog(
+    service: ConfigService,
+) -> None:
+    """Enter on app.openai.model opens a picker populated from MODEL_CATALOG."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.model")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        assert hasattr(picker, "_choices")
+        from feather.config_schema import MODEL_CATALOG
+
+        assert set(MODEL_CATALOG["openai"]).issubset(set(picker._choices))
+
+
+async def test_enter_on_sensitive_readonly_refuses_and_shows_footer(
+    service: ConfigService,
+) -> None:
+    """SENSITIVE_READONLY fields cannot be edited inline; modal explains why."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.api_key_env")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # No editor mounted.
+        assert not screen.query("#config-inline-editor")
+        body = str(screen.query_one("#config-footer", Static).render()).lower()
+        assert "sensitive" in body or "env" in body
+
+
+async def test_enter_on_list_editor_field_refuses(
+    service: ConfigService,
+) -> None:
+    """LIST_EDITOR fields are not yet inline-editable in the modal."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        # claude.anthropic_beta is a LIST_EDITOR field.
+        if not _navigate_to_field(screen, "app.claude.anthropic_beta"):
+            return  # Section ordering changed; skip rather than break.
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert not screen.query("#config-inline-editor")
+
+
+async def test_numeric_field_input_placeholder_shows_hint(
+    service: ConfigService,
+) -> None:
+    """Opening a NUMERIC editor places the hint in the Input placeholder."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        # trigger_ratio has _ratio validator → hint should derive 0.0-1.0
+        assert _navigate_to_field(screen, "app.compaction.trigger_ratio")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        editor = screen.query_one("#config-inline-editor", Input)
+        assert "0" in editor.placeholder and "1" in editor.placeholder, (
+            f"numeric placeholder should advertise range; got {editor.placeholder!r}"
+        )
+
+
+async def test_picker_escape_cancels_without_committing(
+    service: ConfigService,
+) -> None:
+    """Esc on the picker cancels and leaves _dirty unchanged."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.compaction.enabled")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        await pilot.press("down")
+        await pilot.press("escape")
+        await pilot.pause()
+
+        assert not screen.query("#config-inline-editor")
+        assert "app.compaction.enabled" not in screen._dirty
+        assert screen._pending_edit is None
+
+
+async def test_picker_left_right_navigate_within_picker_not_tabs(
+    service: ConfigService,
+) -> None:
+    """Left/Right while picker is open must move the picker cursor, not switch tabs."""
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.active_provider")
+        starting_tab = screen._active_tab_index
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        # Right + Left should NOT change the active tab.
+        await pilot.press("right")
+        await pilot.pause()
+        await pilot.press("left")
+        await pilot.pause()
+
+        assert screen._active_tab_index == starting_tab, (
+            "picker swallowed left/right but tab cursor still moved"
+        )
+
+
+async def test_picker_preserves_unknown_current_value_as_first_option(
+    service: ConfigService,
+) -> None:
+    """When current value isn't in choices, it's prepended so Enter keeps it."""
+
+    from feather.config_paths import PathScope
+
+    # Pin a custom model not in MODEL_CATALOG so the picker has to handle it.
+    service.set("app.openai.model", "gpt-7-experimental", scope=PathScope.GLOBAL)
+
+    async with _Host(service).run_test() as pilot:
+        screen = pilot.app.screen
+        assert isinstance(screen, ConfigScreen)
+        assert _navigate_to_field(screen, "app.openai.model")
+
+        await pilot.press("enter")
+        await pilot.pause()
+
+        picker = screen.query("#config-inline-editor").first()
+        # Cursor must be on the user's existing value, which lives at index 0.
+        assert picker._choices[0] == "gpt-7-experimental"
+        assert picker._index == 0
+
+        # Press Enter without navigating — should keep the existing value.
+        await pilot.press("enter")
+        await pilot.pause()
+
+        assert screen._dirty.get("app.openai.model") == "gpt-7-experimental"

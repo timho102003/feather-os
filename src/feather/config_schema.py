@@ -71,10 +71,18 @@ class ConfigField:
         reload: How invasive applying this field's change is.
         scope: Which YAML file class owns the field.
         description: One-line user-facing description.
-        enum: Allowed values when ``type`` is ``ENUM``.
+        enum: Allowed values when ``type`` is ``ENUM`` — picker is strict
+            (validator rejects anything outside this set).
         validator: Optional callable raising ``ValueError`` on bad value.
         sensitive: True for env-var indirection (read-only in modal).
         default: Documented default; ``None`` means "inherits dataclass default".
+        hint: Short human-readable range/help (e.g. ``"0.0-1.0"``) shown in
+            the modal's input placeholder. ``None`` falls back to a generic
+            label.
+        choices: Suggested values for a non-strict picker. Unlike ``enum``,
+            free-form input is still accepted by validation; the picker only
+            displays these as quick-pick options. Used for fields like model
+            names where the catalog isn't exhaustive.
     """
 
     path: str
@@ -87,6 +95,8 @@ class ConfigField:
     validator: Validator | None = None
     sensitive: bool = False
     default: Any = None
+    hint: str | None = None
+    choices: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.type is FieldType.ENUM:
@@ -98,6 +108,12 @@ class ConfigField:
                 raise ValueError(
                     f"ConfigField {self.path!r}: enum type must use DROPDOWN widget"
                 )
+        if self.widget is WidgetHint.DROPDOWN and not (self.enum or self.choices):
+            # DROPDOWN must have something to display — either strict enum or
+            # suggested choices. Otherwise the picker has nothing to show.
+            raise ValueError(
+                f"ConfigField {self.path!r}: DROPDOWN widget requires enum or choices"
+            )
 
 
 def _ratio(v: float) -> None:
@@ -113,6 +129,83 @@ def _positive(v: float) -> None:
 def _non_negative_int(v: int) -> None:
     if v < 0:
         raise ValueError(f"must be >= 0, got {v}")
+
+
+# Mapping from validator identity to a human-readable range string.
+# Used by ``hint_for()`` to provide a placeholder hint in the modal
+# without having to backfill every numeric registry entry.
+_VALIDATOR_HINTS: dict[Validator, str] = {
+    _ratio: "0.0-1.0",
+    _positive: "> 0",
+    _non_negative_int: ">= 0",
+}
+
+
+def hint_for(field: "ConfigField") -> str | None:
+    """Return the user-facing hint string for ``field``.
+
+    Resolution order:
+      1. Explicit ``field.hint`` if set.
+      2. Validator-derived hint from :data:`_VALIDATOR_HINTS`.
+      3. ``None`` (no hint).
+    """
+
+    if field.hint:
+        return field.hint
+    if field.validator is not None and field.validator in _VALIDATOR_HINTS:
+        return _VALIDATOR_HINTS[field.validator]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Model catalog (non-strict suggestions)
+# ---------------------------------------------------------------------------
+#
+# These lists drive the model-picker dropdown in the /config TUI so users
+# don't have to remember exact slugs. They are NOT exhaustive — the model
+# field stays free-form so users can pick anything the provider supports,
+# including newer models released after this catalog was last updated.
+# Keep the leading entries ordered by typical preference (default first).
+
+MODEL_CATALOG: dict[str, tuple[str, ...]] = {
+    "openai": (
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-5-nano",
+        "gpt-5.4-nano",
+        "gpt-4.5",
+        "gpt-4o",
+        "gpt-4o-mini",
+        "o3",
+        "o3-mini",
+        "o4-mini",
+    ),
+    "claude": (
+        "claude-opus-4-7",
+        "claude-sonnet-4-6",
+        "claude-haiku-4-5",
+        "claude-opus-4-5",
+        "claude-sonnet-4-5",
+        "claude-haiku-4-1",
+        "claude-3-7-sonnet-latest",
+        "claude-3-5-sonnet-latest",
+        "claude-3-5-haiku-latest",
+    ),
+    "openrouter": (
+        "anthropic/claude-opus-4-7",
+        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-haiku-4-5",
+        "openai/gpt-5",
+        "openai/gpt-5-mini",
+        "openai/gpt-5-nano",
+        "openai/o3",
+        "google/gemini-2.5-pro",
+        "google/gemini-2.5-flash",
+        "deepseek/deepseek-chat",
+        "qwen/qwen3-coder-480b",
+        "meta-llama/llama-3.3-70b",
+    ),
+}
 
 
 def _agent_fields(name: str) -> tuple[ConfigField, ...]:
@@ -355,10 +448,11 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.openai.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.NEXT_TURN,
         scope=Scope.APP,
         description="Default OpenAI model (e.g. gpt-5-mini).",
+        choices=MODEL_CATALOG["openai"],
     ),
     ConfigField(
         path="app.openai.max_output_tokens",
@@ -449,10 +543,11 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.openrouter.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.NEXT_TURN,
         scope=Scope.APP,
         description="Default OpenRouter model slug.",
+        choices=MODEL_CATALOG["openrouter"],
     ),
     ConfigField(
         path="app.openrouter.max_output_tokens",
@@ -587,10 +682,11 @@ REGISTRY: tuple[ConfigField, ...] = (
     ConfigField(
         path="app.claude.model",
         type=FieldType.STRING,
-        widget=WidgetHint.TEXT,
+        widget=WidgetHint.DROPDOWN,
         reload=ReloadClass.NEXT_TURN,
         scope=Scope.APP,
         description="Default Anthropic model (e.g. claude-opus-4-7).",
+        choices=MODEL_CATALOG["claude"],
     ),
     ConfigField(
         path="app.claude.max_output_tokens",
@@ -1289,9 +1385,11 @@ __all__ = (
     "ConfigField",
     "FieldType",
     "IGNORED_PATHS",
+    "MODEL_CATALOG",
     "REGISTRY",
     "ReloadClass",
     "Scope",
     "WidgetHint",
+    "hint_for",
     "lookup",
 )

@@ -21,18 +21,130 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
-from feather.config_schema import ConfigField, REGISTRY, ReloadClass, Scope, lookup
+from feather.config_schema import (
+    ConfigField,
+    REGISTRY,
+    ReloadClass,
+    Scope,
+    WidgetHint,
+    hint_for,
+    lookup,
+)
 from feather.config_service import ConfigService
 
 
 class _FocusableContainer(Container, can_focus=True):
     """Container root that accepts focus so screen bindings receive keys."""
+
+
+class _ChoicePicker(Static, can_focus=True):
+    """Inline vertical picker widget for BOOLEAN toggles and DROPDOWN choices.
+
+    The picker renders ``choices`` one per line with a cursor marker on the
+    currently-highlighted option. ↑/↓ move the cursor (wrapping at both ends),
+    Enter posts a :class:`Picked` message containing the selected value, and
+    Esc bubbles up to :meth:`ConfigScreen.action_close` (which cancels the
+    in-flight edit by removing this widget).
+
+    Reused for both BOOLEAN fields (choices=``("false", "true")``) and
+    DROPDOWN fields (choices=``field.enum or field.choices``), so the modal
+    only has one code path for constrained input.
+
+    Attributes:
+        choices: Tuple of selectable string values (in display order).
+    """
+
+    BINDINGS = [
+        Binding("up", "prev", show=False),
+        Binding("down", "next", show=False),
+        # Left/right behave the same as up/down so bool toggles
+        # (conceptually horizontal) feel natural and so arrow keys
+        # don't bubble up to the screen's tab-switch bindings.
+        Binding("left", "prev", show=False),
+        Binding("right", "next", show=False),
+        Binding("enter,return", "commit", show=False, priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    _ChoicePicker {
+        dock: bottom;
+        height: auto;
+        max-height: 12;
+        border: solid $accent;
+        padding: 0 1;
+    }
+    """
+
+    class Picked(Message):
+        """Posted on Enter; carries the picked value as a string."""
+
+        def __init__(self, value: str) -> None:
+            self.value = value
+            super().__init__()
+
+    def __init__(
+        self,
+        *,
+        choices: tuple[str, ...],
+        current: str | None,
+        id: str | None = None,
+    ) -> None:
+        super().__init__(id=id)
+        if not choices:
+            raise ValueError("_ChoicePicker requires at least one choice")
+        # If ``current`` isn't in the suggested choices (e.g. a custom model
+        # name set via /config set), prepend it so the cursor starts on the
+        # existing value — otherwise the user could press Enter without
+        # navigating and silently overwrite their own setting.
+        if current is not None and current not in choices:
+            choices = (current,) + choices
+        self._choices: tuple[str, ...] = choices
+        try:
+            self._index = choices.index(current) if current is not None else 0
+        except ValueError:  # pragma: no cover — current is now guaranteed in choices
+            self._index = 0
+
+    def on_mount(self) -> None:
+        self.update(self._repaint())
+
+    def _repaint(self) -> str:
+        """Render the picker body — vertical list with a cursor marker.
+
+        Named ``_repaint`` (not ``_render``) to avoid colliding with
+        :meth:`Static._render`, which Textual's rendering pipeline calls
+        and which must return a :class:`textual.visual.Visual`, not a str.
+        """
+
+        lines: list[str] = []
+        for i, choice in enumerate(self._choices):
+            marker = "▶" if i == self._index else " "
+            lines.append(f"{marker} {choice}")
+        return "\n".join(lines)
+
+    def action_prev(self) -> None:
+        """Move the cursor up one row (wraps to last)."""
+
+        self._index = (self._index - 1) % len(self._choices)
+        self.update(self._repaint())
+
+    def action_next(self) -> None:
+        """Move the cursor down one row (wraps to first)."""
+
+        self._index = (self._index + 1) % len(self._choices)
+        self.update(self._repaint())
+
+    def action_commit(self) -> None:
+        """Post the :class:`Picked` message with the highlighted value."""
+
+        self.post_message(self.Picked(self._choices[self._index]))
 
 
 @dataclass(slots=True, frozen=True)
@@ -386,13 +498,24 @@ class ConfigScreen(ModalScreen[None]):
     # ------------------------------------------------------------------
 
     async def action_edit_field(self) -> None:
-        """Open the inline Input widget for the focused field.
+        """Open the right editor widget for the focused field.
+
+        Dispatches by ``field.widget`` so each type gets a constrained
+        widget that makes invalid values impossible to enter:
+
+        * TOGGLE → inline :class:`_ChoicePicker` with ``("false", "true")``
+        * DROPDOWN → inline :class:`_ChoicePicker` populated from
+          ``field.enum`` (strict) or ``field.choices`` (suggestions)
+        * NUMERIC / TEXT → free-text :class:`~textual.widgets.Input` with a
+          range hint shown in the placeholder
+        * SENSITIVE_READONLY → refused; footer explains the env-var indirection
+        * LIST_EDITOR → refused; footer points at ``/config set``
 
         Async because Textual's ``mount()`` returns an ``AwaitMount`` that
         must be awaited before the new widget is in the DOM — calling
-        ``editor.focus()`` synchronously after a sync ``mount()`` focuses an
+        ``.focus()`` synchronously after a sync ``mount()`` focuses an
         un-mounted widget and the user's keystrokes then hit the screen
-        bindings instead of the Input.
+        bindings instead of the editor.
         """
 
         fields = self._fields_in_section()
@@ -402,22 +525,117 @@ class ConfigScreen(ModalScreen[None]):
         # Don't open a second editor if one is already mounted.
         if self.query("#config-inline-editor"):
             return
+
+        # Refuse editing for read-only / not-yet-supported widget types.
+        if field.widget is WidgetHint.SENSITIVE_READONLY:
+            self._set_footer(
+                f"{field.path} is sensitive — set via the env var "
+                f"(value here is the env-var name, not the secret itself)."
+            )
+            return
+        if field.widget is WidgetHint.LIST_EDITOR:
+            self._set_footer(
+                f"{field.path}: list editing not yet in modal — use "
+                f"/config set {field.path} a,b,c"
+            )
+            return
+
         self._pending_edit = field
         footer_static = self.query_one("#config-footer", Static)
         self._saved_footer_text = self._render_footer()
-        footer_static.update(
-            f"editing {field.path}  Enter=save  Esc=cancel"
-        )
-        footer_static.display = False
-        editor = Input(
-            placeholder=f"new value for {field.path}",
-            id="config-inline-editor",
-        )
         config_root = self.query_one("#config-root", Container)
+
+        if field.widget in (WidgetHint.TOGGLE, WidgetHint.DROPDOWN):
+            choices = self._picker_choices_for(field)
+            current = self._dirty.get(field.path, self._service.get(field.path).current)
+            current_str = self._bool_to_choice(current) if field.widget is WidgetHint.TOGGLE else str(current)
+            picker = _ChoicePicker(
+                choices=choices,
+                current=current_str,
+                id="config-inline-editor",
+            )
+            footer_static.update(
+                f"editing {field.path}  ↑↓=choose  Enter=save  Esc=cancel"
+            )
+            footer_static.display = False
+            await config_root.mount(picker)
+            self.call_after_refresh(picker.focus)
+            return
+
+        # Default: free-text Input. NUMERIC and TEXT both land here; the
+        # hint differentiates ranges/help in the placeholder.
+        placeholder = f"new value for {field.path}"
+        hint = hint_for(field)
+        if hint:
+            placeholder += f"  ({hint})"
+        editor = Input(placeholder=placeholder, id="config-inline-editor")
+        footer_static.update(f"editing {field.path}  Enter=save  Esc=cancel")
+        footer_static.display = False
         await config_root.mount(editor)
         # Defer focus to the next refresh so the Input is fully wired into
         # the focus chain before claiming focus.
         self.call_after_refresh(editor.focus)
+
+    @staticmethod
+    def _bool_to_choice(value: Any) -> str:
+        """Coerce a boolean (or stringy) value to the picker's display string."""
+
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        text = str(value).strip().lower()
+        return "true" if text in ("true", "yes", "on", "1") else "false"
+
+    @staticmethod
+    def _picker_choices_for(field: ConfigField) -> tuple[str, ...]:
+        """Return the picker's display choices for ``field``.
+
+        TOGGLE fields render as ``("false", "true")``. DROPDOWN fields prefer
+        ``field.enum`` (strict) over ``field.choices`` (suggestions).
+        """
+
+        if field.widget is WidgetHint.TOGGLE:
+            return ("false", "true")
+        return field.enum or field.choices or ()
+
+    @on(_ChoicePicker.Picked)
+    def _handle_choice_picked(self, event: _ChoicePicker.Picked) -> None:
+        """Handle a value selected via the inline :class:`_ChoicePicker`.
+
+        Bound via ``@on`` rather than ``on_<message>`` so the handler name
+        doesn't have to match Textual's camel-to-snake convention for a
+        leading-underscore class name (which would otherwise produce
+        ``on__choice_picker_picked`` with a double underscore).
+
+        Mirrors :meth:`on_input_submitted` but skips the Input-specific
+        plumbing. Validates the picked value through the service, marks the
+        field dirty on success, and restores the footer in all cases.
+        """
+
+        field = self._pending_edit
+        try:
+            picker = self.query_one("#config-inline-editor", _ChoicePicker)
+        except Exception:  # noqa: BLE001 — picker may already be gone
+            picker = None
+        if field is None:
+            if picker is not None:
+                picker.remove()
+            self._restore_footer()
+            return
+
+        validate = self._service.validate(field.path, event.value)
+        if picker is not None:
+            picker.remove()
+        if not validate.ok:
+            self._pending_edit = None
+            self._restore_footer()
+            self._set_footer(f"INVALID: {validate.error}   esc=cancel")
+            return
+
+        self._dirty[field.path] = validate.coerced
+        self._pending_edit = None
+        self._restore_footer()
+        self._refresh_body()
+        self._set_footer(self._render_footer())
 
     def _restore_footer(self) -> None:
         """Re-show the footer Static after the inline editor is dismissed."""
@@ -588,14 +806,13 @@ class ConfigScreen(ModalScreen[None]):
         dirty-confirm + dismiss path.
         """
 
-        # Cancel an in-flight inline edit first, if any.
+        # Cancel an in-flight inline edit first, if any. The editor widget is
+        # either a free-text Input or a _ChoicePicker — query by id (not type)
+        # so both are removed identically.
         if self._pending_edit is not None:
-            try:
-                editor = self.query_one("#config-inline-editor", Input)
-            except Exception:
-                editor = None
-            if editor is not None:
-                editor.remove()
+            existing = self.query("#config-inline-editor")
+            for widget in existing:
+                widget.remove()
             self._pending_edit = None
             self._restore_footer()
             self._set_footer("edit cancelled  esc=close")
