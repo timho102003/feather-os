@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from typing import Any, Iterable
 
@@ -165,6 +166,31 @@ def parse_sse_events(raw: bytes) -> Iterable[dict[str, Any]]:
 
 _RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 _RESTRICTIVE_PROVIDER_KEYS: tuple[str, ...] = ("zdr", "quantizations", "only")
+
+#: OpenRouter resolves rolling model aliases (e.g. ``deepseek/deepseek-v4-pro``)
+#: to dated snapshots (``deepseek/deepseek-v4-pro-20260423``) in the response's
+#: ``model`` field. We don't want to fire the ``model_substituted`` warning
+#: for this benign aliasing — only for actual fallback re-routing where the
+#: family changes (qwen ← deepseek, etc.). Match an 8-digit ``YYYYMMDD``
+#: suffix or a ``-YYYY-MM-DD`` form, optionally followed by a small qualifier
+#: like ``-preview`` / ``-experimental``.
+_DATED_SNAPSHOT_RE = re.compile(
+    r"-(\d{8}|\d{4}-\d{2}-\d{2})(-[a-z0-9]+)?$"
+)
+
+
+def _is_dated_snapshot_of(requested: str, resolved: str) -> bool:
+    """Return ``True`` iff ``resolved`` is ``requested`` plus a date suffix.
+
+    Used to suppress the ``model_substituted`` warning when OpenRouter
+    pins a rolling alias to a dated snapshot — that's expected aliasing,
+    not silent re-routing to a different model family.
+    """
+
+    if not resolved.startswith(requested):
+        return False
+    tail = resolved[len(requested):]
+    return bool(_DATED_SNAPSHOT_RE.fullmatch(tail))
 _MAX_RATE_LIMIT_RESET_SLEEP: float = 60.0
 
 
@@ -539,9 +565,51 @@ class OpenRouterChatProvider(BaseLLMProvider):
                         final_chunk = event
 
         if final_chunk is None:
-            raise OpenRouterStreamError(
-                "openrouter stream ended without a final chunk"
-            )
+            # Upstream protocol violation: per DeepSeek's own API spec
+            # (https://api-docs.deepseek.com/api/create-chat-completion)
+            # ``finish_reason`` is REQUIRED on the last chunk before
+            # ``[DONE]``. OpenRouter's docs are silent on the same
+            # guarantee but their SSE format mirrors OpenAI's, which
+            # carries the same requirement. Reasoning models routed
+            # through OpenRouter — DeepSeek-V4-Pro / R1 specifically —
+            # have been observed to send ``[DONE]`` with no preceding
+            # finish_reason chunk after long reasoning sequences. Vercel
+            # AI SDK and the OpenAI Python SDK both ship pragmatic
+            # tolerance for this; do the same here but only when the
+            # stream produced something we can hand back as a turn.
+            have_streamed_text = bool(output_text)
+            have_tool_calls = any(d.get("tool_calls") for d in deltas)
+            if have_streamed_text and not have_tool_calls:
+                logger.warning(
+                    "openrouter.stream.no_final_chunk model=%s "
+                    "synthesizing finish_reason=stop after %d output chars "
+                    "(upstream sent [DONE] without a finish_reason chunk — "
+                    "known pattern for DeepSeek reasoning models routed "
+                    "through OpenRouter)",
+                    body.get("model"),
+                    len(output_text),
+                )
+                final_chunk = {
+                    "id": last_chunk_id,
+                    "model": body.get("model"),
+                    "choices": [
+                        {
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            else:
+                # Empty stream OR tool-calls in flight: synthesizing
+                # ``stop`` here would either invent a turn from nothing
+                # or commit a half-built tool call. Surface the real
+                # error so the caller can retry.
+                raise OpenRouterStreamError(
+                    "openrouter stream ended without a final chunk "
+                    f"(output_chars={len(output_text)}, "
+                    f"tool_call_deltas={sum(1 for d in deltas if d.get('tool_calls'))}, "
+                    f"model={body.get('model')})"
+                )
         if last_chunk_id and not final_chunk.get("id"):
             final_chunk = dict(final_chunk)
             final_chunk["id"] = last_chunk_id
@@ -575,6 +643,7 @@ class OpenRouterChatProvider(BaseLLMProvider):
             resolved_model
             and configured_primary
             and resolved_model != configured_primary
+            and not _is_dated_snapshot_of(configured_primary, resolved_model)
         ):
             fallback_list = list(getattr(self._cfg, "fallback_models", ()) or ())
             logger.warning(

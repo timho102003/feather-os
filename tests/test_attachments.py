@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from feather.attachments import (
     build_attachment_content_blocks,
     parse_attachment_drops,
@@ -164,6 +166,45 @@ def test_parse_attachment_drops_does_not_swallow_relative_paths(
     draft = parse_attachment_drops("edit src/app.py", root=tmp_path)
 
     assert draft.text == "edit src/app.py"
+    assert draft.attachments == ()
+
+
+def test_parse_attachment_drops_survives_unresolvable_home_when_token_starts_with_tilde(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``Path.expanduser`` raises ``RuntimeError("Could not determine home
+    directory.")`` when neither ``$HOME`` nor ``pwd.getpwuid`` can supply
+    the home dir (Python stdlib documented behaviour). The attachment
+    parser runs on EVERY inbound user message — so any sub-agent
+    subprocess launched in an environment where both fail would otherwise
+    crash deterministically on any message containing a ``~`` token,
+    which is exactly the regression observed in
+    ``.feather/logs/feather.log`` after spawn_agent failed to propagate
+    HOME.
+
+    The parser must treat the failure the same as any other unresolvable
+    token: ``~/whatever`` stays in the cleaned text, no attachment is
+    extracted, and no exception escapes.
+
+    Monkeypatch ``Path.expanduser`` to raise directly so the test
+    reproduces the failure on any host — on Linux with a populated
+    ``/etc/passwd`` the env-only path falls back to ``pwd``, which would
+    make a pure ``delenv("HOME")`` flaky.
+    """
+
+    def _raise(_self: Path) -> Path:
+        raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr(Path, "expanduser", _raise)
+
+    # Sanity: the patch fires on the call the parser makes.
+    with pytest.raises(RuntimeError):
+        Path("~/x").expanduser()
+
+    draft = parse_attachment_drops("please open ~/Desktop/notes.pdf", root=tmp_path)
+
+    # No crash, the tilde token survives in the cleaned text, no attachment.
+    assert "~/Desktop/notes.pdf" in draft.text
     assert draft.attachments == ()
 
 

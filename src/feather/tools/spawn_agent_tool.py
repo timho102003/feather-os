@@ -380,6 +380,24 @@ async def launch_subagent_process(
     ]
     if task_id is not None:
         argv.extend(["--task-id", task_id])
+    # Snapshot the parent env explicitly and patch in fallbacks for the
+    # vars the sub-agent's code actually depends on. ``HOME`` is the
+    # critical one — ``Path.expanduser()`` raises RuntimeError when it
+    # is missing, and the attachment-drop parser calls it on every
+    # inbound user-text token. With the default ``env=None`` asyncio
+    # would inherit the parent env, but we've seen this crash happen in
+    # the field, so we make the propagation explicit AND defend against
+    # an empty value by re-deriving from ``pwd`` (the same source
+    # ``os.path.expanduser`` consults when ``HOME`` is empty).
+    subprocess_env = os.environ.copy()
+    if not subprocess_env.get("HOME"):
+        try:
+            import pwd
+
+            subprocess_env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+        except (ImportError, KeyError, OSError):
+            pass
+
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -387,6 +405,7 @@ async def launch_subagent_process(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(root),
+            env=subprocess_env,
         )
     except Exception:
         _remove_task_file(task_file)

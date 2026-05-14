@@ -245,7 +245,20 @@ def _path_from_token(token: str, *, root: Path) -> Path | None:
     if raw.startswith("file://"):
         parsed = urlparse(raw)
         raw = unquote(parsed.path)
-    candidate = Path(raw).expanduser()
+    # ``Path.expanduser()`` raises ``RuntimeError("Could not determine home
+    # directory.")`` when ``$HOME`` is unset (Python's pathlib does not
+    # silently degrade — see ``_PosixFlavour.gethomedir``). Sub-agent
+    # subprocesses occasionally launch with a stripped environment (CI
+    # sandboxes, some container init systems) and would otherwise crash
+    # on every inbound user message that happens to contain a ``~`` —
+    # this codepath is exercised for ALL incoming text, not just text the
+    # user intended as an attachment. Treat the failure as "this token
+    # cannot be resolved into a file on this system" — exactly the
+    # contract the rest of the function returns ``None`` for.
+    try:
+        candidate = Path(raw).expanduser()
+    except RuntimeError:
+        return None
     if not candidate.is_absolute():
         return None
     try:

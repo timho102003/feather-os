@@ -401,6 +401,195 @@ async def test_complete_does_not_warn_when_resolved_matches_configured(
 
 
 @pytest.mark.asyncio
+async def test_complete_no_warning_when_resolved_is_dated_snapshot(
+    monkeypatch, caplog
+) -> None:
+    """OpenRouter pins rolling aliases (``deepseek/deepseek-v4-pro``) to dated
+    snapshots (``...-20260423``) in the response model field. That's expected
+    aliasing — not the silent fallback re-routing the substitution warning
+    is meant to flag. Suppress the warning in this case so the real signal
+    (qwen ← deepseek and friends) isn't drowned in benign noise.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-snap",
+                    "model": "deepseek/deepseek-v4-pro-20260423",
+                    "choices": [{"delta": {"content": "ok"}}],
+                },
+                {
+                    "id": "gen-snap",
+                    "model": "deepseek/deepseek-v4-pro-20260423",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(model="deepseek/deepseek-v4-pro")
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    subs = [r for r in caplog.records if "model_substituted" in r.getMessage()]
+    assert not subs, (
+        f"dated-snapshot alias should not trip the substitution warning: {subs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_tolerates_missing_finish_reason_when_content_streamed(
+    monkeypatch, caplog
+) -> None:
+    """DeepSeek reasoning models routed through OpenRouter occasionally
+    send ``[DONE]`` without a preceding chunk that carries ``finish_reason``
+    (an upstream protocol violation per DeepSeek's own spec). When the
+    stream produced valid content and no in-flight tool calls, synthesize
+    a turn with implicit ``finish_reason=stop`` and WARN — losing the
+    streamed content because of a missing trailer is worse UX than the
+    log line.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # Content chunks, then [DONE] — NO finish_reason chunk at all.
+        return _sse_response(
+            [
+                {
+                    "id": "gen-noend",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {"content": "answer "}}],
+                },
+                {
+                    "id": "gen-noend",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {"content": "is 42"}}],
+                },
+                # No finish_reason chunk, no usage-only chunk — straight to [DONE].
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(model="deepseek/deepseek-v4-pro")
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            turn = await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    # The streamed content survives.
+    assert turn.output_text == "answer is 42"
+    # And we logged that we synthesized the trailer.
+    warnings = [
+        r for r in caplog.records if "stream.no_final_chunk" in r.getMessage()
+    ]
+    assert warnings, "expected a no_final_chunk warning when synthesizing"
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_stream_ends_with_nothing_useful(
+    monkeypatch,
+) -> None:
+    """An empty stream with no final chunk is a real failure — synthesizing
+    ``stop`` would invent a turn from nothing. Keep raising in that case
+    so the caller can retry or surface the error."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # [DONE] with no preceding data chunks at all.
+        return _sse_response([])
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_tool_calls_in_flight_with_no_final_chunk(
+    monkeypatch,
+) -> None:
+    """If we have partial tool-call deltas but no finish_reason, synthesizing
+    ``stop`` would commit a half-built tool call. Raise instead."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": "",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+                # No finish_reason — and a tool call left mid-build.
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
 async def test_complete_uses_generation_header_when_chunks_are_idless(
     monkeypatch,
 ) -> None:
