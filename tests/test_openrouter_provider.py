@@ -275,6 +275,132 @@ async def test_complete_returns_model_turn_and_emits_deltas(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_complete_warns_when_resolved_model_differs_from_configured(
+    monkeypatch, caplog
+) -> None:
+    """OpenRouter's ``models`` field (built from
+    ``app.openrouter.fallback_models``) lets the upstream silently route
+    away from the primary when the primary is unavailable. The provider
+    must emit a WARNING that names both the configured primary and the
+    resolved fallback so the substitution is visible in feather.log
+    instead of only surfacing through Opik / billing dashboards.
+
+    Regression for: user changed ``app.openrouter.model`` to
+    ``deepseek/deepseek-v4-pro``, save persisted, but every request kept
+    landing on ``qwen/qwen3.5-plus-02-15`` (the first slug in the
+    packaged ``fallback_models``). The save was correct; the routing
+    was silent.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                # OpenRouter's response ``model`` field is the SUBSTITUTED
+                # one — not what we asked for in the request body.
+                {
+                    "id": "gen-fb",
+                    "model": "qwen/qwen3.5-plus-02-15",
+                    "choices": [{"delta": {"content": "hi"}}],
+                },
+                {
+                    "id": "gen-fb",
+                    "model": "qwen/qwen3.5-plus-02-15",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=(
+            "qwen/qwen3.5-plus-02-15",
+            "qwen/qwen3.5-397b-a17b",
+        ),
+    )
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    warnings = [
+        r for r in caplog.records if "model_substituted" in r.getMessage()
+    ]
+    assert warnings, (
+        "expected a model_substituted warning when OpenRouter routes "
+        "to a fallback model"
+    )
+    msg = warnings[0].getMessage()
+    assert "deepseek/deepseek-v4-pro" in msg
+    assert "qwen/qwen3.5-plus-02-15" in msg
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_warn_when_resolved_matches_configured(
+    monkeypatch, caplog
+) -> None:
+    """No spurious warning when OpenRouter actually serves what we asked
+    for — otherwise users get warning fatigue on every healthy request."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-ok",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {"content": "hi"}}],
+                },
+                {
+                    "id": "gen-ok",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=("qwen/qwen3.5-plus-02-15",),
+    )
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    substitutions = [
+        r for r in caplog.records if "model_substituted" in r.getMessage()
+    ]
+    assert not substitutions, (
+        f"unexpected substitution warning when models matched: {substitutions}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_complete_uses_generation_header_when_chunks_are_idless(
     monkeypatch,
 ) -> None:

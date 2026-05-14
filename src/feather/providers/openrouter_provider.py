@@ -550,12 +550,43 @@ class OpenRouterChatProvider(BaseLLMProvider):
             output_text=output_text,
             deltas=deltas,
         )
+        requested_model = body.get("model")
+        resolved_model = final_chunk.get("model")
         logger.info(
-            "openrouter response id=%s tool_calls=%s output_chars=%s",
+            "openrouter response id=%s model_requested=%s model_resolved=%s "
+            "tool_calls=%s output_chars=%s",
             turn.response_id,
+            requested_model,
+            resolved_model,
             len(turn.tool_calls),
             len(turn.output_text or ""),
         )
+        # OpenRouter silently routes to a fallback in ``models`` (our
+        # ``fallback_models``) when the primary model is unavailable.
+        # Without this warning the substitution is invisible — the
+        # symptom is "I picked model A in /config, but Opik logs and
+        # billing show model B was used", which is exactly the bug
+        # report this log line was added for. Compare against the
+        # configured primary (``self._cfg.model``), not ``body["model"]``,
+        # so an attempt fanned out across fallback chains via
+        # ``models`` still flags a non-primary as a deviation.
+        configured_primary = getattr(self._cfg, "model", None)
+        if (
+            resolved_model
+            and configured_primary
+            and resolved_model != configured_primary
+        ):
+            fallback_list = list(getattr(self._cfg, "fallback_models", ()) or ())
+            logger.warning(
+                "openrouter.model_substituted requested=%s resolved=%s "
+                "fallback_models=%s — your /config selection was overridden "
+                "by OpenRouter's automatic fallback. Either remove the "
+                "primary's slug from app.openrouter.fallback_models or "
+                "verify the primary is actually served by OpenRouter.",
+                configured_primary,
+                resolved_model,
+                fallback_list,
+            )
         return turn
 
     async def _classify_pre_stream_error(self, resp: httpx.Response) -> None:

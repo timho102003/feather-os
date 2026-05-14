@@ -615,6 +615,19 @@ REGISTRY: tuple[ConfigField, ...] = (
         dynamic_choices=True,
     ),
     ConfigField(
+        path="app.openrouter.fallback_models",
+        type=FieldType.STRING_LIST,
+        widget=WidgetHint.LIST_EDITOR,
+        reload=ReloadClass.NEXT_TURN,
+        scope=Scope.APP,
+        description=(
+            "OpenRouter ``models`` array — routes to the first available slug "
+            "when the primary model 4xx/5xx's. Leave empty unless you "
+            "explicitly want silent substitution; otherwise OpenRouter may "
+            "swap your selection out without telling you."
+        ),
+    ),
+    ConfigField(
         path="app.openrouter.max_output_tokens",
         type=FieldType.INTEGER,
         widget=WidgetHint.NUMERIC,
@@ -1402,7 +1415,6 @@ IGNORED_PATHS: frozenset[str] = frozenset({
     "agents.*.inline_prompt",
     # OpenRouter advanced fields — Phase 3 work
     "app.openrouter.provider_preferences",
-    "app.openrouter.fallback_models",
     "app.openrouter.tracing",
     # MCP enabled toggled via /config when MCP gets surfaced; out of Phase 1
     "app.mcp.enabled",
