@@ -121,6 +121,10 @@ class FeatherRuntime:
         self._session_event_handlers: dict[str, EventHandler] = {}
         self._agents: dict[str, BaseAgent] = {}
         self._supervisor: "LeadSupervisor | None" = None
+        # Callbacks fired after :meth:`rebuild_agent` swaps the cached
+        # instance. Used by CLI / TUI drivers to refresh their captured
+        # agent reference so the next turn sees the new provider/model.
+        self._agent_rebuilt_listeners: list[Callable[[str, BaseAgent], None]] = []
 
     @classmethod
     async def create(
@@ -381,7 +385,46 @@ class FeatherRuntime:
         new_agent = self._agent_factory.build(name)
         self._agents[name] = new_agent
         logger.info("runtime.agent.rebuilt name=%s provider=%s", name, active)
+        # Notify subscribers (CLI / TUI drivers) so they can refresh any
+        # captured agent reference. Without this, callers that took a
+        # snapshot of ``runtime._agents[name]`` keep talking to the old
+        # provider after /config saves a NEXT_TURN-class field — the
+        # exact symptom that caused the OpenRouter model swap to look
+        # saved but never actually take effect.
+        for listener in list(self._agent_rebuilt_listeners):
+            try:
+                listener(name, new_agent)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "runtime.agent_rebuilt_listener.error name=%s", name
+                )
         return new_agent
+
+    def register_agent_rebuilt_listener(
+        self, listener: Callable[[str, BaseAgent], None]
+    ) -> Callable[[], None]:
+        """Subscribe to ``rebuild_agent`` events.
+
+        ``listener`` is called as ``listener(name, new_agent)`` after the
+        cache swap, on the same task that triggered the rebuild. Returns
+        an unsubscribe callable that removes the listener (idempotent).
+
+        Args:
+            listener: Function to invoke after each rebuild.
+
+        Returns:
+            A zero-arg callable; invoking it removes the listener.
+        """
+
+        self._agent_rebuilt_listeners.append(listener)
+
+        def _unsubscribe() -> None:
+            try:
+                self._agent_rebuilt_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _unsubscribe
 
     def attach_supervisor(self, supervisor: "LeadSupervisor") -> None:
         """Register a :class:`~feather.core.lead_supervisor.LeadSupervisor`.

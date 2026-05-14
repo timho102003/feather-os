@@ -311,6 +311,7 @@ async def run_cli(
             """Drive agent.run whenever new-run requests arrive."""
 
             assert active_session_id is not None
+            nonlocal agent
             while not stop_event.is_set():
                 get_task = asyncio.create_task(new_run_queue.get())
                 stop_task = asyncio.create_task(stop_event.wait())
@@ -322,6 +323,18 @@ async def run_cli(
                     return
                 stop_task.cancel()
                 user_message = get_task.result()
+
+                # /config saves with NEXT_TURN reload class call
+                # ``runtime.rebuild_agent("lead")`` which swaps
+                # ``runtime._agents["lead"]`` underneath us. Refresh the
+                # local handle now so the next agent.run uses the new
+                # provider/model — otherwise the captured ``agent`` keeps
+                # talking to the pre-save provider for the rest of the
+                # session.
+                try:
+                    agent = runtime.get_agent("lead")
+                except KeyError:  # pragma: no cover — lead is built at startup
+                    pass
 
                 busy_event.set()
                 try:

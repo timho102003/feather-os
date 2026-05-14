@@ -705,6 +705,13 @@ class FeatherTextualApp(App[None]):
 
         self._runtime = await FeatherRuntime.create(self._root)
         self._agent = self._runtime.build_agent("lead")
+        # Re-bind ``self._agent`` whenever the runtime rebuilds the lead
+        # (e.g. after /config saves a NEXT_TURN-class field). Without
+        # this, ``self._agent`` keeps pointing at the pre-save provider
+        # instance and the next turn silently uses the old model.
+        self._runtime.register_agent_rebuilt_listener(
+            self._on_agent_rebuilt
+        )
         self._active_session_id = (
             self._requested_session_id or await self._agent.create_session()
         )
@@ -910,6 +917,22 @@ class FeatherTextualApp(App[None]):
         """Return whichever of supervisor / in-process agent owns ``run``."""
 
         return self._supervisor if self._supervisor is not None else self._agent
+
+    def _on_agent_rebuilt(self, name: str, new_agent: Any) -> None:
+        """Refresh ``self._agent`` after :meth:`FeatherRuntime.rebuild_agent`.
+
+        Wired in :meth:`on_mount` via ``register_agent_rebuilt_listener``.
+        When a worker supervisor owns the run path, the in-process
+        ``self._agent`` is not on the request route — the supervisor
+        handles its own swap via ``request_config_reload`` — so we skip
+        the rebind to avoid masking supervisor-side reload failures.
+        """
+
+        if name != "lead":
+            return
+        if self._supervisor is not None:
+            return
+        self._agent = new_agent
 
     async def _cancel_in_flight_run(self) -> bool:
         """Cancel the agent driver's current run task, if any.

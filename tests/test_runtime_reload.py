@@ -152,6 +152,97 @@ async def test_rebuild_agent_uses_new_provider_after_reload(
         await runtime.close()
 
 
+async def test_rebuild_agent_fires_registered_listeners(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``register_agent_rebuilt_listener`` callbacks fire after each rebuild
+    so CLI / TUI drivers can refresh their captured agent reference.
+
+    Regression for: ``/config`` save of a NEXT_TURN field (e.g.
+    ``app.openrouter.model``) rebuilt ``runtime._agents["lead"]`` but the
+    CLI's local ``agent`` variable and the textual TUI's ``self._agent``
+    still pointed at the old instance, so the next turn silently kept
+    using the pre-save model.
+    """
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+    _write_minimal_agent_yaml(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    runtime = await FeatherRuntime.create(project)
+    try:
+        runtime.build_agent("lead")
+
+        rebuilt: list[tuple[str, int]] = []
+
+        def listener(name: str, new_agent: object) -> None:
+            rebuilt.append((name, id(new_agent)))
+
+        unsubscribe = runtime.register_agent_rebuilt_listener(listener)
+
+        new_agent = runtime.rebuild_agent("lead")
+        assert rebuilt == [("lead", id(new_agent))]
+
+        # The listener must be told about the SAME object that the
+        # runtime now caches, so callers re-binding from the callback
+        # land on whatever ``get_agent()`` would also return.
+        assert runtime.get_agent("lead") is new_agent
+
+        # Unsubscribe stops future notifications.
+        unsubscribe()
+        rebuilt.clear()
+        runtime.rebuild_agent("lead")
+        assert rebuilt == []
+
+        # Idempotent unsubscribe — calling twice must not raise.
+        unsubscribe()
+    finally:
+        await runtime.close()
+
+
+async def test_rebuild_agent_continues_when_listener_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A buggy listener must not break the rebuild path or starve later
+    listeners — otherwise one stale subscriber could silently break
+    every subsequent /config save for the rest of the session."""
+
+    project = tmp_path / "proj"
+    project.mkdir()
+    (project / "config").mkdir()
+    (project / "config" / "app.yaml").write_text(_MINIMAL_YAML, encoding="utf-8")
+    _write_minimal_agent_yaml(project)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
+
+    runtime = await FeatherRuntime.create(project)
+    try:
+        runtime.build_agent("lead")
+        called: list[str] = []
+
+        def raises(name: str, _agent: object) -> None:
+            called.append(f"raises:{name}")
+            raise RuntimeError("boom")
+
+        def good(name: str, _agent: object) -> None:
+            called.append(f"good:{name}")
+
+        runtime.register_agent_rebuilt_listener(raises)
+        runtime.register_agent_rebuilt_listener(good)
+
+        # The bug listener raising must NOT abort the rebuild — the
+        # cache swap and the second listener both still happen.
+        runtime.rebuild_agent("lead")
+        assert "raises:lead" in called
+        assert "good:lead" in called
+    finally:
+        await runtime.close()
+
+
 async def test_get_agent_raises_if_not_built(tmp_path: Path) -> None:
     """get_agent() raises KeyError when no agent with that name is cached."""
 
