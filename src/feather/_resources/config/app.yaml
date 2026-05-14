@@ -65,17 +65,30 @@ openrouter:
   reasoning:
     effort: medium
   cache_strategy: anthropic_breakpoint
-  provider_preferences:
-    # Alibaba is the only upstream — `only:` makes the route deterministic
-    # and avoids OpenRouter trying to fall back to a different model family
-    # mid-session if Alibaba 503s. Pair with a `fallback_models` for that.
-    only: ["Alibaba"]
-    require_parameters: true
-    allow_fallbacks: false             # strict pin: surface 503 instead of silent re-route
-
-  fallback_models:
-    - qwen/qwen3.5-plus-02-15
-    - qwen/qwen3.5-397b-a17b
+  # Routing constraints are intentionally absent from the packaged default.
+  #
+  # Earlier defaults shipped ``provider_preferences.only: ["Alibaba"]``
+  # together with qwen ``fallback_models``, which made the qwen-on-Alibaba
+  # setup deterministic — but trapped anyone who later picked a non-qwen
+  # primary (e.g. ``deepseek/*`` or ``anthropic/*``): OpenRouter saw the
+  # Alibaba pin, refused to route the new model, then fell through the
+  # qwen fallback list, and silently served qwen. The substitution was
+  # invisible in feather.log (only the requested model was logged) and
+  # ``fallback_models`` was hidden from /config, so the trap was
+  # unreachable without hand-editing ``~/.feather/config/app.yaml``.
+  #
+  # Keep these unset by default. If you want the qwen-on-Alibaba pin,
+  # uncomment + edit the block below — and remember to clear or rewrite
+  # both keys whenever you change the primary ``model`` to a different
+  # family.
+  #
+  # provider_preferences:
+  #   only: ["Alibaba"]              # pin upstream — keep aligned with `model`
+  #   require_parameters: true
+  #   allow_fallbacks: false         # strict pin: surface 503 instead of re-route
+  # fallback_models:
+  #   - qwen/qwen3.5-plus-02-15
+  #   - qwen/qwen3.5-397b-a17b
 
 claude:
   api_key_env: ANTHROPIC_API_KEY
