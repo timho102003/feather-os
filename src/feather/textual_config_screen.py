@@ -698,6 +698,17 @@ class ConfigScreen(ModalScreen[None]):
             provider = self._resolved_op_provider(op_name)
             catalog_key = self._provider_to_catalog_key(provider)
             return (INHERIT_SENTINEL, *self._catalog.slugs_for(catalog_key))
+        if self._is_app_provider_model_field(field.path):
+            # ``app.<provider>.model`` is keyed by the provider in the path
+            # itself (not by inheritance), so the catalog lookup is direct
+            # and there is no inherit sentinel — this is the bottom layer
+            # of the resolution chain. The catalog uses the SDK vendor key
+            # (``anthropic``) while the app-level field path uses
+            # ``claude``, so route through the same alias mapper that the
+            # agent/op pickers use.
+            provider = field.path.split(".")[1]
+            catalog_key = self._provider_to_catalog_key(provider)
+            return self._catalog.slugs_for(catalog_key)
         return field.enum or field.choices or ()
 
     @staticmethod
@@ -711,6 +722,25 @@ class ConfigScreen(ModalScreen[None]):
             and parts[1] == "memory"
             and parts[2] == "operations"
             and parts[4] == "model"
+        )
+
+    @staticmethod
+    def _is_app_provider_model_field(path: str) -> bool:
+        """Match ``app.openai.model`` / ``app.openrouter.model`` / ``app.claude.model``.
+
+        These three fields hold the app-level *default* model for each
+        first-party provider, so their picker should expose the same
+        catalog the per-agent and per-op model pickers do — otherwise
+        users see fewer slugs at the app level than in agent overrides
+        (the original drift symptom: 12 openrouter slugs vs 30).
+        """
+
+        parts = path.split(".")
+        return (
+            len(parts) == 3
+            and parts[0] == "app"
+            and parts[1] in ("openai", "openrouter", "claude")
+            and parts[2] == "model"
         )
 
     def _resolved_op_provider(self, op_name: str) -> str:

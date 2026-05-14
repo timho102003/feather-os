@@ -160,38 +160,42 @@ def test_hint_for_returns_none_when_no_signal() -> None:
     assert hint_for(f) is None
 
 
-def test_model_catalog_exists_and_covers_providers() -> None:
-    """MODEL_CATALOG ships suggestions for each first-party provider."""
+def test_model_catalog_covers_first_party_providers() -> None:
+    """The YAML model catalog exposes at least one slug for each provider.
 
-    from feather.config_schema import MODEL_CATALOG
+    Note: the catalog keys Anthropic models under ``anthropic`` (matching
+    the SDK vendor name), while the app-level config field uses
+    ``app.claude.*``; the TUI maps between them via
+    ``_provider_to_catalog_key``.
+    """
 
-    assert "openai" in MODEL_CATALOG
-    assert "claude" in MODEL_CATALOG
-    assert "openrouter" in MODEL_CATALOG
-    assert all(isinstance(m, str) and m for m in MODEL_CATALOG["openai"])
-    # Sanity: catalog entries should be non-empty.
-    assert MODEL_CATALOG["openai"]
-    assert MODEL_CATALOG["claude"]
-    assert MODEL_CATALOG["openrouter"]
+    from feather.models_catalog import load_catalog
+
+    catalog = load_catalog()
+    for provider in ("openai", "anthropic", "openrouter"):
+        slugs = catalog.slugs_for(provider)
+        assert slugs, f"catalog has no slugs for {provider!r}"
+        assert all(isinstance(s, str) and s for s in slugs)
 
 
-def test_provider_model_fields_use_dropdown_with_choices() -> None:
-    """Per-provider model fields should be DROPDOWN populated from the catalog."""
+def test_provider_model_fields_use_dropdown() -> None:
+    """``app.<provider>.model`` is DROPDOWN; choices come from the catalog at
+    picker-open time, so the field itself ships without a static list."""
 
-    from feather.config_schema import MODEL_CATALOG
-
-    for path, key in (
-        ("app.openai.model", "openai"),
-        ("app.claude.model", "claude"),
-        ("app.openrouter.model", "openrouter"),
+    for path in (
+        "app.openai.model",
+        "app.claude.model",
+        "app.openrouter.model",
     ):
         field = lookup(path)
         assert field is not None, f"{path} missing"
         assert field.widget is WidgetHint.DROPDOWN, (
             f"{path} should be DROPDOWN, got {field.widget}"
         )
-        assert field.choices is not None
-        assert set(MODEL_CATALOG[key]).issubset(field.choices)
+        # Choices are intentionally empty in the registry — they are
+        # resolved dynamically by ConfigScreen._picker_choices_for so the
+        # picker and the per-agent picker share one source of truth.
+        assert not field.choices
 
 
 def test_choices_field_is_not_enum_validated() -> None:
@@ -217,13 +221,14 @@ def test_agent_registry_exposes_temperature_and_max_output_tokens() -> None:
 
 
 def test_dropdown_without_enum_or_choices_is_invalid() -> None:
-    """A DROPDOWN field must offer either enum (strict) or choices (suggestions)."""
+    """A DROPDOWN field must offer either enum (strict), choices
+    (suggestions), or ``dynamic_choices=True`` (resolved by the modal)."""
 
     import pytest
 
     from feather.config_schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
 
-    with pytest.raises(ValueError, match="enum or choices"):
+    with pytest.raises(ValueError, match="enum, choices, or dynamic_choices"):
         ConfigField(
             path="x.y",
             type=FieldType.STRING,
@@ -232,3 +237,14 @@ def test_dropdown_without_enum_or_choices_is_invalid() -> None:
             scope=Scope.APP,
             description="d",
         )
+
+    # dynamic_choices=True opts out of the check.
+    ConfigField(
+        path="x.y",
+        type=FieldType.STRING,
+        widget=WidgetHint.DROPDOWN,
+        reload=ReloadClass.LIVE,
+        scope=Scope.APP,
+        description="d",
+        dynamic_choices=True,
+    )

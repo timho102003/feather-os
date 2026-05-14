@@ -321,25 +321,23 @@ def test_slugs_for_unknown_provider_returns_empty() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Drift: MODEL_CATALOG and the YAML catalog should align
+# Coverage: every slug returned by slugs_for() resolves to capability metadata
 # ---------------------------------------------------------------------------
 
 
-def test_every_slug_in_simple_model_catalog_has_metadata() -> None:
-    """The bare-slug MODEL_CATALOG (used as picker choices today) must be a
-    subset of the metadata-rich catalog — otherwise a user could pick a slug
-    the modal has no capability information for."""
+def test_every_slug_returned_by_slugs_for_has_capability_metadata() -> None:
+    """``slugs_for(provider)`` populates every model picker in the TUI, so
+    each slug it emits must also resolve through ``capability()`` — otherwise
+    the picker could surface a slug that the gating layer cannot reason about
+    (no temperature range, no thinking support, etc.).
+    """
 
-    from feather.config_schema import MODEL_CATALOG
     from feather.models_catalog import load_catalog
 
     catalog = load_catalog()
     missing: list[str] = []
-    for provider, slugs in MODEL_CATALOG.items():
-        # config_schema uses 'claude' as the key; metadata catalog uses
-        # 'anthropic' to match the SDK's vendor name. Tolerate the alias.
-        meta_provider = "anthropic" if provider == "claude" else provider
-        for slug in slugs:
-            if catalog.capability(meta_provider, slug) is None:
-                missing.append(f"{meta_provider}:{slug}")
-    assert not missing, f"slugs missing from metadata catalog: {missing}"
+    for provider in ("openai", "anthropic", "openrouter"):
+        for slug in catalog.slugs_for(provider):
+            if catalog.capability(provider, slug) is None:
+                missing.append(f"{provider}:{slug}")
+    assert not missing, f"slugs returned by slugs_for() but missing capability: {missing}"

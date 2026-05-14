@@ -14,8 +14,9 @@
 # Update process:
 #   1. Pull the docs above and reconcile new model IDs / deprecations.
 #   2. Add or update an entry below.
-#   3. Run `uv run pytest tests/test_model_catalog.py` — the drift test
-#      catches mismatches with MODEL_CATALOG (the bare-slug list).
+#   3. Run `uv run pytest tests/test_models_catalog.py` — the coverage
+#      test asserts every slug returned by ``slugs_for()`` also resolves
+#      through ``capability()``.
 #
 # User overlay:
 #   `~/.feather/models/catalog.yaml` is deep-merged on top per (provider,
@@ -555,10 +556,6 @@ openrouter:
     supports_reasoning: false
     supports_parallel_tool_calls: true
     supports_multimodal: false
-
-  # Legacy openrouter slugs that the bare-slug MODEL_CATALOG still ships.
-  # When MODEL_CATALOG is replaced by catalog.slugs_for(), these can
-  # be revisited.
 
   google/gemini-2.5-pro:
     family: gemini-2

@@ -797,7 +797,10 @@ async def test_enter_on_enum_field_opens_choice_picker_with_enum_values(
 async def test_enter_on_model_field_opens_choice_picker_with_catalog(
     service: ConfigService,
 ) -> None:
-    """Enter on app.openai.model opens a picker populated from MODEL_CATALOG."""
+    """Enter on ``app.openai.model`` opens a picker populated from the YAML
+    catalog — the same source of truth that ``agents.<name>.model`` uses,
+    so the app-level picker can never silently show fewer slugs than the
+    per-agent one (the original drift symptom)."""
 
     async with _Host(service).run_test() as pilot:
         screen = pilot.app.screen
@@ -809,9 +812,13 @@ async def test_enter_on_model_field_opens_choice_picker_with_catalog(
 
         picker = screen.query("#config-inline-editor").first()
         assert hasattr(picker, "_choices")
-        from feather.config_schema import MODEL_CATALOG
+        from feather.models_catalog import load_catalog
 
-        assert set(MODEL_CATALOG["openai"]).issubset(set(picker._choices))
+        catalog_slugs = set(load_catalog().slugs_for("openai"))
+        assert catalog_slugs.issubset(set(picker._choices))
+        # And no extras — the picker is EXACTLY the catalog (no inherit
+        # sentinel at the app level, since this is the bottom layer).
+        assert set(picker._choices) == catalog_slugs
 
 
 async def test_enter_on_sensitive_readonly_refuses_and_shows_footer(
@@ -948,10 +955,11 @@ async def test_bool_picker_renders_at_least_two_rows(
 async def test_dropdown_picker_renders_tall_enough_for_all_choices(
     service: ConfigService,
 ) -> None:
-    """DROPDOWN picker must be tall enough to show its entire choice list.
+    """DROPDOWN picker must be tall enough to show several rows, not be
+    capped at the old 3-row height that hid all but the first option.
 
     Catches the same height-cap bug as the bool case but on a long list
-    (MODEL_CATALOG['openrouter'] is the longest at 12 entries).
+    (openrouter's catalog is the longest at 30+ slugs).
     """
 
     async with _Host(service).run_test(size=(120, 40)) as pilot:

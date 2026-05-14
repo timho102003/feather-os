@@ -97,6 +97,11 @@ class ConfigField:
     default: Any = None
     hint: str | None = None
     choices: tuple[str, ...] | None = None
+    #: When True the DROPDOWN choices are resolved by the modal at
+    #: picker-open time (e.g. from the YAML model catalog or from a
+    #: sibling provider field), so the registry doesn't ship them.
+    #: Required to opt out of the "DROPDOWN must have choices" check.
+    dynamic_choices: bool = False
 
     def __post_init__(self) -> None:
         if self.type is FieldType.ENUM:
@@ -108,11 +113,18 @@ class ConfigField:
                 raise ValueError(
                     f"ConfigField {self.path!r}: enum type must use DROPDOWN widget"
                 )
-        if self.widget is WidgetHint.DROPDOWN and not (self.enum or self.choices):
-            # DROPDOWN must have something to display — either strict enum or
-            # suggested choices. Otherwise the picker has nothing to show.
+        if (
+            self.widget is WidgetHint.DROPDOWN
+            and not (self.enum or self.choices)
+            and not self.dynamic_choices
+        ):
+            # DROPDOWN must have something to display — either strict enum,
+            # suggested choices, or an opt-in declaration that the modal
+            # resolves them dynamically. Otherwise the picker has nothing
+            # to show.
             raise ValueError(
-                f"ConfigField {self.path!r}: DROPDOWN widget requires enum or choices"
+                f"ConfigField {self.path!r}: DROPDOWN widget requires enum, "
+                f"choices, or dynamic_choices=True"
             )
 
 
@@ -161,51 +173,14 @@ def hint_for(field: "ConfigField") -> str | None:
 # Model catalog (non-strict suggestions)
 # ---------------------------------------------------------------------------
 #
-# These lists drive the model-picker dropdown in the /config TUI so users
-# don't have to remember exact slugs. They are NOT exhaustive — the model
-# field stays free-form so users can pick anything the provider supports,
-# including newer models released after this catalog was last updated.
-# Keep the leading entries ordered by typical preference (default first).
-
-MODEL_CATALOG: dict[str, tuple[str, ...]] = {
-    "openai": (
-        "gpt-5",
-        "gpt-5-mini",
-        "gpt-5-nano",
-        "gpt-5.4-nano",
-        "gpt-4.5",
-        "gpt-4o",
-        "gpt-4o-mini",
-        "o3",
-        "o3-mini",
-        "o4-mini",
-    ),
-    "claude": (
-        "claude-opus-4-7",
-        "claude-sonnet-4-6",
-        "claude-haiku-4-5",
-        "claude-opus-4-5",
-        "claude-sonnet-4-5",
-        "claude-haiku-4-1",
-        "claude-3-7-sonnet-latest",
-        "claude-3-5-sonnet-latest",
-        "claude-3-5-haiku-latest",
-    ),
-    "openrouter": (
-        "anthropic/claude-opus-4-7",
-        "anthropic/claude-sonnet-4-6",
-        "anthropic/claude-haiku-4-5",
-        "openai/gpt-5",
-        "openai/gpt-5-mini",
-        "openai/gpt-5-nano",
-        "openai/o3",
-        "google/gemini-2.5-pro",
-        "google/gemini-2.5-flash",
-        "deepseek/deepseek-chat",
-        "qwen/qwen3-coder-480b",
-        "meta-llama/llama-3.3-70b",
-    ),
-}
+# The dropdown choices for ``app.<provider>.model``, ``agents.<name>.model``,
+# and ``app.memory.operations.<op>.model`` are all sourced at picker-open
+# time from the YAML catalog (``feather.models_catalog``) — see
+# ``ConfigScreen._picker_choices_for``. That keeps every model picker
+# pointing at one source of truth instead of forking a hard-coded
+# ``MODEL_CATALOG`` here that had to be kept in sync by hand (it wasn't,
+# and the app-level pickers ended up showing fewer slugs than the per-agent
+# ones).
 
 
 #: Sentinel value the modal's picker writes when the user chooses
@@ -315,9 +290,8 @@ def _agent_fields(name: str) -> tuple[ConfigField, ...]:
             description="Override the provider's default model for this agent (pick (inherit) to use provider default).",
             # Choices are computed dynamically by the modal at picker-open
             # time — they depend on the agent's resolved provider, which
-            # the schema cannot know. A placeholder marker keeps the
-            # DROPDOWN-requires-enum-or-choices invariant satisfied.
-            choices=(INHERIT_SENTINEL,),
+            # the schema cannot know.
+            dynamic_choices=True,
         ),
         ConfigField(
             path=f"agents.{name}.temperature",
@@ -539,7 +513,8 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.NEXT_TURN,
         scope=Scope.APP,
         description="Default OpenAI model (e.g. gpt-5-mini).",
-        choices=MODEL_CATALOG["openai"],
+        # Choices resolved from the YAML catalog at picker-open time.
+        dynamic_choices=True,
     ),
     ConfigField(
         path="app.openai.max_output_tokens",
@@ -636,7 +611,8 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.NEXT_TURN,
         scope=Scope.APP,
         description="Default OpenRouter model slug.",
-        choices=MODEL_CATALOG["openrouter"],
+        # Choices resolved from the YAML catalog at picker-open time.
+        dynamic_choices=True,
     ),
     ConfigField(
         path="app.openrouter.max_output_tokens",
@@ -777,7 +753,8 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.NEXT_TURN,
         scope=Scope.APP,
         description="Default Anthropic model (e.g. claude-opus-4-7).",
-        choices=MODEL_CATALOG["claude"],
+        # Choices resolved from the YAML catalog at picker-open time.
+        dynamic_choices=True,
     ),
     ConfigField(
         path="app.claude.max_output_tokens",
@@ -1312,7 +1289,7 @@ REGISTRY: tuple[ConfigField, ...] = (
         description="Model for memory extraction (pick (inherit) to use provider default).",
         # Dynamic choices computed by the modal: catalog of the resolved
         # op-provider, prefixed with (inherit). Same mechanism as agent.model.
-        choices=(INHERIT_SENTINEL,),
+        dynamic_choices=True,
     ),
     ConfigField(
         path="app.memory.operations.extraction.max_output_tokens",
@@ -1347,7 +1324,7 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Model for relevance classification (pick (inherit) to use provider default).",
-        choices=(INHERIT_SENTINEL,),
+        dynamic_choices=True,
     ),
     ConfigField(
         path="app.memory.operations.classification.max_output_tokens",
@@ -1382,7 +1359,7 @@ REGISTRY: tuple[ConfigField, ...] = (
         reload=ReloadClass.RESTART_APP,
         scope=Scope.APP,
         description="Model for query builder (pick (inherit) to use provider default).",
-        choices=(INHERIT_SENTINEL,),
+        dynamic_choices=True,
     ),
     ConfigField(
         path="app.memory.operations.query_builder.max_output_tokens",
@@ -1493,7 +1470,6 @@ __all__ = (
     "GEMINI_TASK_TYPES",
     "IGNORED_PATHS",
     "INHERIT_SENTINEL",
-    "MODEL_CATALOG",
     "REGISTRY",
     "ReloadClass",
     "Scope",
