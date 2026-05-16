@@ -885,13 +885,17 @@ async def test_complete_reconstructs_tool_calls_across_chunks(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_complete_raises_on_mid_stream_error(monkeypatch) -> None:
+async def test_complete_raises_on_mid_stream_non_retryable_error(monkeypatch) -> None:
+    """A mid-stream error with a non-retryable code (e.g. 400 / content_filter)
+    must surface as a terminal :class:`OpenRouterStreamError` immediately —
+    retrying a 400-class failure just wastes credits and time."""
+
     def handler(_req: httpx.Request) -> httpx.Response:
         body = b"data: " + _json.dumps(
             {
                 "id": "gen-1",
                 "choices": [{"delta": {}, "finish_reason": "error"}],
-                "error": {"code": 502, "message": "upstream blew up"},
+                "error": {"code": 400, "message": "content_filter"},
             }
         ).encode() + b"\n\n"
         return httpx.Response(
@@ -902,10 +906,11 @@ async def test_complete_raises_on_mid_stream_error(monkeypatch) -> None:
 
     monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
     provider = OpenRouterChatProvider(
-        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+        OpenRouterConfig(max_attempts=3),
+        transport=httpx.MockTransport(handler),
     )
     try:
-        with pytest.raises(OpenRouterStreamError):
+        with pytest.raises(OpenRouterStreamError, match="content_filter"):
             await provider.complete(
                 instructions="",
                 input_items=[],
@@ -914,6 +919,156 @@ async def test_complete_raises_on_mid_stream_error(monkeypatch) -> None:
             )
     finally:
         await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_retries_mid_stream_502_then_succeeds(monkeypatch) -> None:
+    """The user's exact bug: OpenRouter injects a 502 ``provider_unavailable``
+    error mid-stream (literal message: "JSON error injected into SSE stream").
+    Per OpenRouter's errors-and-debugging docs this is documented as transient
+    and recommended to be handled with exponential backoff retry. With no
+    output committed yet the retry is idempotent — verify we recover instead
+    of raising."""
+
+    attempts = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            body = b"data: " + _json.dumps(
+                {
+                    "id": "gen-1",
+                    "error": {
+                        "code": 502,
+                        "message": "JSON error injected into SSE stream",
+                    },
+                }
+            ).encode() + b"\n\n"
+            return httpx.Response(
+                200,
+                content=body,
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return _sse_response(
+            [
+                {"id": "gen-2", "choices": [{"delta": {"content": "ok"}}]},
+                {
+                    "id": "gen-2",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_attempts=3),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        turn = await provider.complete(
+            instructions="",
+            input_items=[],
+            tools=[],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert attempts["n"] == 2
+    assert turn.output_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_on_mid_stream_502_after_partial_output(
+    monkeypatch,
+) -> None:
+    """If output has already streamed to the caller, retrying would duplicate
+    visible content. Per the clean-state guard we MUST raise terminal."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        chunks: list[bytes] = []
+        chunks.append(
+            b"data: " + _json.dumps(
+                {"id": "gen-1", "choices": [{"delta": {"content": "partial"}}]}
+            ).encode() + b"\n\n"
+        )
+        chunks.append(
+            b"data: " + _json.dumps(
+                {
+                    "id": "gen-1",
+                    "choices": [{"delta": {}, "finish_reason": "error"}],
+                    "error": {"code": 502, "message": "provider disconnected"},
+                }
+            ).encode() + b"\n\n"
+        )
+        return httpx.Response(
+            200,
+            content=b"".join(chunks),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_attempts=3),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError, match="provider disconnected"):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_after_mid_stream_502_exhausts_attempts(
+    monkeypatch,
+) -> None:
+    """When every attempt is the same retryable 502, surface a terminal
+    error with attempt-count context so the caller knows we exhausted
+    the configured backoff budget rather than failing on first sight."""
+
+    attempts = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        body = b"data: " + _json.dumps(
+            {
+                "id": "gen-1",
+                "error": {
+                    "code": 502,
+                    "message": "JSON error injected into SSE stream",
+                },
+            }
+        ).encode() + b"\n\n"
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_attempts=2),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError, match="after 2 attempts"):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    assert attempts["n"] == 2
 
 
 @pytest.mark.asyncio

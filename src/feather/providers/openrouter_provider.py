@@ -211,6 +211,29 @@ class _PreStreamRetryable(Exception):
         self.inner = inner
 
 
+#: Mid-stream injected error codes documented as transient by OpenRouter.
+#: See https://openrouter.ai/docs/api/reference/errors-and-debugging — the
+#: 502 ``provider_unavailable`` (and friends 503/504/524) class is delivered
+#: as an SSE event with an ``error`` object and is recommended to be handled
+#: with exponential backoff retry. We extend our pre-stream retry policy to
+#: cover this mid-stream variant when, and only when, no observable output
+#: has been committed yet (otherwise retrying would duplicate streamed
+#: content or tool calls).
+_MID_STREAM_RETRYABLE_STATUS: frozenset[int] = frozenset({502, 503, 504, 524})
+
+
+class _MidStreamRetryable(Exception):
+    """Internal signal: OpenRouter injected a transient error into the SSE
+    stream BEFORE any output_text or tool_call deltas were committed. Caught
+    by :meth:`OpenRouterChatProvider._stream_one_turn` to retry the whole
+    turn from scratch (idempotent because no caller-visible state was emitted)."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"mid-stream {status}: {message[:200]}")
+        self.status = status
+        self.message = message
+
+
 def _retry_sleep_seconds_from_headers(
     status: int, attempt: int, base_delay: float, reset_header: str | None
 ) -> float:
@@ -470,6 +493,27 @@ class OpenRouterChatProvider(BaseLLMProvider):
                         exc.status, attempt, 0.25, exc.rate_limit_reset
                     )
                 )
+            except _MidStreamRetryable as exc:
+                if attempt == max_attempts - 1:
+                    # Convert to terminal so the caller sees a stable
+                    # exception type — same as the pre-stream branch.
+                    raise OpenRouterStreamError(
+                        f"openrouter mid-stream {exc.status} after "
+                        f"{max_attempts} attempts: {exc.message[:400]}"
+                    )
+                logger.warning(
+                    "openrouter.midstream.retry status=%s attempt=%s "
+                    "model=%s message=%s",
+                    exc.status,
+                    attempt,
+                    active_body.get("model"),
+                    exc.message[:200],
+                )
+                await asyncio.sleep(
+                    _retry_sleep_seconds_from_headers(
+                        exc.status, attempt, 0.5, None
+                    )
+                )
         # Unreachable: the loop either returns or raises.
         raise RuntimeError("openrouter pre-stream retry loop exited unexpectedly")
 
@@ -536,8 +580,13 @@ class OpenRouterChatProvider(BaseLLMProvider):
                     if event.get("id"):
                         last_chunk_id = event["id"]
                     if event.get("error"):
-                        raise OpenRouterStreamError(
-                            str(event["error"].get("message") or event["error"])
+                        err = event["error"]
+                        message = str(err.get("message") or err)
+                        self._raise_stream_error(
+                            status=err.get("code"),
+                            message=message,
+                            output_text=output_text,
+                            deltas=deltas,
                         )
                     choices = event.get("choices") or []
                     if not choices:
@@ -559,8 +608,11 @@ class OpenRouterChatProvider(BaseLLMProvider):
                         deltas.append(delta)
                     if choice.get("finish_reason") == "error":
                         err = event.get("error") or {}
-                        raise OpenRouterStreamError(
-                            str(err.get("message") or "mid-stream error")
+                        self._raise_stream_error(
+                            status=err.get("code"),
+                            message=str(err.get("message") or "mid-stream error"),
+                            output_text=output_text,
+                            deltas=deltas,
                         )
                     if choice.get("finish_reason") is not None:
                         final_chunk = event
@@ -703,6 +755,33 @@ class OpenRouterChatProvider(BaseLLMProvider):
                 fallback_list,
             )
         return turn
+
+    @staticmethod
+    def _raise_stream_error(
+        *,
+        status: Any,
+        message: str,
+        output_text: str,
+        deltas: list[dict[str, Any]],
+    ) -> None:
+        """Raise the right exception for an in-stream error event.
+
+        OpenRouter's docs document mid-stream injected errors with codes in
+        ``_MID_STREAM_RETRYABLE_STATUS`` (502 ``provider_unavailable`` and
+        friends) as transient, recommending exponential-backoff retry. We
+        extend that policy to streams that have not yet committed observable
+        state — if any ``output_text`` or tool-call delta has been emitted,
+        retrying would duplicate caller-visible side effects, so we surface
+        as terminal :class:`OpenRouterStreamError` instead.
+        """
+
+        code: int | None = status if isinstance(status, int) else None
+        clean_state = not output_text and not any(
+            d.get("tool_calls") for d in deltas
+        )
+        if code in _MID_STREAM_RETRYABLE_STATUS and clean_state:
+            raise _MidStreamRetryable(code, message)
+        raise OpenRouterStreamError(message)
 
     async def _classify_pre_stream_error(self, resp: httpx.Response) -> None:
         """Raise the right exception for a pre-stream non-2xx response.
