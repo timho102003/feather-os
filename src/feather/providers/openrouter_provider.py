@@ -52,6 +52,7 @@ from feather.models import (
 )
 from feather.providers.base import BaseLLMProvider
 from feather.providers.openrouter_translator import (
+    reconstruct_tool_calls,
     translate_request,
     translate_response,
 )
@@ -573,13 +574,58 @@ class OpenRouterChatProvider(BaseLLMProvider):
             # carries the same requirement. Reasoning models routed
             # through OpenRouter — DeepSeek-V4-Pro / R1 specifically —
             # have been observed to send ``[DONE]`` with no preceding
-            # finish_reason chunk after long reasoning sequences. Vercel
-            # AI SDK and the OpenAI Python SDK both ship pragmatic
-            # tolerance for this; do the same here but only when the
-            # stream produced something we can hand back as a turn.
+            # finish_reason chunk after long reasoning sequences (text
+            # output) AND after long tool-call planning sequences (the
+            # 34-tool_call_deltas symptom). Vercel AI SDK and the OpenAI
+            # Python SDK both ship pragmatic tolerance for this; do the
+            # same here, but only when the deltas already form a valid
+            # turn that we can hand back without inventing state.
             have_streamed_text = bool(output_text)
             have_tool_calls = any(d.get("tool_calls") for d in deltas)
-            if have_streamed_text and not have_tool_calls:
+            tool_call_delta_count = sum(
+                1 for d in deltas if d.get("tool_calls")
+            )
+
+            tool_calls_complete = False
+            if have_tool_calls:
+                # ``reconstruct_tool_calls`` is the deterministic answer to
+                # "are these deltas a valid tool-call set?". A truncated
+                # mid-args stream surfaces as ``{"raw_arguments": <partial>}``;
+                # a stream that dropped the chunk carrying ``function.name``
+                # surfaces as an empty ``name``. Either signal means we MUST
+                # raise rather than commit a half-built call. Anything else
+                # is bit-for-bit equivalent to a stream that DID terminate
+                # cleanly with ``finish_reason="tool_calls"``.
+                reconstructed = reconstruct_tool_calls(deltas)
+                tool_calls_complete = bool(reconstructed) and all(
+                    bool(tc.name) and "raw_arguments" not in tc.arguments
+                    for tc in reconstructed
+                )
+
+            if have_tool_calls and tool_calls_complete:
+                # OpenRouter normalizes the tool-using terminator to
+                # ``tool_calls`` (per their streaming docs), not ``stop``.
+                logger.warning(
+                    "openrouter.stream.no_final_chunk model=%s "
+                    "synthesizing finish_reason=tool_calls after %d tool_call "
+                    "deltas reconstruct to a complete tool-call set "
+                    "(upstream sent [DONE] without a finish_reason chunk — "
+                    "known pattern for DeepSeek reasoning models routed "
+                    "through OpenRouter)",
+                    body.get("model"),
+                    tool_call_delta_count,
+                )
+                final_chunk = {
+                    "id": last_chunk_id,
+                    "model": body.get("model"),
+                    "choices": [
+                        {
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+            elif have_streamed_text and not have_tool_calls:
                 logger.warning(
                     "openrouter.stream.no_final_chunk model=%s "
                     "synthesizing finish_reason=stop after %d output chars "
@@ -600,14 +646,14 @@ class OpenRouterChatProvider(BaseLLMProvider):
                     ],
                 }
             else:
-                # Empty stream OR tool-calls in flight: synthesizing
-                # ``stop`` here would either invent a turn from nothing
-                # or commit a half-built tool call. Surface the real
-                # error so the caller can retry.
+                # Empty stream OR truncated tool calls (incomplete name /
+                # mid-args JSON): synthesizing here would either invent a
+                # turn from nothing or commit a half-built tool call.
+                # Surface the real error so the caller can retry.
                 raise OpenRouterStreamError(
                     "openrouter stream ended without a final chunk "
                     f"(output_chars={len(output_text)}, "
-                    f"tool_call_deltas={sum(1 for d in deltas if d.get('tool_calls'))}, "
+                    f"tool_call_deltas={tool_call_delta_count}, "
                     f"model={body.get('model')})"
                 )
         if last_chunk_id and not final_chunk.get("id"):

@@ -539,11 +539,159 @@ async def test_complete_still_raises_when_stream_ends_with_nothing_useful(
 
 
 @pytest.mark.asyncio
-async def test_complete_still_raises_when_tool_calls_in_flight_with_no_final_chunk(
+async def test_complete_synthesizes_tool_calls_when_deltas_complete_and_no_final_chunk(
+    monkeypatch, caplog
+) -> None:
+    """The reported bug: deepseek-v4-pro on OpenRouter streamed 34 cumulative
+    ``tool_calls`` arg fragments and then ``[DONE]`` — no chunk carrying
+    ``finish_reason="tool_calls"``. The earlier conservative branch raised
+    on the theory that any in-flight tool call might be truncated, but the
+    reconstruction step itself is deterministic: a complete tool call has a
+    name and parses as valid JSON. When that's true, the deltas are
+    bit-for-bit equivalent to a properly-terminated stream and we should
+    synthesize ``finish_reason="tool_calls"`` (OpenRouter's canonical
+    normalized terminator per their streaming docs) rather than discard a
+    paid-for turn that's already complete.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                # Chunk 1: name + opening of arguments string.
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"pa',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+                # Chunk 2: rest of arguments — completes valid JSON.
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"arguments": 'th":"x.py"}'},
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+                # No finish_reason chunk before [DONE] — the protocol violation.
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(model="deepseek/deepseek-v4-pro")
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            turn = await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "read_file"
+    assert turn.tool_calls[0].arguments == {"path": "x.py"}
+    warnings = [
+        r for r in caplog.records if "stream.no_final_chunk" in r.getMessage()
+    ]
+    assert warnings, "expected a no_final_chunk warning when synthesizing tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_complete_synthesizes_tool_calls_for_no_arg_tool_without_final_chunk(
     monkeypatch,
 ) -> None:
-    """If we have partial tool-call deltas but no finish_reason, synthesizing
-    ``stop`` would commit a half-built tool call. Raise instead."""
+    """An empty arguments string is a legitimate no-arg call (e.g. ``list_files``
+    with no parameters), not a truncation signal. ``reconstruct_tool_calls``
+    already treats empty args as ``{}`` — synthesis must too.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "list_crons",
+                                            "arguments": "",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(model="deepseek/deepseek-v4-pro"),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        turn = await provider.complete(
+            instructions="sys",
+            input_items=[],
+            tools=[],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "list_crons"
+    assert turn.tool_calls[0].arguments == {}
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_tool_call_args_truncated_mid_json(
+    monkeypatch,
+) -> None:
+    """If the args string is non-empty but doesn't parse as JSON, the stream
+    was truncated mid-tool-call. ``reconstruct_tool_calls`` falls back to
+    ``{"raw_arguments": <partial>}``, which we treat as the truncation
+    signature — synthesizing ``tool_calls`` here would commit a half-built
+    call to the downstream tool executor. Raise so the caller can retry."""
 
     def handler(_request: httpx.Request) -> httpx.Response:
         return _sse_response(
@@ -561,7 +709,8 @@ async def test_complete_still_raises_when_tool_calls_in_flight_with_no_final_chu
                                         "type": "function",
                                         "function": {
                                             "name": "read_file",
-                                            "arguments": "",
+                                            # Truncated mid-args — invalid JSON.
+                                            "arguments": '{"path":"x',
                                         },
                                     }
                                 ]
@@ -569,7 +718,53 @@ async def test_complete_still_raises_when_tool_calls_in_flight_with_no_final_chu
                         }
                     ],
                 },
-                # No finish_reason — and a tool call left mid-build.
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_tool_call_missing_name(monkeypatch) -> None:
+    """A reconstructed tool call with no ``name`` is unusable — the stream
+    truncated before the first chunk carrying ``function.name`` arrived.
+    Don't synthesize."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        # No name field at all.
+                                        "function": {"arguments": '{"p'},
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
             ]
         )
 
