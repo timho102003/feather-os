@@ -1363,3 +1363,292 @@ async def test_stream_wall_clock_cap_does_not_fire_for_fast_completions(
         assert turn.output_text == "hi"
     finally:
         await provider.aclose()
+
+
+# ---------------------- idle-timeout retry + fallback model ----------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_retries_idle_timeout_with_same_model_then_succeeds(
+    monkeypatch,
+) -> None:
+    """User-reported bug: deepseek-v4-pro reasoning stalls >120s and crashes
+    the subagent because the idle timeout escaped the retry loop. Idle
+    timeout fires only when zero bytes arrived (otherwise the timer would
+    have reset), so the retry is idempotent. Verify we retry same-model
+    on idle timeout and recover."""
+
+    attempts = {"n": 0}
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)  # exceeds idle budget
+
+    async def fast_body():
+        yield (
+            b"data: " + _json.dumps(
+                {"id": "gen-2", "choices": [{"delta": {"content": "ok"}}]}
+            ).encode() + b"\n\n"
+        )
+        yield (
+            b"data: " + _json.dumps(
+                {
+                    "id": "gen-2",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+            ).encode() + b"\n\n"
+        )
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(
+                200,
+                content=stalling_body(),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            content=fast_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=3,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        turn = await provider.complete(
+            instructions="",
+            input_items=[],
+            tools=[],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert attempts["n"] == 2
+    assert turn.output_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_falls_back_to_fallback_model_after_idle_timeout_exhausts(
+    monkeypatch, caplog
+) -> None:
+    """When same-model retries are exhausted on idle timeout, swap to the
+    first configured ``fallback_models`` entry and try again. Also drop
+    the ``models`` array so OpenRouter doesn't route us back through the
+    stalled primary."""
+
+    attempts: list[dict[str, Any]] = []
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def fast_body():
+        yield (
+            b"data: " + _json.dumps(
+                {"id": "fb-1", "choices": [{"delta": {"content": "fallback ok"}}]}
+            ).encode() + b"\n\n"
+        )
+        yield (
+            b"data: " + _json.dumps(
+                {
+                    "id": "fb-1",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+            ).encode() + b"\n\n"
+        )
+
+    async def handler_async(req: httpx.Request) -> httpx.Response:
+        payload = _json.loads(req.content.decode())
+        attempts.append(
+            {"model": payload.get("model"), "has_models": "models" in payload}
+        )
+        if payload.get("model") == "deepseek/deepseek-v4-pro":
+            return httpx.Response(
+                200,
+                content=stalling_body(),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            content=fast_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=["anthropic/claude-sonnet-4-6"],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            turn = await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    # 2 primary attempts (both stalled), then 1 fallback attempt (succeeded).
+    primary_calls = [a for a in attempts if a["model"] == "deepseek/deepseek-v4-pro"]
+    fallback_calls = [a for a in attempts if a["model"] == "anthropic/claude-sonnet-4-6"]
+    assert len(primary_calls) == 2
+    assert len(fallback_calls) >= 1
+    # The fallback call must drop the ``models`` routing list to avoid
+    # OpenRouter re-routing us back through the stalled primary.
+    assert all(not call["has_models"] for call in fallback_calls)
+    assert turn.output_text == "fallback ok"
+    # We logged the fallback swap.
+    fallback_warnings = [
+        r for r in caplog.records if "timeout.fallback_to_model" in r.getMessage()
+    ]
+    assert fallback_warnings
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_idle_timeout_when_no_fallback_configured(
+    monkeypatch,
+) -> None:
+    """No ``fallback_models`` configured + same-model retries exhausted =>
+    surface the original ``OpenRouterStreamIdleTimeoutError`` so the
+    caller sees a stable, documented exception type."""
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stalling_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=[],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamIdleTimeoutError):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_when_primary_and_fallback_both_time_out(
+    monkeypatch,
+) -> None:
+    """If the fallback model also exhausts on idle timeout, surface as
+    terminal — we've genuinely run out of options."""
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stalling_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=["anthropic/claude-sonnet-4-6"],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamIdleTimeoutError):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_fall_back_when_fallback_is_same_as_primary(
+    monkeypatch,
+) -> None:
+    """If ``fallback_models[0]`` happens to be the same slug as the primary,
+    falling back would just rerun the same request. Skip the fallback hop
+    and raise the original timeout."""
+
+    attempts = {"n": 0}
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(
+            200,
+            content=stalling_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=["deepseek/deepseek-v4-pro"],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamIdleTimeoutError):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    # Should have hit max_attempts on primary only (no duplicate fallback run).
+    assert attempts["n"] == 2

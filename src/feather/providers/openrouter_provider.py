@@ -450,17 +450,79 @@ class OpenRouterChatProvider(BaseLLMProvider):
         body: dict[str, Any],
         event_handler: EventHandler | None,
     ) -> ModelTurn:
-        """Open the stream (with pre-stream retries), parse SSE events, return a turn.
+        """Open the stream, retry the documented retryable classes, and
+        optionally fall back to ``fallback_models[0]`` when the primary
+        model exhausts its retry budget on idle / wall-clock timeout.
 
-        Pre-stream retries: on ``408 / 429 / 500 / 502 / 503 / 504`` we
-        close the stream and re-issue, honoring ``X-RateLimit-Reset``
-        (bounded) on 429. 503 widens restrictive routing knobs once before
-        the next attempt. ``402`` surfaces as :class:`OpenRouterCreditsExhausted`
-        with no retry; ``400 / 401 / 403`` surface as raw
-        :class:`httpx.HTTPStatusError` with no retry. Once the first byte
-        of the 200 stream is emitted, this method commits and never
-        retries that stream — mid-stream errors raise :class:`OpenRouterStreamError`.
+        Per-model retry policy:
+
+        - Pre-stream ``408/429/500/502/503/504``: retried with
+          ``X-RateLimit-Reset``-aware backoff (bounded). 503 widens
+          restrictive routing knobs once before the next attempt. ``402``
+          surfaces as :class:`OpenRouterCreditsExhausted` (never retried);
+          ``400 / 401 / 403`` raise raw :class:`httpx.HTTPStatusError` (never
+          retried).
+        - Mid-stream injected error with ``code`` in ``502/503/504/524``
+          AND no observable output yet: retried (idempotent because clean
+          state).
+        - Idle / wall-clock timeout while waiting for a chunk: retried.
+          The stream produced nothing observable (otherwise we'd have
+          received bytes), so retry is idempotent.
+
+        Cross-model fallback:
+
+        - When the per-model retry loop exhausts on an idle or wall-clock
+          timeout AND ``fallback_models`` is configured, swap to
+          ``fallback_models[0]``, drop the OpenRouter ``models`` array
+          (so OpenRouter doesn't route the fallback BACK through the
+          primary), and try one more full attempt budget. This handles
+          the case where one upstream is stuck but a different model can
+          serve the same turn — typical with DeepSeek-V4-Pro / reasoning
+          models that occasionally hang.
+        - Pre-stream and mid-stream-error exhaustion do NOT trigger
+          model fallback: those failure modes are usually OpenRouter-
+          gateway-side, so swapping the model rarely helps.
         """
+
+        primary_model = body.get("model")
+        fallback_models = list(
+            getattr(self._cfg, "fallback_models", ()) or ()
+        )
+        fallback_model = fallback_models[0] if fallback_models else None
+
+        try:
+            return await self._stream_attempts(
+                body=body, event_handler=event_handler
+            )
+        except (
+            OpenRouterStreamIdleTimeoutError,
+            OpenRouterStreamWallClockError,
+        ) as primary_exc:
+            if fallback_model is None or fallback_model == primary_model:
+                raise
+            logger.warning(
+                "openrouter.timeout.fallback_to_model primary=%s using=%s "
+                "reason=%s",
+                primary_model,
+                fallback_model,
+                type(primary_exc).__name__,
+            )
+            fallback_body = dict(body)
+            fallback_body["model"] = fallback_model
+            # Drop OpenRouter's routing-layer fallback list so it doesn't
+            # route us back through whatever stalled the primary.
+            fallback_body.pop("models", None)
+            return await self._stream_attempts(
+                body=fallback_body, event_handler=event_handler
+            )
+
+    async def _stream_attempts(
+        self,
+        *,
+        body: dict[str, Any],
+        event_handler: EventHandler | None,
+    ) -> ModelTurn:
+        """Per-model attempt loop. See :meth:`_stream_one_turn` for policy."""
 
         max_attempts = max(1, int(self._cfg.max_attempts))
         widen_attempted = False
@@ -514,6 +576,26 @@ class OpenRouterChatProvider(BaseLLMProvider):
                         exc.status, attempt, 0.5, None
                     )
                 )
+            except (
+                OpenRouterStreamIdleTimeoutError,
+                OpenRouterStreamWallClockError,
+            ) as exc:
+                # Idle / wall-clock timeout fires only when the stream
+                # produced no output (otherwise we'd have received bytes,
+                # which would reset the timer). State is therefore clean
+                # and the retry is idempotent.
+                if attempt == max_attempts - 1:
+                    raise
+                logger.warning(
+                    "openrouter.timeout.retry kind=%s attempt=%s model=%s",
+                    type(exc).__name__,
+                    attempt,
+                    active_body.get("model"),
+                )
+                # The timeout already burned the configured idle budget
+                # (~120s by default). Use a short backoff so the retry
+                # fires while OpenRouter's connection state is still warm.
+                await asyncio.sleep(min(2.0, 0.5 * (2 ** attempt)))
         # Unreachable: the loop either returns or raises.
         raise RuntimeError("openrouter pre-stream retry loop exited unexpectedly")
 
