@@ -102,6 +102,151 @@ def test_translate_tools_omits_strict_when_false_or_missing() -> None:
     assert "strict" not in result[0]["function"]
 
 
+def test_translate_tools_flattens_nullable_union_to_single_type() -> None:
+    """Several first-party tools declare optional params as
+    ``"type": ["string", "null"]`` — canonical JSON Schema accepted by
+    OpenAI/Anthropic/native DeepSeek, but rejected by Alibaba/DashScope's
+    strict validator with ``InternalError.Algo.InvalidParameter: The tool
+    parameter type must be a string`` (observed in user runtime when
+    OpenRouter routed deepseek-v4-pro through Alibaba). Flatten the union
+    by dropping the ``"null"`` member — optionality is already expressed
+    via the parameter being absent from ``required``.
+    """
+
+    translated = translate_tools(
+        [
+            {
+                "type": "function",
+                "name": "grep",
+                "description": "Search files.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "path": {
+                            "type": ["string", "null"],
+                            "description": "Optional base path.",
+                        },
+                        "ignore_case": {"type": ["boolean", "null"]},
+                        "max_results": {"type": ["integer", "null"]},
+                    },
+                    "required": ["pattern"],
+                },
+            }
+        ]
+    )
+
+    props = translated[0]["function"]["parameters"]["properties"]
+    assert props["pattern"]["type"] == "string"  # untouched single type
+    assert props["path"]["type"] == "string"
+    assert props["path"]["description"] == "Optional base path."  # description preserved
+    assert props["ignore_case"]["type"] == "boolean"
+    assert props["max_results"]["type"] == "integer"
+
+
+def test_translate_tools_flattens_nested_object_property_types() -> None:
+    """Nested ``properties`` (object inside object) must also be flattened."""
+
+    translated = translate_tools(
+        [
+            {
+                "type": "function",
+                "name": "task_create",
+                "description": "Create a task.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "metadata": {
+                            "type": "object",
+                            "properties": {
+                                "owner": {"type": ["string", "null"]},
+                                "priority": {"type": ["integer", "null"]},
+                            },
+                        },
+                    },
+                },
+            }
+        ]
+    )
+
+    nested = translated[0]["function"]["parameters"]["properties"]["metadata"][
+        "properties"
+    ]
+    assert nested["owner"]["type"] == "string"
+    assert nested["priority"]["type"] == "integer"
+
+
+def test_translate_tools_flattens_array_items_with_nullable_union() -> None:
+    """``items`` of an array property is itself a schema and must be flattened."""
+
+    translated = translate_tools(
+        [
+            {
+                "type": "function",
+                "name": "task_update",
+                "description": "",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "tags": {
+                            "type": ["array", "null"],
+                            "items": {"type": ["string", "null"]},
+                        },
+                    },
+                },
+            }
+        ]
+    )
+
+    tags = translated[0]["function"]["parameters"]["properties"]["tags"]
+    assert tags["type"] == "array"
+    assert tags["items"]["type"] == "string"
+
+
+def test_translate_tools_does_not_mutate_input_schema() -> None:
+    """Flattening must operate on a copy — the caller's tool dict is shared
+    state (the BaseAgent rebuilds tools once per session) and silent mutation
+    would leak the OpenRouter-only sanitization into the OpenAI Responses
+    provider's request body."""
+
+    original = {
+        "type": "function",
+        "name": "x",
+        "description": "",
+        "parameters": {
+            "type": "object",
+            "properties": {"p": {"type": ["string", "null"]}},
+        },
+    }
+    before = original["parameters"]["properties"]["p"]["type"]
+    translate_tools([original])
+    after = original["parameters"]["properties"]["p"]["type"]
+    assert before == after == ["string", "null"]
+
+
+def test_translate_tools_preserves_single_string_type_unchanged() -> None:
+    """Tools that already declare a single-string type must pass through
+    bit-for-bit (regression guard for the flattening helper)."""
+
+    schema = {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    }
+    translated = translate_tools(
+        [
+            {
+                "type": "function",
+                "name": "read_file",
+                "description": "",
+                "parameters": schema,
+            }
+        ]
+    )
+    assert translated[0]["function"]["parameters"] == schema
+
+
 # ------------------------------------------------------------- input_items
 
 
