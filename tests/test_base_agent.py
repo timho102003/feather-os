@@ -668,6 +668,56 @@ async def test_base_agent_forwards_per_agent_reasoning_to_provider(tmp_path: Pat
         await session_store.close()
 
 
+async def test_base_agent_forwards_per_agent_temperature_and_max_tokens(
+    tmp_path: Path,
+) -> None:
+    """An agent with temperature / max_output_tokens overrides must pass them
+    to provider.complete via :class:`ProviderRequestConfig`.
+
+    This is the path that lets an agent override the provider's app-level
+    sampling and budget without copying the full provider block; the
+    provider then merges agent-level override on top of constructor-level
+    defaults inside its translator.
+    """
+
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+    session_store = SessionStore(tmp_path / "feather.db")
+    await session_store.initialize()
+    try:
+        provider = FakeProvider(
+            [ModelTurn(response_id="resp-1", output_text="ok", tool_calls=[])]
+        )
+        prompt_builder = PromptBuilder(
+            SkillCatalog(tmp_path / ".feather" / "skills"), ToolRegistry([])
+        )
+        agent = PrefixedAgent(
+            agent_config=AgentConfig(
+                name="Tuned",
+                role="custom",
+                personality="Direct",
+                prompt_modules=[
+                    "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+                ],
+                registered_tools=[],
+                temperature=0.2,
+                max_output_tokens=4096,
+            ),
+            prompt_builder=prompt_builder,
+            provider=provider,
+            session_store=session_store,
+            tool_output_store=ToolOutputStore(tmp_path, ".feather/tmp"),
+            tool_registry=ToolRegistry([]),
+        )
+        session_id = await agent.create_session()
+        await agent.run(session_id, "hello")
+        forwarded = provider.calls[0]["request_config"]
+        assert isinstance(forwarded, ProviderRequestConfig)
+        assert forwarded.temperature == 0.2
+        assert forwarded.max_output_tokens == 4096
+    finally:
+        await session_store.close()
+
+
 async def test_base_agent_omits_reasoning_when_agent_has_no_override(
     tmp_path: Path,
 ) -> None:

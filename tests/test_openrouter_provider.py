@@ -275,6 +275,516 @@ async def test_complete_returns_model_turn_and_emits_deltas(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
+async def test_complete_warns_when_resolved_model_differs_from_configured(
+    monkeypatch, caplog
+) -> None:
+    """OpenRouter's ``models`` field (built from
+    ``app.openrouter.fallback_models``) lets the upstream silently route
+    away from the primary when the primary is unavailable. The provider
+    must emit a WARNING that names both the configured primary and the
+    resolved fallback so the substitution is visible in feather.log
+    instead of only surfacing through Opik / billing dashboards.
+
+    Regression for: user changed ``app.openrouter.model`` to
+    ``deepseek/deepseek-v4-pro``, save persisted, but every request kept
+    landing on ``qwen/qwen3.5-plus-02-15`` (the first slug in the
+    packaged ``fallback_models``). The save was correct; the routing
+    was silent.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                # OpenRouter's response ``model`` field is the SUBSTITUTED
+                # one — not what we asked for in the request body.
+                {
+                    "id": "gen-fb",
+                    "model": "qwen/qwen3.5-plus-02-15",
+                    "choices": [{"delta": {"content": "hi"}}],
+                },
+                {
+                    "id": "gen-fb",
+                    "model": "qwen/qwen3.5-plus-02-15",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=(
+            "qwen/qwen3.5-plus-02-15",
+            "qwen/qwen3.5-397b-a17b",
+        ),
+    )
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    warnings = [
+        r for r in caplog.records if "model_substituted" in r.getMessage()
+    ]
+    assert warnings, (
+        "expected a model_substituted warning when OpenRouter routes "
+        "to a fallback model"
+    )
+    msg = warnings[0].getMessage()
+    assert "deepseek/deepseek-v4-pro" in msg
+    assert "qwen/qwen3.5-plus-02-15" in msg
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_warn_when_resolved_matches_configured(
+    monkeypatch, caplog
+) -> None:
+    """No spurious warning when OpenRouter actually serves what we asked
+    for — otherwise users get warning fatigue on every healthy request."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-ok",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {"content": "hi"}}],
+                },
+                {
+                    "id": "gen-ok",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=("qwen/qwen3.5-plus-02-15",),
+    )
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    substitutions = [
+        r for r in caplog.records if "model_substituted" in r.getMessage()
+    ]
+    assert not substitutions, (
+        f"unexpected substitution warning when models matched: {substitutions}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_no_warning_when_resolved_is_dated_snapshot(
+    monkeypatch, caplog
+) -> None:
+    """OpenRouter pins rolling aliases (``deepseek/deepseek-v4-pro``) to dated
+    snapshots (``...-20260423``) in the response model field. That's expected
+    aliasing — not the silent fallback re-routing the substitution warning
+    is meant to flag. Suppress the warning in this case so the real signal
+    (qwen ← deepseek and friends) isn't drowned in benign noise.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-snap",
+                    "model": "deepseek/deepseek-v4-pro-20260423",
+                    "choices": [{"delta": {"content": "ok"}}],
+                },
+                {
+                    "id": "gen-snap",
+                    "model": "deepseek/deepseek-v4-pro-20260423",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(model="deepseek/deepseek-v4-pro")
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    subs = [r for r in caplog.records if "model_substituted" in r.getMessage()]
+    assert not subs, (
+        f"dated-snapshot alias should not trip the substitution warning: {subs}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_complete_tolerates_missing_finish_reason_when_content_streamed(
+    monkeypatch, caplog
+) -> None:
+    """DeepSeek reasoning models routed through OpenRouter occasionally
+    send ``[DONE]`` without a preceding chunk that carries ``finish_reason``
+    (an upstream protocol violation per DeepSeek's own spec). When the
+    stream produced valid content and no in-flight tool calls, synthesize
+    a turn with implicit ``finish_reason=stop`` and WARN — losing the
+    streamed content because of a missing trailer is worse UX than the
+    log line.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # Content chunks, then [DONE] — NO finish_reason chunk at all.
+        return _sse_response(
+            [
+                {
+                    "id": "gen-noend",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {"content": "answer "}}],
+                },
+                {
+                    "id": "gen-noend",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [{"delta": {"content": "is 42"}}],
+                },
+                # No finish_reason chunk, no usage-only chunk — straight to [DONE].
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(model="deepseek/deepseek-v4-pro")
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            turn = await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    # The streamed content survives.
+    assert turn.output_text == "answer is 42"
+    # And we logged that we synthesized the trailer.
+    warnings = [
+        r for r in caplog.records if "stream.no_final_chunk" in r.getMessage()
+    ]
+    assert warnings, "expected a no_final_chunk warning when synthesizing"
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_stream_ends_with_nothing_useful(
+    monkeypatch,
+) -> None:
+    """An empty stream with no final chunk is a real failure — synthesizing
+    ``stop`` would invent a turn from nothing. Keep raising in that case
+    so the caller can retry or surface the error."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        # [DONE] with no preceding data chunks at all.
+        return _sse_response([])
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_synthesizes_tool_calls_when_deltas_complete_and_no_final_chunk(
+    monkeypatch, caplog
+) -> None:
+    """The reported bug: deepseek-v4-pro on OpenRouter streamed 34 cumulative
+    ``tool_calls`` arg fragments and then ``[DONE]`` — no chunk carrying
+    ``finish_reason="tool_calls"``. The earlier conservative branch raised
+    on the theory that any in-flight tool call might be truncated, but the
+    reconstruction step itself is deterministic: a complete tool call has a
+    name and parses as valid JSON. When that's true, the deltas are
+    bit-for-bit equivalent to a properly-terminated stream and we should
+    synthesize ``finish_reason="tool_calls"`` (OpenRouter's canonical
+    normalized terminator per their streaming docs) rather than discard a
+    paid-for turn that's already complete.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                # Chunk 1: name + opening of arguments string.
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"pa',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+                # Chunk 2: rest of arguments — completes valid JSON.
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"arguments": 'th":"x.py"}'},
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+                # No finish_reason chunk before [DONE] — the protocol violation.
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    cfg = OpenRouterConfig(model="deepseek/deepseek-v4-pro")
+    provider = OpenRouterChatProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            turn = await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "read_file"
+    assert turn.tool_calls[0].arguments == {"path": "x.py"}
+    warnings = [
+        r for r in caplog.records if "stream.no_final_chunk" in r.getMessage()
+    ]
+    assert warnings, "expected a no_final_chunk warning when synthesizing tool_calls"
+
+
+@pytest.mark.asyncio
+async def test_complete_synthesizes_tool_calls_for_no_arg_tool_without_final_chunk(
+    monkeypatch,
+) -> None:
+    """An empty arguments string is a legitimate no-arg call (e.g. ``list_files``
+    with no parameters), not a truncation signal. ``reconstruct_tool_calls``
+    already treats empty args as ``{}`` — synthesis must too.
+    """
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "list_crons",
+                                            "arguments": "",
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(model="deepseek/deepseek-v4-pro"),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        turn = await provider.complete(
+            instructions="sys",
+            input_items=[],
+            tools=[],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert len(turn.tool_calls) == 1
+    assert turn.tool_calls[0].name == "list_crons"
+    assert turn.tool_calls[0].arguments == {}
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_tool_call_args_truncated_mid_json(
+    monkeypatch,
+) -> None:
+    """If the args string is non-empty but doesn't parse as JSON, the stream
+    was truncated mid-tool-call. ``reconstruct_tool_calls`` falls back to
+    ``{"raw_arguments": <partial>}``, which we treat as the truncation
+    signature — synthesizing ``tool_calls`` here would commit a half-built
+    call to the downstream tool executor. Raise so the caller can retry."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "read_file",
+                                            # Truncated mid-args — invalid JSON.
+                                            "arguments": '{"path":"x',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_still_raises_when_tool_call_missing_name(monkeypatch) -> None:
+    """A reconstructed tool call with no ``name`` is unusable — the stream
+    truncated before the first chunk carrying ``function.name`` arrived.
+    Don't synthesize."""
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return _sse_response(
+            [
+                {
+                    "id": "gen-tc",
+                    "model": "deepseek/deepseek-v4-pro",
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_1",
+                                        "type": "function",
+                                        # No name field at all.
+                                        "function": {"arguments": '{"p'},
+                                    }
+                                ]
+                            }
+                        }
+                    ],
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "test-key")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError):
+            await provider.complete(
+                instructions="sys",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
 async def test_complete_uses_generation_header_when_chunks_are_idless(
     monkeypatch,
 ) -> None:
@@ -375,13 +885,17 @@ async def test_complete_reconstructs_tool_calls_across_chunks(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_complete_raises_on_mid_stream_error(monkeypatch) -> None:
+async def test_complete_raises_on_mid_stream_non_retryable_error(monkeypatch) -> None:
+    """A mid-stream error with a non-retryable code (e.g. 400 / content_filter)
+    must surface as a terminal :class:`OpenRouterStreamError` immediately —
+    retrying a 400-class failure just wastes credits and time."""
+
     def handler(_req: httpx.Request) -> httpx.Response:
         body = b"data: " + _json.dumps(
             {
                 "id": "gen-1",
                 "choices": [{"delta": {}, "finish_reason": "error"}],
-                "error": {"code": 502, "message": "upstream blew up"},
+                "error": {"code": 400, "message": "content_filter"},
             }
         ).encode() + b"\n\n"
         return httpx.Response(
@@ -392,10 +906,11 @@ async def test_complete_raises_on_mid_stream_error(monkeypatch) -> None:
 
     monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
     provider = OpenRouterChatProvider(
-        OpenRouterConfig(), transport=httpx.MockTransport(handler)
+        OpenRouterConfig(max_attempts=3),
+        transport=httpx.MockTransport(handler),
     )
     try:
-        with pytest.raises(OpenRouterStreamError):
+        with pytest.raises(OpenRouterStreamError, match="content_filter"):
             await provider.complete(
                 instructions="",
                 input_items=[],
@@ -404,6 +919,156 @@ async def test_complete_raises_on_mid_stream_error(monkeypatch) -> None:
             )
     finally:
         await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_retries_mid_stream_502_then_succeeds(monkeypatch) -> None:
+    """The user's exact bug: OpenRouter injects a 502 ``provider_unavailable``
+    error mid-stream (literal message: "JSON error injected into SSE stream").
+    Per OpenRouter's errors-and-debugging docs this is documented as transient
+    and recommended to be handled with exponential backoff retry. With no
+    output committed yet the retry is idempotent — verify we recover instead
+    of raising."""
+
+    attempts = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            body = b"data: " + _json.dumps(
+                {
+                    "id": "gen-1",
+                    "error": {
+                        "code": 502,
+                        "message": "JSON error injected into SSE stream",
+                    },
+                }
+            ).encode() + b"\n\n"
+            return httpx.Response(
+                200,
+                content=body,
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return _sse_response(
+            [
+                {"id": "gen-2", "choices": [{"delta": {"content": "ok"}}]},
+                {
+                    "id": "gen-2",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                },
+            ]
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_attempts=3),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        turn = await provider.complete(
+            instructions="",
+            input_items=[],
+            tools=[],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert attempts["n"] == 2
+    assert turn.output_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_on_mid_stream_502_after_partial_output(
+    monkeypatch,
+) -> None:
+    """If output has already streamed to the caller, retrying would duplicate
+    visible content. Per the clean-state guard we MUST raise terminal."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        chunks: list[bytes] = []
+        chunks.append(
+            b"data: " + _json.dumps(
+                {"id": "gen-1", "choices": [{"delta": {"content": "partial"}}]}
+            ).encode() + b"\n\n"
+        )
+        chunks.append(
+            b"data: " + _json.dumps(
+                {
+                    "id": "gen-1",
+                    "choices": [{"delta": {}, "finish_reason": "error"}],
+                    "error": {"code": 502, "message": "provider disconnected"},
+                }
+            ).encode() + b"\n\n"
+        )
+        return httpx.Response(
+            200,
+            content=b"".join(chunks),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_attempts=3),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError, match="provider disconnected"):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_after_mid_stream_502_exhausts_attempts(
+    monkeypatch,
+) -> None:
+    """When every attempt is the same retryable 502, surface a terminal
+    error with attempt-count context so the caller knows we exhausted
+    the configured backoff budget rather than failing on first sight."""
+
+    attempts = {"n": 0}
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        body = b"data: " + _json.dumps(
+            {
+                "id": "gen-1",
+                "error": {
+                    "code": 502,
+                    "message": "JSON error injected into SSE stream",
+                },
+            }
+        ).encode() + b"\n\n"
+        return httpx.Response(
+            200,
+            content=body,
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    provider = OpenRouterChatProvider(
+        OpenRouterConfig(max_attempts=2),
+        transport=httpx.MockTransport(handler),
+    )
+    try:
+        with pytest.raises(OpenRouterStreamError, match="after 2 attempts"):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    assert attempts["n"] == 2
 
 
 @pytest.mark.asyncio
@@ -698,3 +1363,292 @@ async def test_stream_wall_clock_cap_does_not_fire_for_fast_completions(
         assert turn.output_text == "hi"
     finally:
         await provider.aclose()
+
+
+# ---------------------- idle-timeout retry + fallback model ----------------------
+
+
+@pytest.mark.asyncio
+async def test_complete_retries_idle_timeout_with_same_model_then_succeeds(
+    monkeypatch,
+) -> None:
+    """User-reported bug: deepseek-v4-pro reasoning stalls >120s and crashes
+    the subagent because the idle timeout escaped the retry loop. Idle
+    timeout fires only when zero bytes arrived (otherwise the timer would
+    have reset), so the retry is idempotent. Verify we retry same-model
+    on idle timeout and recover."""
+
+    attempts = {"n": 0}
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)  # exceeds idle budget
+
+    async def fast_body():
+        yield (
+            b"data: " + _json.dumps(
+                {"id": "gen-2", "choices": [{"delta": {"content": "ok"}}]}
+            ).encode() + b"\n\n"
+        )
+        yield (
+            b"data: " + _json.dumps(
+                {
+                    "id": "gen-2",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+            ).encode() + b"\n\n"
+        )
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return httpx.Response(
+                200,
+                content=stalling_body(),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            content=fast_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=3,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        turn = await provider.complete(
+            instructions="",
+            input_items=[],
+            tools=[],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    assert attempts["n"] == 2
+    assert turn.output_text == "ok"
+
+
+@pytest.mark.asyncio
+async def test_complete_falls_back_to_fallback_model_after_idle_timeout_exhausts(
+    monkeypatch, caplog
+) -> None:
+    """When same-model retries are exhausted on idle timeout, swap to the
+    first configured ``fallback_models`` entry and try again. Also drop
+    the ``models`` array so OpenRouter doesn't route us back through the
+    stalled primary."""
+
+    attempts: list[dict[str, Any]] = []
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def fast_body():
+        yield (
+            b"data: " + _json.dumps(
+                {"id": "fb-1", "choices": [{"delta": {"content": "fallback ok"}}]}
+            ).encode() + b"\n\n"
+        )
+        yield (
+            b"data: " + _json.dumps(
+                {
+                    "id": "fb-1",
+                    "choices": [{"delta": {}, "finish_reason": "stop"}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                }
+            ).encode() + b"\n\n"
+        )
+
+    async def handler_async(req: httpx.Request) -> httpx.Response:
+        payload = _json.loads(req.content.decode())
+        attempts.append(
+            {"model": payload.get("model"), "has_models": "models" in payload}
+        )
+        if payload.get("model") == "deepseek/deepseek-v4-pro":
+            return httpx.Response(
+                200,
+                content=stalling_body(),
+                headers={"Content-Type": "text/event-stream"},
+            )
+        return httpx.Response(
+            200,
+            content=fast_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=["anthropic/claude-sonnet-4-6"],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        import logging
+
+        with caplog.at_level(
+            logging.WARNING, logger="feather.providers.openrouter_provider"
+        ):
+            turn = await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    # 2 primary attempts (both stalled), then 1 fallback attempt (succeeded).
+    primary_calls = [a for a in attempts if a["model"] == "deepseek/deepseek-v4-pro"]
+    fallback_calls = [a for a in attempts if a["model"] == "anthropic/claude-sonnet-4-6"]
+    assert len(primary_calls) == 2
+    assert len(fallback_calls) >= 1
+    # The fallback call must drop the ``models`` routing list to avoid
+    # OpenRouter re-routing us back through the stalled primary.
+    assert all(not call["has_models"] for call in fallback_calls)
+    assert turn.output_text == "fallback ok"
+    # We logged the fallback swap.
+    fallback_warnings = [
+        r for r in caplog.records if "timeout.fallback_to_model" in r.getMessage()
+    ]
+    assert fallback_warnings
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_idle_timeout_when_no_fallback_configured(
+    monkeypatch,
+) -> None:
+    """No ``fallback_models`` configured + same-model retries exhausted =>
+    surface the original ``OpenRouterStreamIdleTimeoutError`` so the
+    caller sees a stable, documented exception type."""
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stalling_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=[],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamIdleTimeoutError):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_raises_when_primary_and_fallback_both_time_out(
+    monkeypatch,
+) -> None:
+    """If the fallback model also exhausts on idle timeout, surface as
+    terminal — we've genuinely run out of options."""
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=stalling_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=["anthropic/claude-sonnet-4-6"],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamIdleTimeoutError):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_complete_does_not_fall_back_when_fallback_is_same_as_primary(
+    monkeypatch,
+) -> None:
+    """If ``fallback_models[0]`` happens to be the same slug as the primary,
+    falling back would just rerun the same request. Skip the fallback hop
+    and raise the original timeout."""
+
+    attempts = {"n": 0}
+
+    async def stalling_body():
+        yield b": OPENROUTER PROCESSING\n\n"
+        await asyncio.sleep(5.0)
+
+    async def handler_async(_req: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        return httpx.Response(
+            200,
+            content=stalling_body(),
+            headers={"Content-Type": "text/event-stream"},
+        )
+
+    monkeypatch.setenv("OPEN_ROUTER_API_KEY", "x")
+    cfg = OpenRouterConfig(
+        model="deepseek/deepseek-v4-pro",
+        fallback_models=["deepseek/deepseek-v4-pro"],
+        stream_idle_timeout_seconds=0.1,
+        max_attempts=2,
+    )
+    provider = OpenRouterChatProvider(
+        cfg, transport=httpx.MockTransport(handler_async)
+    )
+    try:
+        with pytest.raises(OpenRouterStreamIdleTimeoutError):
+            await provider.complete(
+                instructions="",
+                input_items=[],
+                tools=[],
+                previous_response_id=None,
+            )
+    finally:
+        await provider.aclose()
+
+    # Should have hit max_attempts on primary only (no duplicate fallback run).
+    assert attempts["n"] == 2

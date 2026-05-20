@@ -4,12 +4,18 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from feather.core.lead_supervisor import LeadSupervisor
 
 import httpx
 
 from feather.config import load_app_config
+from feather.config_schema import ReloadClass
+from feather.config_schema import lookup as _lookup_field
 from feather.core.agent_factory import AgentFactory
 from feather.core.base_agent import BaseAgent
 from feather.core.cron_scheduler import CronScheduler
@@ -45,6 +51,22 @@ from feather.storage.task_store import TaskStore
 from feather.storage.tool_output_store import ToolOutputStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(slots=True, frozen=True)
+class ConfigApplyResult:
+    """Outcome of :meth:`FeatherRuntime.apply_config_change`.
+
+    Attributes:
+        applied: Paths that were applied (LIVE or NEXT_TURN class).
+        needs_restart_lead: Paths that require a lead-agent restart.
+        needs_restart_app: Paths that require a full application restart.
+    """
+
+    applied: list[str]
+    needs_restart_lead: list[str]
+    needs_restart_app: list[str]
+
 
 _TERMINAL_TASK_STATUSES = {
     TaskStatus.COMPLETED_WITH_REPORT,
@@ -97,6 +119,12 @@ class FeatherRuntime:
         self._app_config = app_config
         self._shutdown_timeout_s = shutdown_timeout_s
         self._session_event_handlers: dict[str, EventHandler] = {}
+        self._agents: dict[str, BaseAgent] = {}
+        self._supervisor: "LeadSupervisor | None" = None
+        # Callbacks fired after :meth:`rebuild_agent` swaps the cached
+        # instance. Used by CLI / TUI drivers to refresh their captured
+        # agent reference so the next turn sees the new provider/model.
+        self._agent_rebuilt_listeners: list[Callable[[str, BaseAgent], None]] = []
 
     @classmethod
     async def create(
@@ -299,9 +327,127 @@ class FeatherRuntime:
         return runtime
 
     def build_agent(self, agent_name: str) -> BaseAgent:
-        """Build one configured agent from the shared runtime."""
+        """Build a fresh agent and cache it for later :meth:`rebuild_agent` calls.
 
-        return self._agent_factory.build(agent_name)
+        Args:
+            agent_name: Logical agent name (e.g. ``"lead"``).
+
+        Returns:
+            The newly built agent instance.
+        """
+
+        agent = self._agent_factory.build(agent_name)
+        self._agents[agent_name] = agent
+        return agent
+
+    def get_agent(self, name: str) -> BaseAgent:
+        """Return the cached agent built via :meth:`build_agent`.
+
+        Args:
+            name: Logical agent name.
+
+        Raises:
+            KeyError: If no agent with ``name`` has been built yet.
+        """
+
+        if name not in self._agents:
+            raise KeyError(f"agent {name!r} not yet built")
+        return self._agents[name]
+
+    def rebuild_agent(self, name: str) -> BaseAgent:
+        """Reconstruct ``name`` (and its provider) against the current app_config.
+
+        Session cursor (``last_response_id``) is owned by
+        :class:`~feather.storage.session_store.SessionStore` rather than the
+        agent instance, so the new agent picks up the in-flight conversation
+        transparently on the next turn.
+
+        The factory's internal ``_app_config`` AND ``_provider`` are updated
+        to the runtime's current config so provider-bound state (model,
+        reasoning, HTTP clients) reflects the freshly reloaded values.
+
+        Args:
+            name: Logical agent name.
+
+        Returns:
+            The newly built agent instance, already stored in the cache.
+        """
+
+        # Sync the factory's config view with whatever reload_config() loaded.
+        self._agent_factory._app_config = self._app_config
+        # Rebuild the factory's default provider so the new agent gets a fresh
+        # provider client (correct model, reasoning config, HTTP client, etc.)
+        # that matches the new active_provider setting.
+        new_default_provider = _build_default_provider(self._app_config)
+        active = (self._app_config.active_provider or "openai").strip().lower()
+        self._agent_factory._provider = new_default_provider
+        self._agent_factory._providers_by_name[active] = new_default_provider
+        new_agent = self._agent_factory.build(name)
+        self._agents[name] = new_agent
+        logger.info("runtime.agent.rebuilt name=%s provider=%s", name, active)
+        # Notify subscribers (CLI / TUI drivers) so they can refresh any
+        # captured agent reference. Without this, callers that took a
+        # snapshot of ``runtime._agents[name]`` keep talking to the old
+        # provider after /config saves a NEXT_TURN-class field — the
+        # exact symptom that caused the OpenRouter model swap to look
+        # saved but never actually take effect.
+        for listener in list(self._agent_rebuilt_listeners):
+            try:
+                listener(name, new_agent)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "runtime.agent_rebuilt_listener.error name=%s", name
+                )
+        return new_agent
+
+    def register_agent_rebuilt_listener(
+        self, listener: Callable[[str, BaseAgent], None]
+    ) -> Callable[[], None]:
+        """Subscribe to ``rebuild_agent`` events.
+
+        ``listener`` is called as ``listener(name, new_agent)`` after the
+        cache swap, on the same task that triggered the rebuild. Returns
+        an unsubscribe callable that removes the listener (idempotent).
+
+        Args:
+            listener: Function to invoke after each rebuild.
+
+        Returns:
+            A zero-arg callable; invoking it removes the listener.
+        """
+
+        self._agent_rebuilt_listeners.append(listener)
+
+        def _unsubscribe() -> None:
+            try:
+                self._agent_rebuilt_listeners.remove(listener)
+            except ValueError:
+                pass
+
+        return _unsubscribe
+
+    def attach_supervisor(self, supervisor: "LeadSupervisor") -> None:
+        """Register a :class:`~feather.core.lead_supervisor.LeadSupervisor`.
+
+        When a supervisor is attached, :meth:`apply_config_change` fans out
+        the reload to the lead worker subprocess in addition to applying it
+        in-process (so the TUI process's config view stays consistent).
+
+        Args:
+            supervisor: The running supervisor that owns the lead worker.
+        """
+
+        self._supervisor = supervisor
+        logger.info("runtime.supervisor.attached")
+
+    def detach_supervisor(self) -> None:
+        """Unregister the attached supervisor.
+
+        Safe to call even when no supervisor is attached.
+        """
+
+        self._supervisor = None
+        logger.info("runtime.supervisor.detached")
 
     @property
     def input_queue(self) -> UserInputQueue:
@@ -355,6 +501,116 @@ class FeatherRuntime:
         """Return the loaded application configuration."""
 
         return self._app_config
+
+    async def reload_config(self) -> None:
+        """Re-read app.yaml + global overlay from disk and swap ``_app_config``.
+
+        This is the LIVE-class reload path. Provider-bound state (HTTP clients,
+        models, reasoning config) is NOT reconstructed — call
+        :meth:`rebuild_agent` for NEXT_TURN-class changes.
+        """
+
+        from feather.paths import FeatherPaths
+
+        # Re-derive paths using the same resolution the constructor used.
+        # The runtime stores ``_root`` already; FeatherPaths resolves the
+        # global state dir from ``~/.feather`` automatically.
+        paths = FeatherPaths(project_root=self._root)
+        new_config = load_app_config(self._root, paths=paths)
+        self._app_config = new_config
+        logger.info(
+            "runtime.config.reloaded active_provider=%s", new_config.active_provider
+        )
+
+    async def apply_config_change(
+        self, changed_paths: list[str]
+    ) -> ConfigApplyResult:
+        """Apply the cumulative reload effect of ``changed_paths``.
+
+        Looks up each path's :class:`~feather.config_schema.ReloadClass` from
+        the registry and fans out accordingly:
+
+        - ``LIVE``-only changes → :meth:`reload_config` only.
+        - Any ``NEXT_TURN`` → :meth:`reload_config` + :meth:`rebuild_agent`
+          for every cached agent.
+        - ``RESTART_LEAD`` / ``RESTART_APP`` paths are surfaced in the
+          returned :class:`ConfigApplyResult`; the caller (TUI) shows the
+          appropriate banner.
+
+        Args:
+            changed_paths: Dotted config paths that were written to disk
+                (e.g. ``["app.active_provider", "app.openai.model"]``).
+
+        Returns:
+            A :class:`ConfigApplyResult` describing what was applied and what
+            requires a manual restart.
+        """
+
+        live: list[str] = []
+        next_turn: list[str] = []
+        restart_lead: list[str] = []
+        restart_app: list[str] = []
+
+        for path in changed_paths:
+            field_def = _lookup_field(path)
+            if field_def is None:
+                continue
+            bucket = {
+                ReloadClass.LIVE: live,
+                ReloadClass.NEXT_TURN: next_turn,
+                ReloadClass.RESTART_LEAD: restart_lead,
+                ReloadClass.RESTART_APP: restart_app,
+            }[field_def.reload]
+            bucket.append(path)
+
+        applied = list(live)
+        if live or next_turn:
+            await self.reload_config()
+            applied.extend(next_turn)
+            if next_turn:
+                for agent_name in list(self._agents):
+                    self.rebuild_agent(agent_name)
+
+        # Worker-mode fanout: when a supervisor is attached, propagate the same
+        # reload to the lead worker subprocess.  The in-process reload above
+        # keeps the TUI process's config view consistent; the worker handles
+        # its own validate-then-swap internally.
+        if self._supervisor is not None and (live or next_turn):
+            reload_class = (
+                ReloadClass.NEXT_TURN.value if next_turn else ReloadClass.LIVE.value
+            )
+            worker_paths = list(live) + list(next_turn)
+            try:
+                ack = await self._supervisor.request_config_reload(
+                    worker_paths, reload_class
+                )
+                if not ack.ok:
+                    logger.warning(
+                        "runtime.apply_config_change worker reload failed: %s",
+                        ack.error,
+                    )
+                    # Return empty applied list so the caller knows the
+                    # worker-side apply did not succeed.
+                    return ConfigApplyResult(
+                        applied=[],
+                        needs_restart_lead=restart_lead,
+                        needs_restart_app=restart_app,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "runtime.apply_config_change supervisor fanout error: %s", exc
+                )
+                return ConfigApplyResult(
+                    applied=[],
+                    needs_restart_lead=restart_lead,
+                    needs_restart_app=restart_app,
+                )
+
+        return ConfigApplyResult(
+            applied=applied,
+            needs_restart_lead=restart_lead,
+            needs_restart_app=restart_app,
+        )
 
     async def start_background_services(
         self, *, lead_in_subprocess: bool = False

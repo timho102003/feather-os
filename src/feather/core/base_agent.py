@@ -392,6 +392,9 @@ class BaseAgent(ABC):
                     agent_role=self._agent_config.role or None,
                 )
                 request_config = ProviderRequestConfig(
+                    model=self._agent_config.model,
+                    temperature=self._agent_config.temperature,
+                    max_output_tokens=self._agent_config.max_output_tokens,
                     reasoning=self._agent_config.reasoning,
                     mcp_servers=native_mcp_servers,
                     trace_context=trace_context,

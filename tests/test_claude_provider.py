@@ -724,3 +724,61 @@ async def test_complete_replays_tool_call_history_correctly(monkeypatch) -> None
     assert user_blocks[0]["tool_use_id"] == "call_1"
     assert user_blocks[1]["type"] == "text"
     assert user_blocks[1]["text"] == "thanks"
+
+
+@pytest.mark.asyncio
+async def test_claude_provider_strips_rejected_keywords_in_wire_body(
+    monkeypatch,
+) -> None:
+    """Regression for 'tools.0.custom: For 'integer' type, property
+    'minimum' is not supported'.
+
+    Drive the full provider pipeline with a tool whose schema has the
+    exact patterns the shipped tools use (``"type": ["integer", "null"]``
+    plus ``minimum``), and assert the JSON body sent to Anthropic has
+    them scrubbed by the time it leaves the translator.
+    """
+
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = _json.loads(request.content.decode())
+        return _sse_response(_happy_path_events())
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    cfg = ClaudeConfig()
+    provider = ClaudeMessagesProvider(cfg, transport=httpx.MockTransport(handler))
+    try:
+        await provider.complete(
+            instructions="sys",
+            input_items=[
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "hello"}],
+                }
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "name": "grep",
+                    "description": "",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "max_results": {
+                                "type": ["integer", "null"],
+                                "minimum": 1,
+                            },
+                        },
+                    },
+                }
+            ],
+            previous_response_id=None,
+        )
+    finally:
+        await provider.aclose()
+
+    wire_tools = captured["body"]["tools"]
+    assert wire_tools[0]["input_schema"]["properties"]["max_results"]["type"] == "integer"
+    assert "minimum" not in wire_tools[0]["input_schema"]["properties"]["max_results"]

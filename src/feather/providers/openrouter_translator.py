@@ -19,6 +19,7 @@ behavior independently.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import uuid
@@ -72,6 +73,49 @@ _RESERVED_TRACE_KEYS = frozenset(
 # ---------------------------------------------------------------------- tools
 
 
+def _flatten_parameter_types(schema: Any) -> Any:
+    """Recursively rewrite JSON Schema ``"type"`` fields to single-string form.
+
+    OpenAI Function Calling, Anthropic, and native DeepSeek all accept the
+    canonical JSON Schema multi-type union form for nullable parameters
+    (``"type": ["string", "null"]``). Alibaba / DashScope's strict validator
+    rejects it with ``InternalError.Algo.InvalidParameter: The tool
+    parameter type must be a string`` — observed in user runtime when
+    OpenRouter routed ``deepseek/deepseek-v4-pro`` through Alibaba's
+    inference of the model.
+
+    Since OpenRouter routing is dynamic (any provider serving the slug may
+    be picked), sanitize at the boundary so any upstream accepts. Drop the
+    ``"null"`` member from union types — optionality is already expressed
+    by the parameter being absent from ``required``. For non-null unions
+    (rare, e.g. ``["string", "integer"]``) pick the first member; that's
+    the conservative choice because models almost always emit the first
+    declared type for ambiguous schemas.
+
+    The function operates on a deep copy of its input; the caller's tool
+    dict is shared state across providers and silent mutation would leak
+    OpenRouter-only sanitization into the OpenAI Responses provider's
+    request body.
+    """
+
+    schema = copy.deepcopy(schema)
+    _flatten_in_place(schema)
+    return schema
+
+
+def _flatten_in_place(node: Any) -> None:
+    if isinstance(node, dict):
+        type_field = node.get("type")
+        if isinstance(type_field, list) and type_field:
+            non_null = [t for t in type_field if t != "null"]
+            node["type"] = non_null[0] if non_null else type_field[0]
+        for value in node.values():
+            _flatten_in_place(value)
+    elif isinstance(node, list):
+        for item in node:
+            _flatten_in_place(item)
+
+
 def translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Rewrap Responses-API flat tool definitions into Chat Completions nested form.
 
@@ -86,18 +130,25 @@ def translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         tools: Tool definitions in either flat or nested form.
 
     Returns:
-        Tools in Chat Completions nested form.
+        Tools in Chat Completions nested form, with parameter schemas
+        flattened to single-string ``type`` fields for cross-provider
+        compatibility (see :func:`_flatten_parameter_types`).
     """
 
     out: list[dict[str, Any]] = []
     for tool in tools:
         if "function" in tool and "name" not in tool:
-            out.append(tool)
+            sanitized = copy.deepcopy(tool)
+            inner_params = sanitized.get("function", {}).get("parameters")
+            if inner_params is not None:
+                _flatten_in_place(inner_params)
+            out.append(sanitized)
             continue
+        params = tool.get("parameters", {"type": "object", "properties": {}})
         inner: dict[str, Any] = {
             "name": tool["name"],
             "description": tool.get("description", ""),
-            "parameters": tool.get("parameters", {"type": "object", "properties": {}}),
+            "parameters": _flatten_parameter_types(params),
         }
         if tool.get("strict"):
             inner["strict"] = True

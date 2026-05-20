@@ -257,6 +257,12 @@ def default_registry() -> SlashCommandRegistry:
             category="view",
         ),
         SlashCommand(
+            name="config",
+            summary="Browse and edit Feather application + agent config",
+            usage="/config [get|set|list|diff|reset] <path> [value]",
+            category="session",
+        ),
+        SlashCommand(
             name="copy",
             summary="Copy the conversation transcript to the clipboard",
             category="view",

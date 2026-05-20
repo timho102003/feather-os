@@ -20,6 +20,7 @@ from feather.textual_tui import (
     is_exit_command,
     normalize_pasted_attachment_text,
     region_contains_point,
+    run_textual_tui,
     summarize_agent_message_update,
     summarize_user_input_for_display,
     _mouse_enabled,
@@ -254,6 +255,58 @@ def test_finishing_streamed_turn_clears_stream_before_final_write(monkeypatch) -
     assert recorded == [("Lead", "hello world")]
 
 
+def test_tick_spinner_skips_render_when_nothing_is_streaming(monkeypatch) -> None:
+    """An idle session must pay almost nothing for the 10 fps spinner timer:
+    no conversation repaint, no frame advance. Only the early-out check
+    runs."""
+
+    app = FeatherTextualApp(root=Path("."), session_id="s1")
+    rendered = 0
+
+    def render() -> None:
+        nonlocal rendered
+        rendered += 1
+
+    monkeypatch.setattr(app, "_render_conversation", render)
+    assert app._assistant_parts == []
+    starting_frame = app._spinner_frame
+
+    app._tick_spinner()
+    app._tick_spinner()
+    app._tick_spinner()
+
+    assert rendered == 0
+    assert app._spinner_frame == starting_frame
+
+
+def test_tick_spinner_advances_frame_and_renders_when_streaming(monkeypatch) -> None:
+    """When ``_assistant_parts`` has content the tick must advance the
+    frame counter AND repaint the conversation so the spinner glyph
+    cycles even while text deltas are paused (model mid-reasoning)."""
+
+    from feather.textual_tui import _SPINNER_FRAMES
+
+    app = FeatherTextualApp(root=Path("."), session_id="s1")
+    rendered = 0
+
+    def render() -> None:
+        nonlocal rendered
+        rendered += 1
+
+    monkeypatch.setattr(app, "_render_conversation", render)
+    app._assistant_parts = ["streaming text"]
+    app._spinner_frame = 0
+
+    for _ in range(len(_SPINNER_FRAMES) + 2):
+        app._tick_spinner()
+
+    # Every tick repainted exactly once.
+    assert rendered == len(_SPINNER_FRAMES) + 2
+    # The frame counter cycles modulo the frame set; after N+2 ticks
+    # starting from 0 we land on (N+2) % N == 2.
+    assert app._spinner_frame == 2
+
+
 def test_write_conversation_updates_render_state(monkeypatch) -> None:
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     rendered = 0
@@ -322,3 +375,219 @@ def test_mouse_reporting_defaults_on_and_can_be_disabled(monkeypatch) -> None:
 
     monkeypatch.setenv("FEATHER_TUI_MOUSE", "1")
     assert _mouse_enabled()
+
+
+def test_textual_tui_cmd_config_apply_handles_exceptions() -> None:
+    """_cmd_config's _apply worker must catch exceptions and surface them."""
+
+    import inspect
+
+    src = inspect.getsource(FeatherTextualApp._cmd_config)
+    assert "apply error" in src or "try:" in src, (
+        "_cmd_config's _apply worker must catch exceptions from apply_config_change"
+    )
+
+
+def test_app_priority_bindings_muted_under_modal_screen(monkeypatch) -> None:
+    """App-level priority Enter/Esc bindings must be disabled while a
+    ModalScreen is active; otherwise they preempt the modal's own bindings
+    and the user cannot edit fields or close the modal.
+
+    Regression test for the bug where `/config` opened the modal but Enter
+    never opened the inline editor and Esc never closed the modal — both
+    keys were being eaten by the App's priority bindings.
+    """
+
+    from unittest.mock import MagicMock
+
+    from textual.screen import ModalScreen, Screen
+
+    app = FeatherTextualApp(root=Path("/tmp"))
+
+    # The actions that must be silenced under a modal include at minimum the
+    # two that block the config TUI (submit, interrupt).
+    assert "submit" in FeatherTextualApp._ACTIONS_MUTED_UNDER_MODAL
+    assert "interrupt" in FeatherTextualApp._ACTIONS_MUTED_UNDER_MODAL
+
+    # When the active screen is a ModalScreen, check_action returns False
+    # for the muted actions — which tells Textual to skip the binding.
+    fake_modal = MagicMock(spec=ModalScreen)
+    monkeypatch.setattr(
+        FeatherTextualApp, "screen", property(lambda self: fake_modal)
+    )
+    assert app.check_action("submit", ()) is False
+    assert app.check_action("interrupt", ()) is False
+
+    # When the active screen is a non-modal Screen, the actions are NOT
+    # muted (check_action returns None → default behavior, which the parent
+    # class's check_action returns).
+    fake_screen = MagicMock(spec=Screen)
+    monkeypatch.setattr(
+        FeatherTextualApp, "screen", property(lambda self: fake_screen)
+    )
+    assert app.check_action("submit", ()) is not False
+    assert app.check_action("interrupt", ()) is not False
+
+
+def test_app_unrelated_actions_not_muted_under_modal(monkeypatch) -> None:
+    """Actions outside the mute set (e.g. copy_selection_or_transcript)
+    must not be disabled when a modal is on top — Ctrl+C still copies."""
+
+    from unittest.mock import MagicMock
+
+    from textual.screen import ModalScreen
+
+    app = FeatherTextualApp(root=Path("/tmp"))
+    fake_modal = MagicMock(spec=ModalScreen)
+    monkeypatch.setattr(
+        FeatherTextualApp, "screen", property(lambda self: fake_modal)
+    )
+
+    # copy_selection_or_transcript is not in the mute set
+    assert app.check_action("copy_selection_or_transcript", ()) is not False
+
+
+# -------------------- run_textual_tui force-exit shutdown --------------------
+
+
+def _patch_run_textual_tui_lifecycle(
+    monkeypatch,
+    *,
+    run_async_impl,
+) -> dict:
+    """Common scaffolding for run_textual_tui tests.
+
+    Replaces ``FeatherTextualApp.run_async`` with ``run_async_impl``,
+    captures ``os._exit`` / ``logging.shutdown`` / stdio-flush calls
+    instead of actually performing them so the test process survives.
+    Returns the captured-state dict.
+    """
+
+    import logging as _logging
+    import sys as _sys
+
+    from feather import textual_tui as _tt
+
+    captured: dict = {
+        "exit_code": None,
+        "logging_shutdown_called": 0,
+        "stdout_flushed": 0,
+        "stderr_flushed": 0,
+        "mouse": None,
+    }
+
+    async def _fake_run_async(self, *, mouse: bool) -> None:
+        captured["mouse"] = mouse
+        await run_async_impl(self)
+
+    monkeypatch.setattr(FeatherTextualApp, "run_async", _fake_run_async)
+
+    def _fake_exit(code: int) -> None:
+        captured["exit_code"] = code
+
+    monkeypatch.setattr(_tt.os, "_exit", _fake_exit)
+
+    def _fake_logging_shutdown() -> None:
+        captured["logging_shutdown_called"] += 1
+
+    monkeypatch.setattr(_tt.logging, "shutdown", _fake_logging_shutdown)
+
+    original_stdout_flush = _sys.stdout.flush
+    original_stderr_flush = _sys.stderr.flush
+
+    def _stdout_flush() -> None:
+        captured["stdout_flushed"] += 1
+        original_stdout_flush()
+
+    def _stderr_flush() -> None:
+        captured["stderr_flushed"] += 1
+        original_stderr_flush()
+
+    monkeypatch.setattr(_sys.stdout, "flush", _stdout_flush)
+    monkeypatch.setattr(_sys.stderr, "flush", _stderr_flush)
+
+    return captured
+
+
+def test_run_textual_tui_force_exits_zero_on_clean_app_exit(monkeypatch) -> None:
+    """On a normal /exit (app.run_async returns cleanly), the wrapper must
+    force-exit with code 0. This bypasses asyncio.run's 5-minute wait on
+    orphan default-executor threads that can't be interrupted."""
+
+    import asyncio as _asyncio
+
+    async def _clean(_self):
+        return None
+
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_clean)
+
+    _asyncio.run(run_textual_tui(Path("/tmp"), "sess-1"))
+
+    assert captured["exit_code"] == 0
+    assert captured["mouse"] is True
+    # Stdio + logging flushed before exit so no diagnostic output is lost.
+    assert captured["stdout_flushed"] >= 1
+    assert captured["stderr_flushed"] >= 1
+    assert captured["logging_shutdown_called"] == 1
+
+
+def test_run_textual_tui_force_exits_130_on_keyboard_interrupt(monkeypatch) -> None:
+    """Ctrl+C during the TUI maps to the conventional shell exit code 130."""
+
+    import asyncio as _asyncio
+
+    async def _ctrl_c(_self):
+        raise KeyboardInterrupt
+
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_ctrl_c)
+
+    _asyncio.run(run_textual_tui(Path("/tmp"), None))
+
+    assert captured["exit_code"] == 130
+    # Cleanup still ran — no flushes dropped on the interrupt path.
+    assert captured["logging_shutdown_called"] == 1
+
+
+def test_run_textual_tui_force_exits_1_on_fatal_exception(monkeypatch, caplog) -> None:
+    """Any other unexpected exception inside run_async must (a) be logged
+    so the user can diagnose, (b) force-exit with code 1 — never propagate
+    to asyncio.run's cleanup where it would race the executor-wait hang."""
+
+    import asyncio as _asyncio
+    import logging as _logging
+
+    async def _boom(_self):
+        raise RuntimeError("boom")
+
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_boom)
+
+    with caplog.at_level(_logging.ERROR, logger="feather.textual_tui"):
+        _asyncio.run(run_textual_tui(Path("/tmp"), None))
+
+    assert captured["exit_code"] == 1
+    assert captured["logging_shutdown_called"] == 1
+    # The traceback was captured into the log before we forced-exit.
+    fatal_records = [
+        r for r in caplog.records if "textual_tui.fatal_error" in r.getMessage()
+    ]
+    assert fatal_records
+    # And the exception detail survives in the record.
+    assert any("boom" in (r.exc_text or "") for r in fatal_records)
+
+
+def test_run_textual_tui_passes_mouse_setting_through(monkeypatch) -> None:
+    """Regression guard: the FEATHER_TUI_MOUSE env var must still flow
+    through to app.run_async(mouse=...) after the force-exit wrapper."""
+
+    import asyncio as _asyncio
+
+    async def _clean(_self):
+        return None
+
+    monkeypatch.setenv("FEATHER_TUI_MOUSE", "0")
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_clean)
+
+    _asyncio.run(run_textual_tui(Path("/tmp"), None))
+
+    assert captured["mouse"] is False
+    assert captured["exit_code"] == 0

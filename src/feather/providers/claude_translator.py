@@ -39,6 +39,7 @@ Anthropic-specific quirks the translator handles:
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import re
@@ -52,6 +53,72 @@ from feather.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_ANTHROPIC_REJECTED_NUMERIC_KEYWORDS: frozenset[str] = frozenset(
+    {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
+)
+
+_JSON_SCHEMA_INSTANCE_DATA_KEYS: frozenset[str] = frozenset(
+    {"default", "const", "enum", "example", "examples"}
+)
+
+
+def sanitize_anthropic_tool_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of ``schema`` safe for Anthropic's tool validator.
+
+    Anthropic's Messages API rejects ``minimum``/``maximum``/
+    ``exclusiveMinimum``/``exclusiveMaximum`` on ``integer``-typed
+    properties (and on ``number`` for that matter) and does not honour
+    ``"type": [..., "null"]`` unions inside tool input schemas. This
+    helper strips the unsupported keywords and normalises type unions,
+    walking ``properties``, ``items``, ``anyOf``, ``oneOf``, and
+    ``allOf`` recursively.
+
+    The original ``schema`` is not mutated. Calling the sanitizer twice
+    is a no-op (idempotent).
+
+    Args:
+        schema: A JSON Schema fragment (typically a tool's
+            ``parameters`` / ``input_schema`` body).
+
+    Returns:
+        A deep-copied, sanitized schema fragment.
+    """
+    return _sanitize_node(copy.deepcopy(schema))
+
+
+def _sanitize_node(node: Any) -> Any:
+    if isinstance(node, dict):
+        if "type" in node and isinstance(node["type"], list):
+            non_null = [t for t in node["type"] if t != "null"]
+            if len(non_null) == 1:
+                node["type"] = non_null[0]
+            elif len(non_null) == 0:
+                # Pathological ``["null"]`` — fall back to "string"
+                # rather than crash; logged so authors notice.
+                logger.warning(
+                    "claude tool schema: type list reduced to empty; "
+                    "defaulting to string"
+                )
+                node["type"] = "string"
+            else:
+                node["type"] = non_null
+                logger.warning(
+                    "claude tool schema: multi-type union %s reached "
+                    "the wire untouched (Anthropic may reject)",
+                    non_null,
+                )
+        for keyword in _ANTHROPIC_REJECTED_NUMERIC_KEYWORDS:
+            node.pop(keyword, None)
+        for key, value in list(node.items()):
+            if key in _JSON_SCHEMA_INSTANCE_DATA_KEYS:
+                continue
+            node[key] = _sanitize_node(value)
+        return node
+    if isinstance(node, list):
+        return [_sanitize_node(item) for item in node]
+    return node
 
 
 # Cache-breakpoint placement is a single ephemeral marker on the trailing
@@ -95,14 +162,17 @@ def translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for tool in tools:
         if "input_schema" in tool:
-            out.append(tool)
+            translated = dict(tool)
+            translated["input_schema"] = sanitize_anthropic_tool_schema(
+                tool["input_schema"]
+            )
+            out.append(translated)
             continue
-        translated: dict[str, Any] = {
+        parameters = tool.get("parameters", {"type": "object", "properties": {}})
+        translated = {
             "name": tool["name"],
             "description": tool.get("description", ""),
-            "input_schema": tool.get(
-                "parameters", {"type": "object", "properties": {}}
-            ),
+            "input_schema": sanitize_anthropic_tool_schema(parameters),
         }
         if tool.get("strict"):
             translated["strict"] = True

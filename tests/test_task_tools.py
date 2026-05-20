@@ -20,6 +20,7 @@ from feather.tools.task_tools import (
     TaskOutputTool,
     TaskResumeTool,
     TaskStopTool,
+    _optional_str,
 )
 
 
@@ -83,6 +84,69 @@ def _install_subprocess_stub(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     return captured
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        (None, None),
+        ("", None),
+        ("   ", None),
+        (42, None),  # non-string
+        ("real-id-123", "real-id-123"),
+        ("  padded  ", "padded"),
+        # The bug: model stringifies JSON null as the literal word "null"
+        # after the openrouter_translator flattens ["string","null"] schemas.
+        # Without coercion these reach the task store as ID lookups and
+        # crash with ``Unknown plan: null`` / ``Unknown task: null``.
+        ("null", None),
+        ("NULL", None),
+        ("Null", None),
+        ("none", None),
+        ("None", None),
+        ("NONE", None),
+        ("  null  ", None),
+    ],
+)
+def test_optional_str_coerces_nullish_strings_to_none(
+    value: object, expected: str | None
+) -> None:
+    assert _optional_str(value) == expected
+
+
+async def test_task_create_treats_null_string_plan_id_as_absent(
+    tmp_path: Path,
+) -> None:
+    """Regression: model sends ``"plan_id": "null"`` (literal stringified
+    JSON null) after schema flattening; the tool must treat that as
+    "no plan" rather than passing the string through and crashing in
+    ``TaskStore.get_plan`` with ``Unknown plan: null``.
+    """
+
+    store = TaskStore(tmp_path / "feather.db")
+    await store.initialize()
+    try:
+        created = await TaskCreateTool(store).execute(
+            {
+                "title": "Plan-less task",
+                "description": "no plan id provided",
+                "success_criteria": "done",
+                "required_outputs": [],
+                "plan_id": "null",       # the regression input
+                "plan_filepath": None,
+                "plan_title": None,
+                "responsible_agent_name": "research",
+                "responsible_session_id": "child-sess",
+            },
+            _lead(),
+        )
+        assert "Created task" in created.output
+        # And nothing got persisted with a bogus plan_id reference.
+        task_id = _field(created.output, "id")
+        task = await store.get_task(task_id)
+        assert task.plan_id is None
+    finally:
+        await store.close()
 
 
 async def test_task_tools_create_list_and_final_output(tmp_path: Path) -> None:

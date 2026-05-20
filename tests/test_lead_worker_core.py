@@ -19,6 +19,8 @@ from typing import Any
 from feather.core.input_queue import UserInputQueue
 from feather.core.lead_worker_core import WorkerCore
 from feather.core.worker_command_codec import (
+    CONFIG_RELOAD_ACK_KIND,
+    ConfigReloadCommand,
     EnqueueUserInputCommand,
     ResumeOnInboxCommand,
     RunCommand,
@@ -470,3 +472,250 @@ async def test_shutdown_emits_ack_event(tmp_path: Path) -> None:
 
     kinds = [e["kind"] for e in events]
     assert "_shutdown_ack" in kinds
+
+
+# ---------------------------------------------------------------------------
+# Task 23/25 — _handle_reload_config in WorkerCore
+# ---------------------------------------------------------------------------
+
+
+class _FakeRuntime:
+    """Minimal stand-in for FeatherRuntime used in reload handler tests."""
+
+    def __init__(self) -> None:
+        self._app_config = _FakeConfig(active_provider="openai")
+        self._agents: dict[str, object] = {}
+        self._agent_factory = _FakeAgentFactory(should_fail=False)
+        self.reload_calls: int = 0
+        self.rebuild_calls: list[str] = []
+
+    async def reload_config(self) -> None:
+        self.reload_calls += 1
+        # Swap the config to simulate a successful disk read.
+        self._app_config = _FakeConfig(active_provider="claude")
+
+    @property
+    def config(self) -> "_FakeConfig":
+        return self._app_config
+
+    def rebuild_agent(self, name: str) -> object:
+        self.rebuild_calls.append(name)
+        return object()
+
+
+class _FakeRuntimeFailingReload(_FakeRuntime):
+    """Runtime whose reload_config raises to test rollback."""
+
+    async def reload_config(self) -> None:  # type: ignore[override]
+        self.reload_calls += 1
+        raise ValueError("active_provider=claude but no claude: block in app.yaml")
+
+
+class _FakeRuntimeFailingRebuild(_FakeRuntime):
+    """Runtime whose rebuild raises to test dry-run rollback."""
+
+    async def reload_config(self) -> None:
+        self.reload_calls += 1
+        self._app_config = _FakeConfig(active_provider="claude")
+
+    def rebuild_agent(self, name: str) -> object:
+        raise ValueError("provider not configured")
+
+
+@dataclass
+class _FakeConfig:
+    active_provider: str
+
+
+class _FakeAgentFactory:
+    def __init__(self, *, should_fail: bool) -> None:
+        self._should_fail = should_fail
+        self._app_config: Any = None
+        self._provider: Any = None
+        self._providers_by_name: dict[str, Any] = {}
+
+    def build(self, name: str) -> object:
+        if self._should_fail:
+            raise ValueError("factory dry-run failed")
+        return object()
+
+
+async def _run_worker_with_reload(
+    tmp_path: Path,
+    commands_encoded: list[str],
+    *,
+    runtime: _FakeRuntime | None = None,
+) -> list[dict[str, Any]]:
+    """Helper: run WorkerCore with a fake runtime and capture events."""
+    agent = _FakeAgent()
+    store = await _open_heartbeat_store(tmp_path)
+    input_queue = UserInputQueue()
+    events, sink = _captured_event_sink()
+
+    try:
+        commands = _async_lines(commands_encoded)
+        core = WorkerCore(
+            agent=agent,
+            input_queue=input_queue,
+            heartbeat_store=store,
+            session_id="s1",
+            pid=1,
+            heartbeat_interval=0.05,
+            command_source=commands,
+            event_sink=sink,
+            runtime=runtime,
+        )
+        await core.run()
+    finally:
+        await store.close()
+
+    return events
+
+
+async def test_reload_config_live_emits_success_ack(tmp_path: Path) -> None:
+    """A live-class ConfigReloadCommand results in a successful ack event."""
+
+    runtime = _FakeRuntime()
+    runtime._agents["lead"] = object()
+
+    events = await _run_worker_with_reload(
+        tmp_path,
+        [
+            encode_command(
+                ConfigReloadCommand(
+                    correlation_id="corr-1",
+                    changed_paths=["app.compaction.trigger_ratio"],
+                    reload_class="live",
+                )
+            ),
+            encode_command(ShutdownCommand()),
+        ],
+        runtime=runtime,
+    )
+
+    ack_events = [e for e in events if e["kind"] == CONFIG_RELOAD_ACK_KIND]
+    assert len(ack_events) == 1
+    ack = ack_events[0]["payload"]
+    assert ack["ok"] is True
+    assert ack["correlation_id"] == "corr-1"
+    assert ack["applied_paths"] == ["app.compaction.trigger_ratio"]
+    assert ack["error"] is None
+    # Live reload calls reload_config but does NOT call rebuild.
+    assert runtime.reload_calls == 1
+    assert runtime.rebuild_calls == []
+
+
+async def test_reload_config_next_turn_rebuilds_agents(tmp_path: Path) -> None:
+    """next_turn reload calls reload_config and rebuild for every cached agent."""
+
+    runtime = _FakeRuntime()
+    runtime._agents["lead"] = object()
+
+    events = await _run_worker_with_reload(
+        tmp_path,
+        [
+            encode_command(
+                ConfigReloadCommand(
+                    correlation_id="corr-2",
+                    changed_paths=["app.active_provider"],
+                    reload_class="next_turn",
+                )
+            ),
+            encode_command(ShutdownCommand()),
+        ],
+        runtime=runtime,
+    )
+
+    ack_events = [e for e in events if e["kind"] == CONFIG_RELOAD_ACK_KIND]
+    assert len(ack_events) == 1
+    ack = ack_events[0]["payload"]
+    assert ack["ok"] is True
+    assert runtime.reload_calls == 1
+    assert "lead" in runtime.rebuild_calls
+
+
+async def test_reload_config_without_runtime_emits_error_ack(tmp_path: Path) -> None:
+    """When no runtime is attached the handler emits an error ack (not a crash)."""
+
+    events = await _run_worker_with_reload(
+        tmp_path,
+        [
+            encode_command(
+                ConfigReloadCommand(
+                    correlation_id="corr-3",
+                    changed_paths=["app.openai.model"],
+                    reload_class="live",
+                )
+            ),
+            encode_command(ShutdownCommand()),
+        ],
+        runtime=None,
+    )
+
+    ack_events = [e for e in events if e["kind"] == CONFIG_RELOAD_ACK_KIND]
+    assert len(ack_events) == 1
+    ack = ack_events[0]["payload"]
+    assert ack["ok"] is False
+    assert "no runtime" in ack["error"].lower()
+
+
+async def test_reload_config_rollback_on_reload_failure(tmp_path: Path) -> None:
+    """Task 25: when reload_config raises, prior _app_config is restored (rollback)."""
+
+    runtime = _FakeRuntimeFailingReload()
+    runtime._agents["lead"] = object()
+    prior_config = runtime._app_config
+
+    events = await _run_worker_with_reload(
+        tmp_path,
+        [
+            encode_command(
+                ConfigReloadCommand(
+                    correlation_id="corr-4",
+                    changed_paths=["app.active_provider"],
+                    reload_class="live",
+                )
+            ),
+            encode_command(ShutdownCommand()),
+        ],
+        runtime=runtime,
+    )
+
+    ack_events = [e for e in events if e["kind"] == CONFIG_RELOAD_ACK_KIND]
+    assert len(ack_events) == 1
+    ack = ack_events[0]["payload"]
+    assert ack["ok"] is False
+    assert "claude" in ack["error"].lower() or "app.yaml" in ack["error"].lower()
+    # Config must be rolled back to the prior value.
+    assert runtime._app_config is prior_config
+
+
+async def test_reload_config_rollback_on_next_turn_rebuild_failure(tmp_path: Path) -> None:
+    """Task 25: dry-run rebuild failure rolls back _app_config and emits error ack."""
+
+    runtime = _FakeRuntimeFailingRebuild()
+    runtime._agents["lead"] = object()
+    prior_config = runtime._app_config
+
+    events = await _run_worker_with_reload(
+        tmp_path,
+        [
+            encode_command(
+                ConfigReloadCommand(
+                    correlation_id="corr-5",
+                    changed_paths=["app.active_provider"],
+                    reload_class="next_turn",
+                )
+            ),
+            encode_command(ShutdownCommand()),
+        ],
+        runtime=runtime,
+    )
+
+    ack_events = [e for e in events if e["kind"] == CONFIG_RELOAD_ACK_KIND]
+    assert len(ack_events) == 1
+    ack = ack_events[0]["payload"]
+    assert ack["ok"] is False
+    assert "provider" in ack["error"].lower()
+    # Config was rolled back.
+    assert runtime._app_config is prior_config

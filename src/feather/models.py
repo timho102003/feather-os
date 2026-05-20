@@ -394,6 +394,13 @@ class AgentConfig:
     model. The agent factory resolves these at build time so individual
     agents can target different LLM providers without touching app.yaml.
 
+    ``temperature`` and ``max_output_tokens`` are optional per-agent
+    overrides too: when set they flow into ``ProviderRequestConfig`` and
+    override the provider's app-level defaults for this agent only.
+    ``None`` means inherit. Useful when a single app provider serves
+    multiple agents at different sampling profiles (e.g. an exploratory
+    agent at temperature 0.8 alongside a deterministic validator at 0.0).
+
     ``reasoning`` is an optional per-agent override for thinking effort
     and summary verbosity. ``None`` means inherit the provider-level
     default. When set, the agent forwards this on every provider request
@@ -411,6 +418,8 @@ class AgentConfig:
     inline_prompt: str = ""
     provider: str | None = None
     model: str | None = None
+    temperature: float | None = None
+    max_output_tokens: int | None = None
     reasoning: ReasoningConfig | None = None
     mcp_servers: tuple[MCPServerConfig, ...] = ()
 

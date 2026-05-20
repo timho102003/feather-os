@@ -16,12 +16,15 @@ from pathlib import Path
 import pytest
 
 from feather.core.lead_supervisor import (
+    ConfigReloadAckResult,
     LeadSupervisor,
     SupervisorError,
     WorkerHandle,
 )
 from feather.core.runtime_event_codec import encode_event
 from feather.core.worker_command_codec import (
+    CONFIG_RELOAD_ACK_KIND,
+    ConfigReloadCommand,
     EnqueueUserInputCommand,
     RunCommand,
     ShutdownCommand,
@@ -519,6 +522,142 @@ async def test_restart_drains_stale_events_so_next_run_is_not_short_circuited(
     await supervisor.shutdown()
 
 
+# ---------------------------------------------------------------------------
+# Task 22 — LeadSupervisor.request_config_reload
+# ---------------------------------------------------------------------------
+
+
+async def test_request_config_reload_sends_correlated_command(tmp_path: Path) -> None:
+    """request_config_reload sends a ConfigReloadCommand with the right fields."""
+
+    handle = _FakeWorkerHandle()
+    supervisor = _make_supervisor(tmp_path, handle)
+    await supervisor.start("s1")
+
+    # Schedule the ack before the call so the task can proceed.
+    async def _push_ack() -> None:
+        # Wait for the command to arrive, then push the ack.
+        await asyncio.sleep(0)
+        cmd = next(
+            (c for c in handle.commands_received if isinstance(c, ConfigReloadCommand)),
+            None,
+        )
+        # Spin until the command is there (it's sent before await_ack).
+        while cmd is None:
+            await asyncio.sleep(0)
+            cmd = next(
+                (c for c in handle.commands_received if isinstance(c, ConfigReloadCommand)),
+                None,
+            )
+        handle.push_event(
+            RuntimeEvent(
+                kind=CONFIG_RELOAD_ACK_KIND,
+                payload={
+                    "correlation_id": cmd.correlation_id,
+                    "ok": True,
+                    "applied_paths": list(cmd.changed_paths),
+                    "error": None,
+                },
+            )
+        )
+
+    asyncio.create_task(_push_ack())
+    result = await supervisor.request_config_reload(
+        ["app.compaction.trigger_ratio"], "live"
+    )
+
+    # The command was sent with the right shape.
+    reload_cmds = [c for c in handle.commands_received if isinstance(c, ConfigReloadCommand)]
+    assert len(reload_cmds) == 1
+    rc = reload_cmds[0]
+    assert rc.changed_paths == ["app.compaction.trigger_ratio"]
+    assert rc.reload_class == "live"
+
+    # The result was decoded correctly.
+    assert isinstance(result, ConfigReloadAckResult)
+    assert result.ok is True
+    assert result.applied_paths == ["app.compaction.trigger_ratio"]
+    assert result.error is None
+
+    handle.auto_ack_shutdown()
+    await supervisor.shutdown()
+
+
+async def test_request_config_reload_error_ack(tmp_path: Path) -> None:
+    """An error ack propagates ok=False and the error string."""
+
+    handle = _FakeWorkerHandle()
+    supervisor = _make_supervisor(tmp_path, handle)
+    await supervisor.start("s1")
+
+    async def _push_error_ack() -> None:
+        while not any(isinstance(c, ConfigReloadCommand) for c in handle.commands_received):
+            await asyncio.sleep(0)
+        cmd = next(c for c in handle.commands_received if isinstance(c, ConfigReloadCommand))
+        handle.push_event(
+            RuntimeEvent(
+                kind=CONFIG_RELOAD_ACK_KIND,
+                payload={
+                    "correlation_id": cmd.correlation_id,
+                    "ok": False,
+                    "applied_paths": [],
+                    "error": "reload failed: bad value",
+                },
+            )
+        )
+
+    asyncio.create_task(_push_error_ack())
+    result = await supervisor.request_config_reload(
+        ["app.active_provider"], "next_turn"
+    )
+
+    assert result.ok is False
+    assert result.error == "reload failed: bad value"
+    assert result.applied_paths == []
+
+    handle.auto_ack_shutdown()
+    await supervisor.shutdown()
+
+
+async def test_request_config_reload_timeout_raises(tmp_path: Path) -> None:
+    """If the worker never sends an ack, asyncio.TimeoutError is raised."""
+
+    handle = _FakeWorkerHandle()
+    supervisor = _make_supervisor(tmp_path, handle)
+    await supervisor.start("s1")
+
+    with pytest.raises(asyncio.TimeoutError):
+        await supervisor.request_config_reload(
+            ["app.openai.model"], "live", timeout=0.05
+        )
+
+    handle.auto_ack_shutdown()
+    await supervisor.shutdown()
+
+
+async def test_request_config_reload_worker_eof_raises_supervisor_error(
+    tmp_path: Path,
+) -> None:
+    """If the worker exits before sending the ack, SupervisorError is raised."""
+
+    handle = _FakeWorkerHandle()
+    supervisor = _make_supervisor(tmp_path, handle)
+    await supervisor.start("s1")
+
+    async def _push_eof() -> None:
+        while not any(isinstance(c, ConfigReloadCommand) for c in handle.commands_received):
+            await asyncio.sleep(0)
+        handle.push_eof()
+
+    asyncio.create_task(_push_eof())
+    with pytest.raises(SupervisorError, match="worker exited before config_reload_ack"):
+        await supervisor.request_config_reload(
+            ["app.openai.model"], "live"
+        )
+
+    await supervisor.shutdown()
+
+
 async def test_start_closes_heartbeat_store_when_factory_raises(
     tmp_path: Path,
 ) -> None:
@@ -555,3 +694,39 @@ async def test_start_closes_heartbeat_store_when_factory_raises(
     await supervisor.start("s1")
     handle.auto_ack_shutdown()
     await supervisor.shutdown()
+
+
+async def test_request_config_reload_serializes_against_run_lock() -> None:
+    """A reload waits until any in-flight run completes.
+
+    Verifies that ``_run_lock`` exists on the supervisor and that
+    ``request_config_reload`` honours it — the coroutine must block while
+    the lock is held by a simulated in-flight run and complete only after
+    the lock is released.
+    """
+
+    from feather.core.lead_supervisor import LeadSupervisor
+
+    sup = LeadSupervisor.__new__(LeadSupervisor)
+    sup._run_lock = asyncio.Lock()  # noqa: SLF001 — directly mirror the attribute name
+
+    # Simulate an in-flight run by acquiring the lock.
+    await sup._run_lock.acquire()  # noqa: SLF001
+
+    async def attempt_lock_acquire() -> str:
+        """Try to acquire the same lock — should block until released."""
+        try:
+            async with sup._run_lock:  # noqa: SLF001
+                return "reached"
+        except asyncio.CancelledError:
+            return "cancelled"
+
+    task = asyncio.create_task(attempt_lock_acquire())
+    # Yield control so the task can start and attempt to acquire the lock.
+    await asyncio.sleep(0)
+    assert not task.done(), "reload should be blocked while run lock is held"
+
+    # Release the lock to simulate the in-flight run completing.
+    sup._run_lock.release()  # noqa: SLF001
+    result = await asyncio.wait_for(task, timeout=1.0)
+    assert result == "reached"

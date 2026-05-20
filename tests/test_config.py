@@ -266,6 +266,50 @@ reasoning:
     assert cfg.reasoning.summary == "detailed"
 
 
+def test_agent_config_reads_temperature_and_max_output_tokens(
+    tmp_path: Path,
+) -> None:
+    """Agent YAML may carry per-agent temperature and max_output_tokens."""
+
+    (tmp_path / "config" / "agents").mkdir(parents=True)
+    (tmp_path / "config" / "agents" / "tuned.yaml").write_text(
+        """name: Tuned
+role: lead
+personality: precise
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+registered_tools: [read_file]
+temperature: 0.2
+max_output_tokens: 8000
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_agent_config(tmp_path, "tuned")
+    assert cfg.temperature == 0.2
+    assert cfg.max_output_tokens == 8000
+
+
+def test_agent_config_omitting_overrides_yields_none(tmp_path: Path) -> None:
+    """Without temperature/max_output_tokens keys, agent inherits (None)."""
+
+    (tmp_path / "config" / "agents").mkdir(parents=True)
+    (tmp_path / "config" / "agents" / "plain.yaml").write_text(
+        """name: Plain
+role: lead
+personality: x
+prompt_modules:
+  - feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT
+registered_tools: [read_file]
+""",
+        encoding="utf-8",
+    )
+
+    cfg = load_agent_config(tmp_path, "plain")
+    assert cfg.temperature is None
+    assert cfg.max_output_tokens is None
+
+
 def test_load_app_config_reads_openai_model_and_reasoning(tmp_path: Path) -> None:
     """App config should load the model and reasoning settings from YAML."""
 
@@ -417,3 +461,86 @@ registered_tools:
     assert legacy.prompt_modules == [
         "feather.core.prompts.default_agent_prompt:DEFAULT_AGENT_PROMPT",
     ]
+
+
+_GROUPED_MEMORY_YAML = """\
+database: { path: feather.db }
+storage: { temp_directory: tmp }
+logging: { path: log, level: INFO }
+compaction: { enabled: true, trigger_ratio: 0.8, context_window_tokens: 100, model: null, max_output_tokens: 100, temperature: 0.2 }
+skills: { directory: skills }
+scheduler: { enabled: true, poll_interval_seconds: 2, failure_retry_seconds: 30, max_due_jobs_per_tick: 10 }
+openai:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini
+  max_output_tokens: 100
+  temperature: 1.0
+  parallel_tool_calls: true
+memory:
+  enabled: true
+  operations:
+    extraction:
+      provider: openai
+      model: gpt-5.4-nano
+      max_output_tokens: 100
+      temperature: 0.1
+    classification:
+      provider: openai
+      model: gpt-5.4-nano
+    query_builder:
+      provider: openai
+      model: gpt-5.4-nano
+"""
+
+_FLAT_MEMORY_YAML = """\
+database: { path: feather.db }
+storage: { temp_directory: tmp }
+logging: { path: log, level: INFO }
+compaction: { enabled: true, trigger_ratio: 0.8, context_window_tokens: 100, model: null, max_output_tokens: 100, temperature: 0.2 }
+skills: { directory: skills }
+scheduler: { enabled: true, poll_interval_seconds: 2, failure_retry_seconds: 30, max_due_jobs_per_tick: 10 }
+openai:
+  api_key_env: OPENAI_API_KEY
+  model: gpt-5-mini
+  max_output_tokens: 100
+  temperature: 1.0
+  parallel_tool_calls: true
+memory:
+  enabled: true
+  extraction:
+    provider: openai
+    model: gpt-5.4-nano
+    max_output_tokens: 100
+    temperature: 0.1
+  classification:
+    provider: openai
+    model: gpt-5.4-nano
+  query_builder:
+    provider: openai
+    model: gpt-5.4-nano
+"""
+
+
+def test_loader_reads_grouped_memory_operations(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "app.yaml").write_text(
+        _GROUPED_MEMORY_YAML, encoding="utf-8"
+    )
+
+    cfg = load_app_config(tmp_path)
+
+    assert cfg.memory.extraction.provider == "openai"
+    assert cfg.memory.extraction.model == "gpt-5.4-nano"
+    assert cfg.memory.classification.model == "gpt-5.4-nano"
+    assert cfg.memory.query_builder.model == "gpt-5.4-nano"
+
+
+def test_loader_still_reads_legacy_flat_memory_operations(tmp_path: Path) -> None:
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "app.yaml").write_text(
+        _FLAT_MEMORY_YAML, encoding="utf-8"
+    )
+
+    cfg = load_app_config(tmp_path)
+
+    assert cfg.memory.extraction.provider == "openai"

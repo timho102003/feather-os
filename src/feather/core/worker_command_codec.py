@@ -13,6 +13,10 @@ parses each line and dispatches the typed command:
   :meth:`BaseAgent._drain_user_input_queue` machinery picks it up
   between iterations without restarting the run.
 * :class:`ShutdownCommand` — request a graceful shutdown.
+* :class:`ConfigReloadCommand` — instruct the worker to reload the on-disk
+  config and, when ``reload_class`` is ``"next_turn"``, also rebuild any
+  cached agents.  The worker acknowledges via a ``_config_reload_ack``
+  control event on stdout (see :mod:`feather.core.runtime_event_codec`).
 
 Decoding is strict: malformed input raises :class:`CommandCodecError`
 so the worker can log + skip rather than misinterpret a partial line.
@@ -59,14 +63,42 @@ class ShutdownCommand:
     """Request a graceful worker shutdown (drains, writes final heartbeat)."""
 
 
+@dataclass(slots=True, frozen=True)
+class ConfigReloadCommand:
+    """Instruct the worker to reload config from disk and optionally rebuild agents.
+
+    Attributes:
+        correlation_id: Opaque string echoed back in the ``_config_reload_ack``
+            control event so the supervisor can match the response to the
+            originating call.
+        changed_paths: Dotted config paths that were written to disk
+            (e.g. ``["app.active_provider", "app.openai.model"]``).
+        reload_class: ``"live"`` triggers a config file re-read only;
+            ``"next_turn"`` additionally rebuilds cached agents.
+    """
+
+    correlation_id: str
+    changed_paths: list[str]
+    reload_class: str  # "live" or "next_turn"
+
+
 WorkerCommand = (
-    RunCommand | ResumeOnInboxCommand | EnqueueUserInputCommand | ShutdownCommand
+    RunCommand
+    | ResumeOnInboxCommand
+    | EnqueueUserInputCommand
+    | ShutdownCommand
+    | ConfigReloadCommand
 )
 
 _RUN = "run"
 _RESUME = "resume_on_inbox"
 _ENQUEUE = "enqueue_user_input"
 _SHUTDOWN = "shutdown"
+_RELOAD_CONFIG = "reload_config"
+
+# Control-event kind emitted by the worker as the ack for ConfigReloadCommand.
+# Defined here (close to the command) so both sides import from one place.
+CONFIG_RELOAD_ACK_KIND = "_config_reload_ack"
 
 
 def encode_command(command: WorkerCommand) -> str:
@@ -90,6 +122,17 @@ def encode_command(command: WorkerCommand) -> str:
             }
         case ShutdownCommand():
             payload = {"cmd": _SHUTDOWN}
+        case ConfigReloadCommand(
+            correlation_id=correlation_id,
+            changed_paths=changed_paths,
+            reload_class=reload_class,
+        ):
+            payload = {
+                "cmd": _RELOAD_CONFIG,
+                "correlation_id": correlation_id,
+                "changed_paths": list(changed_paths),
+                "reload_class": reload_class,
+            }
         case _:
             raise CommandCodecError(
                 f"unknown command type: {type(command).__name__}"
@@ -103,6 +146,15 @@ def _require_str(raw: dict[str, Any], key: str, *, cmd: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str):
         raise CommandCodecError(f"{cmd!r} requires string {key}")
+    return value
+
+
+def _require_str_list(raw: dict[str, Any], key: str, *, cmd: str) -> list[str]:
+    """Return ``raw[key]`` as a list of strings, else raise ``CommandCodecError``."""
+
+    value = raw.get(key)
+    if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+        raise CommandCodecError(f"{cmd!r} requires list[str] {key}")
     return value
 
 
@@ -143,4 +195,10 @@ def decode_command(line: str) -> WorkerCommand:
         )
     if cmd == _SHUTDOWN:
         return ShutdownCommand()
+    if cmd == _RELOAD_CONFIG:
+        return ConfigReloadCommand(
+            correlation_id=_require_str(raw, "correlation_id", cmd=cmd),
+            changed_paths=_require_str_list(raw, "changed_paths", cmd=cmd),
+            reload_class=_require_str(raw, "reload_class", cmd=cmd),
+        )
     raise CommandCodecError(f"unknown 'cmd' value: {cmd!r}")

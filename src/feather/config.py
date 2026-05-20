@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+_FLAT_MEMORY_OPS_WARNED = False
+
 import yaml
 
 from feather.memory.config import (
@@ -452,14 +454,35 @@ def _parse_memory_config(raw: dict[str, Any]) -> MemoryConfig:
             trigger_raw.get("max_concurrent_extractions_per_session", 1)
         ),
     )
+    operations_raw = raw.get("operations") or {}
+    extraction_raw = operations_raw.get("extraction") or raw.get("extraction") or {}
+    classification_raw = (
+        operations_raw.get("classification") or raw.get("classification") or {}
+    )
+    query_builder_raw = (
+        operations_raw.get("query_builder") or raw.get("query_builder") or {}
+    )
+    global _FLAT_MEMORY_OPS_WARNED
+    if not operations_raw and any(
+        raw.get(k) for k in ("extraction", "classification", "query_builder")
+    ):
+        if not _FLAT_MEMORY_OPS_WARNED:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "memory.{extraction,classification,query_builder} flat shape is "
+                "deprecated; move under memory.operations.{...} (loader still "
+                "accepts both for now)."
+            )
+            _FLAT_MEMORY_OPS_WARNED = True
     extraction = _parse_operation_model(
-        raw.get("extraction") or {}, default_max=2000, default_temp=0.1
+        extraction_raw, default_max=2000, default_temp=0.1
     )
     classification = _parse_operation_model(
-        raw.get("classification") or {}, default_max=2000, default_temp=0.1
+        classification_raw, default_max=2000, default_temp=0.1
     )
     query_builder = _parse_operation_model(
-        raw.get("query_builder") or {}, default_max=2000, default_temp=0.1
+        query_builder_raw, default_max=2000, default_temp=0.1
     )
     return MemoryConfig(
         enabled=bool(raw.get("enabled", False)),
@@ -543,6 +566,8 @@ def load_agent_config(
             effort=reasoning_raw.get("effort"),
             summary=reasoning_raw.get("summary"),
         )
+    temperature_raw = raw.get("temperature")
+    max_output_tokens_raw = raw.get("max_output_tokens")
     return AgentConfig(
         name=raw["name"],
         role=raw["role"],
@@ -554,6 +579,10 @@ def load_agent_config(
         inline_prompt=str(raw.get("inline_prompt") or "").strip(),
         provider=(str(provider_raw).strip().lower() if provider_raw else None),
         model=raw.get("model") or None,
+        temperature=(float(temperature_raw) if temperature_raw is not None else None),
+        max_output_tokens=(
+            int(max_output_tokens_raw) if max_output_tokens_raw is not None else None
+        ),
         reasoning=reasoning_cfg,
     )
 
@@ -566,19 +595,33 @@ def _resolve_agent_yaml(
 ) -> dict[str, Any]:
     """Find an agent YAML across project, global, and packaged sources.
 
-    Returns the parsed mapping from the first source that has it. Order
-    intentionally matches :func:`load_agent_config`'s docstring.
+    Resolution order:
+
+    1. Project-staged ``<root>/config/agents/<name>.yaml`` if present —
+       returned as the **full replacement** (team-shared explicit config,
+       same semantics as ``<root>/config/app.yaml``).
+    2. Otherwise, start from the packaged default and **deep-merge** any
+       ``<global>/config/agents/<name>.yaml`` overlay on top. This lets
+       ``/config set agents.Lead.provider openai`` write a sparse global
+       file with just one key and still load correctly — without the
+       deep-merge, the partial overlay would shadow the packaged default
+       entirely and fail validation for missing required fields like
+       ``prompt_modules``.
     """
 
     project_path = root / "config" / "agents" / f"{agent_name}.yaml"
     if project_path.exists():
         return _read_yaml(project_path)
+    base: dict[str, Any] = {}
+    if has_packaged_agent(agent_name):
+        base = yaml.safe_load(packaged_agent_yaml_text(agent_name)) or {}
     if paths is not None:
         global_path = paths.global_agents_dir / f"{agent_name}.yaml"
         if global_path.exists():
-            return _read_yaml(global_path)
-    if has_packaged_agent(agent_name):
-        return yaml.safe_load(packaged_agent_yaml_text(agent_name)) or {}
+            overlay = _read_yaml(global_path)
+            base = _deep_merge(base, overlay)
+    if base:
+        return base
     raise FileNotFoundError(
         f"Agent config '{agent_name}' not found in project ({project_path}), "
         "global, or packaged sources"

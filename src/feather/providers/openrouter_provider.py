@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import random
+import re
 import time
 from typing import Any, Iterable
 
@@ -51,6 +52,7 @@ from feather.models import (
 )
 from feather.providers.base import BaseLLMProvider
 from feather.providers.openrouter_translator import (
+    reconstruct_tool_calls,
     translate_request,
     translate_response,
 )
@@ -165,6 +167,31 @@ def parse_sse_events(raw: bytes) -> Iterable[dict[str, Any]]:
 
 _RETRYABLE_STATUS: frozenset[int] = frozenset({408, 429, 500, 502, 503, 504})
 _RESTRICTIVE_PROVIDER_KEYS: tuple[str, ...] = ("zdr", "quantizations", "only")
+
+#: OpenRouter resolves rolling model aliases (e.g. ``deepseek/deepseek-v4-pro``)
+#: to dated snapshots (``deepseek/deepseek-v4-pro-20260423``) in the response's
+#: ``model`` field. We don't want to fire the ``model_substituted`` warning
+#: for this benign aliasing — only for actual fallback re-routing where the
+#: family changes (qwen ← deepseek, etc.). Match an 8-digit ``YYYYMMDD``
+#: suffix or a ``-YYYY-MM-DD`` form, optionally followed by a small qualifier
+#: like ``-preview`` / ``-experimental``.
+_DATED_SNAPSHOT_RE = re.compile(
+    r"-(\d{8}|\d{4}-\d{2}-\d{2})(-[a-z0-9]+)?$"
+)
+
+
+def _is_dated_snapshot_of(requested: str, resolved: str) -> bool:
+    """Return ``True`` iff ``resolved`` is ``requested`` plus a date suffix.
+
+    Used to suppress the ``model_substituted`` warning when OpenRouter
+    pins a rolling alias to a dated snapshot — that's expected aliasing,
+    not silent re-routing to a different model family.
+    """
+
+    if not resolved.startswith(requested):
+        return False
+    tail = resolved[len(requested):]
+    return bool(_DATED_SNAPSHOT_RE.fullmatch(tail))
 _MAX_RATE_LIMIT_RESET_SLEEP: float = 60.0
 
 
@@ -182,6 +209,29 @@ class _PreStreamRetryable(Exception):
         self.status = status
         self.rate_limit_reset = rate_limit_reset
         self.inner = inner
+
+
+#: Mid-stream injected error codes documented as transient by OpenRouter.
+#: See https://openrouter.ai/docs/api/reference/errors-and-debugging — the
+#: 502 ``provider_unavailable`` (and friends 503/504/524) class is delivered
+#: as an SSE event with an ``error`` object and is recommended to be handled
+#: with exponential backoff retry. We extend our pre-stream retry policy to
+#: cover this mid-stream variant when, and only when, no observable output
+#: has been committed yet (otherwise retrying would duplicate streamed
+#: content or tool calls).
+_MID_STREAM_RETRYABLE_STATUS: frozenset[int] = frozenset({502, 503, 504, 524})
+
+
+class _MidStreamRetryable(Exception):
+    """Internal signal: OpenRouter injected a transient error into the SSE
+    stream BEFORE any output_text or tool_call deltas were committed. Caught
+    by :meth:`OpenRouterChatProvider._stream_one_turn` to retry the whole
+    turn from scratch (idempotent because no caller-visible state was emitted)."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(f"mid-stream {status}: {message[:200]}")
+        self.status = status
+        self.message = message
 
 
 def _retry_sleep_seconds_from_headers(
@@ -400,17 +450,79 @@ class OpenRouterChatProvider(BaseLLMProvider):
         body: dict[str, Any],
         event_handler: EventHandler | None,
     ) -> ModelTurn:
-        """Open the stream (with pre-stream retries), parse SSE events, return a turn.
+        """Open the stream, retry the documented retryable classes, and
+        optionally fall back to ``fallback_models[0]`` when the primary
+        model exhausts its retry budget on idle / wall-clock timeout.
 
-        Pre-stream retries: on ``408 / 429 / 500 / 502 / 503 / 504`` we
-        close the stream and re-issue, honoring ``X-RateLimit-Reset``
-        (bounded) on 429. 503 widens restrictive routing knobs once before
-        the next attempt. ``402`` surfaces as :class:`OpenRouterCreditsExhausted`
-        with no retry; ``400 / 401 / 403`` surface as raw
-        :class:`httpx.HTTPStatusError` with no retry. Once the first byte
-        of the 200 stream is emitted, this method commits and never
-        retries that stream — mid-stream errors raise :class:`OpenRouterStreamError`.
+        Per-model retry policy:
+
+        - Pre-stream ``408/429/500/502/503/504``: retried with
+          ``X-RateLimit-Reset``-aware backoff (bounded). 503 widens
+          restrictive routing knobs once before the next attempt. ``402``
+          surfaces as :class:`OpenRouterCreditsExhausted` (never retried);
+          ``400 / 401 / 403`` raise raw :class:`httpx.HTTPStatusError` (never
+          retried).
+        - Mid-stream injected error with ``code`` in ``502/503/504/524``
+          AND no observable output yet: retried (idempotent because clean
+          state).
+        - Idle / wall-clock timeout while waiting for a chunk: retried.
+          The stream produced nothing observable (otherwise we'd have
+          received bytes), so retry is idempotent.
+
+        Cross-model fallback:
+
+        - When the per-model retry loop exhausts on an idle or wall-clock
+          timeout AND ``fallback_models`` is configured, swap to
+          ``fallback_models[0]``, drop the OpenRouter ``models`` array
+          (so OpenRouter doesn't route the fallback BACK through the
+          primary), and try one more full attempt budget. This handles
+          the case where one upstream is stuck but a different model can
+          serve the same turn — typical with DeepSeek-V4-Pro / reasoning
+          models that occasionally hang.
+        - Pre-stream and mid-stream-error exhaustion do NOT trigger
+          model fallback: those failure modes are usually OpenRouter-
+          gateway-side, so swapping the model rarely helps.
         """
+
+        primary_model = body.get("model")
+        fallback_models = list(
+            getattr(self._cfg, "fallback_models", ()) or ()
+        )
+        fallback_model = fallback_models[0] if fallback_models else None
+
+        try:
+            return await self._stream_attempts(
+                body=body, event_handler=event_handler
+            )
+        except (
+            OpenRouterStreamIdleTimeoutError,
+            OpenRouterStreamWallClockError,
+        ) as primary_exc:
+            if fallback_model is None or fallback_model == primary_model:
+                raise
+            logger.warning(
+                "openrouter.timeout.fallback_to_model primary=%s using=%s "
+                "reason=%s",
+                primary_model,
+                fallback_model,
+                type(primary_exc).__name__,
+            )
+            fallback_body = dict(body)
+            fallback_body["model"] = fallback_model
+            # Drop OpenRouter's routing-layer fallback list so it doesn't
+            # route us back through whatever stalled the primary.
+            fallback_body.pop("models", None)
+            return await self._stream_attempts(
+                body=fallback_body, event_handler=event_handler
+            )
+
+    async def _stream_attempts(
+        self,
+        *,
+        body: dict[str, Any],
+        event_handler: EventHandler | None,
+    ) -> ModelTurn:
+        """Per-model attempt loop. See :meth:`_stream_one_turn` for policy."""
 
         max_attempts = max(1, int(self._cfg.max_attempts))
         widen_attempted = False
@@ -443,6 +555,47 @@ class OpenRouterChatProvider(BaseLLMProvider):
                         exc.status, attempt, 0.25, exc.rate_limit_reset
                     )
                 )
+            except _MidStreamRetryable as exc:
+                if attempt == max_attempts - 1:
+                    # Convert to terminal so the caller sees a stable
+                    # exception type — same as the pre-stream branch.
+                    raise OpenRouterStreamError(
+                        f"openrouter mid-stream {exc.status} after "
+                        f"{max_attempts} attempts: {exc.message[:400]}"
+                    )
+                logger.warning(
+                    "openrouter.midstream.retry status=%s attempt=%s "
+                    "model=%s message=%s",
+                    exc.status,
+                    attempt,
+                    active_body.get("model"),
+                    exc.message[:200],
+                )
+                await asyncio.sleep(
+                    _retry_sleep_seconds_from_headers(
+                        exc.status, attempt, 0.5, None
+                    )
+                )
+            except (
+                OpenRouterStreamIdleTimeoutError,
+                OpenRouterStreamWallClockError,
+            ) as exc:
+                # Idle / wall-clock timeout fires only when the stream
+                # produced no output (otherwise we'd have received bytes,
+                # which would reset the timer). State is therefore clean
+                # and the retry is idempotent.
+                if attempt == max_attempts - 1:
+                    raise
+                logger.warning(
+                    "openrouter.timeout.retry kind=%s attempt=%s model=%s",
+                    type(exc).__name__,
+                    attempt,
+                    active_body.get("model"),
+                )
+                # The timeout already burned the configured idle budget
+                # (~120s by default). Use a short backoff so the retry
+                # fires while OpenRouter's connection state is still warm.
+                await asyncio.sleep(min(2.0, 0.5 * (2 ** attempt)))
         # Unreachable: the loop either returns or raises.
         raise RuntimeError("openrouter pre-stream retry loop exited unexpectedly")
 
@@ -509,8 +662,13 @@ class OpenRouterChatProvider(BaseLLMProvider):
                     if event.get("id"):
                         last_chunk_id = event["id"]
                     if event.get("error"):
-                        raise OpenRouterStreamError(
-                            str(event["error"].get("message") or event["error"])
+                        err = event["error"]
+                        message = str(err.get("message") or err)
+                        self._raise_stream_error(
+                            status=err.get("code"),
+                            message=message,
+                            output_text=output_text,
+                            deltas=deltas,
                         )
                     choices = event.get("choices") or []
                     if not choices:
@@ -532,16 +690,106 @@ class OpenRouterChatProvider(BaseLLMProvider):
                         deltas.append(delta)
                     if choice.get("finish_reason") == "error":
                         err = event.get("error") or {}
-                        raise OpenRouterStreamError(
-                            str(err.get("message") or "mid-stream error")
+                        self._raise_stream_error(
+                            status=err.get("code"),
+                            message=str(err.get("message") or "mid-stream error"),
+                            output_text=output_text,
+                            deltas=deltas,
                         )
                     if choice.get("finish_reason") is not None:
                         final_chunk = event
 
         if final_chunk is None:
-            raise OpenRouterStreamError(
-                "openrouter stream ended without a final chunk"
+            # Upstream protocol violation: per DeepSeek's own API spec
+            # (https://api-docs.deepseek.com/api/create-chat-completion)
+            # ``finish_reason`` is REQUIRED on the last chunk before
+            # ``[DONE]``. OpenRouter's docs are silent on the same
+            # guarantee but their SSE format mirrors OpenAI's, which
+            # carries the same requirement. Reasoning models routed
+            # through OpenRouter — DeepSeek-V4-Pro / R1 specifically —
+            # have been observed to send ``[DONE]`` with no preceding
+            # finish_reason chunk after long reasoning sequences (text
+            # output) AND after long tool-call planning sequences (the
+            # 34-tool_call_deltas symptom). Vercel AI SDK and the OpenAI
+            # Python SDK both ship pragmatic tolerance for this; do the
+            # same here, but only when the deltas already form a valid
+            # turn that we can hand back without inventing state.
+            have_streamed_text = bool(output_text)
+            have_tool_calls = any(d.get("tool_calls") for d in deltas)
+            tool_call_delta_count = sum(
+                1 for d in deltas if d.get("tool_calls")
             )
+
+            tool_calls_complete = False
+            if have_tool_calls:
+                # ``reconstruct_tool_calls`` is the deterministic answer to
+                # "are these deltas a valid tool-call set?". A truncated
+                # mid-args stream surfaces as ``{"raw_arguments": <partial>}``;
+                # a stream that dropped the chunk carrying ``function.name``
+                # surfaces as an empty ``name``. Either signal means we MUST
+                # raise rather than commit a half-built call. Anything else
+                # is bit-for-bit equivalent to a stream that DID terminate
+                # cleanly with ``finish_reason="tool_calls"``.
+                reconstructed = reconstruct_tool_calls(deltas)
+                tool_calls_complete = bool(reconstructed) and all(
+                    bool(tc.name) and "raw_arguments" not in tc.arguments
+                    for tc in reconstructed
+                )
+
+            if have_tool_calls and tool_calls_complete:
+                # OpenRouter normalizes the tool-using terminator to
+                # ``tool_calls`` (per their streaming docs), not ``stop``.
+                logger.warning(
+                    "openrouter.stream.no_final_chunk model=%s "
+                    "synthesizing finish_reason=tool_calls after %d tool_call "
+                    "deltas reconstruct to a complete tool-call set "
+                    "(upstream sent [DONE] without a finish_reason chunk — "
+                    "known pattern for DeepSeek reasoning models routed "
+                    "through OpenRouter)",
+                    body.get("model"),
+                    tool_call_delta_count,
+                )
+                final_chunk = {
+                    "id": last_chunk_id,
+                    "model": body.get("model"),
+                    "choices": [
+                        {
+                            "delta": {},
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                }
+            elif have_streamed_text and not have_tool_calls:
+                logger.warning(
+                    "openrouter.stream.no_final_chunk model=%s "
+                    "synthesizing finish_reason=stop after %d output chars "
+                    "(upstream sent [DONE] without a finish_reason chunk — "
+                    "known pattern for DeepSeek reasoning models routed "
+                    "through OpenRouter)",
+                    body.get("model"),
+                    len(output_text),
+                )
+                final_chunk = {
+                    "id": last_chunk_id,
+                    "model": body.get("model"),
+                    "choices": [
+                        {
+                            "delta": {},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                }
+            else:
+                # Empty stream OR truncated tool calls (incomplete name /
+                # mid-args JSON): synthesizing here would either invent a
+                # turn from nothing or commit a half-built tool call.
+                # Surface the real error so the caller can retry.
+                raise OpenRouterStreamError(
+                    "openrouter stream ended without a final chunk "
+                    f"(output_chars={len(output_text)}, "
+                    f"tool_call_deltas={tool_call_delta_count}, "
+                    f"model={body.get('model')})"
+                )
         if last_chunk_id and not final_chunk.get("id"):
             final_chunk = dict(final_chunk)
             final_chunk["id"] = last_chunk_id
@@ -550,13 +798,72 @@ class OpenRouterChatProvider(BaseLLMProvider):
             output_text=output_text,
             deltas=deltas,
         )
+        requested_model = body.get("model")
+        resolved_model = final_chunk.get("model")
         logger.info(
-            "openrouter response id=%s tool_calls=%s output_chars=%s",
+            "openrouter response id=%s model_requested=%s model_resolved=%s "
+            "tool_calls=%s output_chars=%s",
             turn.response_id,
+            requested_model,
+            resolved_model,
             len(turn.tool_calls),
             len(turn.output_text or ""),
         )
+        # OpenRouter silently routes to a fallback in ``models`` (our
+        # ``fallback_models``) when the primary model is unavailable.
+        # Without this warning the substitution is invisible — the
+        # symptom is "I picked model A in /config, but Opik logs and
+        # billing show model B was used", which is exactly the bug
+        # report this log line was added for. Compare against the
+        # configured primary (``self._cfg.model``), not ``body["model"]``,
+        # so an attempt fanned out across fallback chains via
+        # ``models`` still flags a non-primary as a deviation.
+        configured_primary = getattr(self._cfg, "model", None)
+        if (
+            resolved_model
+            and configured_primary
+            and resolved_model != configured_primary
+            and not _is_dated_snapshot_of(configured_primary, resolved_model)
+        ):
+            fallback_list = list(getattr(self._cfg, "fallback_models", ()) or ())
+            logger.warning(
+                "openrouter.model_substituted requested=%s resolved=%s "
+                "fallback_models=%s — your /config selection was overridden "
+                "by OpenRouter's automatic fallback. Either remove the "
+                "primary's slug from app.openrouter.fallback_models or "
+                "verify the primary is actually served by OpenRouter.",
+                configured_primary,
+                resolved_model,
+                fallback_list,
+            )
         return turn
+
+    @staticmethod
+    def _raise_stream_error(
+        *,
+        status: Any,
+        message: str,
+        output_text: str,
+        deltas: list[dict[str, Any]],
+    ) -> None:
+        """Raise the right exception for an in-stream error event.
+
+        OpenRouter's docs document mid-stream injected errors with codes in
+        ``_MID_STREAM_RETRYABLE_STATUS`` (502 ``provider_unavailable`` and
+        friends) as transient, recommending exponential-backoff retry. We
+        extend that policy to streams that have not yet committed observable
+        state — if any ``output_text`` or tool-call delta has been emitted,
+        retrying would duplicate caller-visible side effects, so we surface
+        as terminal :class:`OpenRouterStreamError` instead.
+        """
+
+        code: int | None = status if isinstance(status, int) else None
+        clean_state = not output_text and not any(
+            d.get("tool_calls") for d in deltas
+        )
+        if code in _MID_STREAM_RETRYABLE_STATUS and clean_state:
+            raise _MidStreamRetryable(code, message)
+        raise OpenRouterStreamError(message)
 
     async def _classify_pre_stream_error(self, resp: httpx.Response) -> None:
         """Raise the right exception for a pre-stream non-2xx response.

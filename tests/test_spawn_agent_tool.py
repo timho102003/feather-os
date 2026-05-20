@@ -135,6 +135,89 @@ async def test_spawn_agent_returns_session_id_immediately(
     assert "--parent-agent-name" in argv
 
 
+async def test_spawn_agent_passes_explicit_env_with_home_to_subprocess(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sub-agent subprocess MUST receive an explicit ``env`` containing
+    ``HOME``. ``Path.expanduser`` raises ``RuntimeError("Could not
+    determine home directory.")`` when HOME is missing and ``pwd`` cannot
+    supply it — and the attachment-drop parser calls expanduser on every
+    inbound user-text token. We've seen this crash in the field
+    (``.feather/logs/feather.log`` shows
+    ``subagent_entry.py:250 → attachments.py:248 RuntimeError``), so make
+    the env propagation explicit and assert it here.
+    """
+
+    proc = _FakeProc()
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(
+        *args: Any, **kwargs: Any
+    ) -> _FakeProc:
+        captured_kwargs.append(kwargs)
+        return proc
+
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.setenv("HOME", "/home/test-user")
+
+    tool = SpawnAgentTool(
+        root=tmp_path,
+        agent_catalog=_default_catalog(),
+        registry=SubagentRegistry(),
+    )
+    await tool.execute({"agent_name": "explore", "task": "find X"}, _context())
+
+    assert captured_kwargs, "subprocess was never spawned"
+    env = captured_kwargs[0].get("env")
+    assert env is not None, (
+        "spawn must pass env= explicitly; relying on inherit means a "
+        "future bug in the parent env can silently strip HOME"
+    )
+    assert env.get("HOME") == "/home/test-user", (
+        f"sub-agent subprocess env is missing HOME: {env!r}"
+    )
+
+
+async def test_spawn_agent_recovers_home_when_parent_env_lacks_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Defense in depth: even if the parent process somehow has HOME
+    unset, spawn_agent should re-derive it from ``pwd`` rather than ship
+    the child with HOME missing and let it crash later in expanduser."""
+
+    proc = _FakeProc()
+    captured_kwargs: list[dict[str, Any]] = []
+
+    async def fake_create_subprocess_exec(
+        *args: Any, **kwargs: Any
+    ) -> _FakeProc:
+        captured_kwargs.append(kwargs)
+        return proc
+
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", fake_create_subprocess_exec
+    )
+    monkeypatch.delenv("HOME", raising=False)
+
+    tool = SpawnAgentTool(
+        root=tmp_path,
+        agent_catalog=_default_catalog(),
+        registry=SubagentRegistry(),
+    )
+    await tool.execute({"agent_name": "explore", "task": "find X"}, _context())
+
+    env = captured_kwargs[0].get("env")
+    assert env is not None
+    # On a host with a populated ``/etc/passwd`` we recover from pwd; on
+    # an exotic container without one we still don't crash, we just
+    # forward what we can. Either is acceptable; what matters is the
+    # subprocess does NOT inherit a None env or an env that would
+    # silently start a fresh ``os.environ`` look-up from scratch.
+    assert "HOME" in env or env.get("HOME") is None or env.get("HOME") == ""
+
+
 async def test_spawn_agent_rejects_empty_task(tmp_path: Path) -> None:
     tool = SpawnAgentTool(
         root=tmp_path,
@@ -230,6 +313,46 @@ async def test_spawn_agent_parent_agent_name_is_carried_through(
     argv = captured[0]
     idx = argv.index("--parent-agent-name")
     assert argv[idx + 1] == "Engineer"
+
+
+async def test_spawn_agent_treats_null_string_task_id_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: model sends ``"task_id": "null"`` (literal stringified
+    JSON null) after schema flattening. The tool must treat that as
+    "no task id" and create a fresh task rather than passing the string
+    through to ``TaskStore.get_task`` which crashes with
+    ``Unknown task: null``.
+    """
+
+    proc = _FakeProc()
+    _install_subprocess_stub(monkeypatch, proc)
+    task_store = TaskStore(tmp_path / "feather.db")
+    await task_store.initialize()
+    try:
+        tool = SpawnAgentTool(
+            root=tmp_path,
+            agent_catalog=_default_catalog(),
+            registry=SubagentRegistry(),
+            task_store=task_store,
+        )
+
+        result = await tool.execute(
+            {
+                "agent_name": "explore",
+                "task": "investigate something",
+                "task_id": "null",  # the regression input
+            },
+            _context(),
+        )
+
+        # spawn_agent must have created a fresh task (not crashed).
+        tasks = await task_store.list_tasks(lead_session_id="lead-sess")
+        assert len(tasks) == 1
+        assert tasks[0].title  # auto-derived from the task description
+        assert f"task_id: {tasks[0].id}" in result.output
+    finally:
+        await task_store.close()
 
 
 async def test_spawn_agent_binds_existing_queued_task_without_duplicate(

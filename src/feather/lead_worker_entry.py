@@ -141,6 +141,7 @@ async def _run_async(args: argparse.Namespace) -> int:
                 heartbeat_interval=args.heartbeat_interval,
                 command_source=_stdin_lines(),
                 event_sink=_stdout_event_sink,
+                runtime=runtime,
             )
             _install_sigterm_handler(core.request_shutdown)
             logger.info(

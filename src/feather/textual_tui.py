@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -16,6 +17,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.geometry import Region
+from textual.screen import ModalScreen
 from textual.widgets import RichLog, Static, TextArea
 
 from feather.attachments import parse_attachment_drops, render_attachment_message
@@ -116,6 +118,20 @@ def _should_use_lead_worker(yaml_enabled: bool = False) -> bool:
     if env_choice is not None:
         return env_choice
     return bool(yaml_enabled)
+
+
+#: Braille-dot spinner frames. Cycling these at ~10 fps renders as a smooth
+#: rotating dot pattern in any monospace terminal. Used inline next to the
+#: "<Agent> streaming" label so the user sees the turn is still alive even
+#: when reasoning models pause between text deltas.
+_SPINNER_FRAMES: tuple[str, ...] = (
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+)
+
+#: Tick interval for advancing :data:`_SPINNER_FRAMES`. 100 ms is the upper
+#: bound of "smooth" for terminal animation; faster trips repaint cost on
+#: long conversations without adding perceived motion.
+_SPINNER_INTERVAL_SECONDS: float = 0.1
 
 
 @dataclass(slots=True, frozen=True)
@@ -593,6 +609,41 @@ class FeatherTextualApp(App[None]):
         Binding("ctrl+y", "copy_transcript", "Copy transcript", priority=True, show=False),
     ]
 
+    # Actions disabled while a ModalScreen (e.g. ConfigScreen) is on top —
+    # otherwise the App's priority Enter/Esc bindings preempt the modal's
+    # own bindings and the user can't edit fields or close the modal.
+    _ACTIONS_MUTED_UNDER_MODAL = frozenset(
+        {
+            "submit",
+            "interrupt",
+            "conversation_page_up",
+            "conversation_page_down",
+            "conversation_home",
+            "conversation_end",
+            "work_page_up",
+            "work_page_down",
+            "work_home",
+            "work_end",
+        }
+    )
+
+    def check_action(
+        self, action: str, parameters: tuple[object, ...]
+    ) -> bool | None:
+        """Disable App-level priority bindings while a ModalScreen is active.
+
+        Textual fires App-level priority bindings before the focused screen's
+        bindings, so without this override Enter/Esc inside a modal would hit
+        the composer's submit/interrupt actions instead of the modal's own
+        Enter (edit) / Esc (close) bindings.
+        """
+
+        if action in self._ACTIONS_MUTED_UNDER_MODAL and isinstance(
+            self.screen, ModalScreen
+        ):
+            return False
+        return super().check_action(action, parameters)
+
     def __init__(
         self,
         *,
@@ -621,6 +672,11 @@ class FeatherTextualApp(App[None]):
         self._transcript_blocks: list[str] = []
         self._active_tool: str | None = None
         self._status = "idle"
+        # Animated streaming indicator. Braille dots cycling at 10 fps
+        # render as a smooth spinner in any monospaced terminal. The tick
+        # only triggers a conversation re-render while ``_assistant_parts``
+        # is non-empty, so idle sessions pay nothing.
+        self._spinner_frame: int = 0
         self._stop_event = asyncio.Event()
         self._pending_answer: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
         self._new_run_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -669,6 +725,13 @@ class FeatherTextualApp(App[None]):
 
         self._runtime = await FeatherRuntime.create(self._root)
         self._agent = self._runtime.build_agent("lead")
+        # Re-bind ``self._agent`` whenever the runtime rebuilds the lead
+        # (e.g. after /config saves a NEXT_TURN-class field). Without
+        # this, ``self._agent`` keeps pointing at the pre-save provider
+        # instance and the next turn silently uses the old model.
+        self._runtime.register_agent_rebuilt_listener(
+            self._on_agent_rebuilt
+        )
         self._active_session_id = (
             self._requested_session_id or await self._agent.create_session()
         )
@@ -697,6 +760,12 @@ class FeatherTextualApp(App[None]):
         self._driver_task = asyncio.create_task(self._agent_driver())
         self._watcher_task = asyncio.create_task(self._inbox_watcher())
         self._monitor_task = asyncio.create_task(self._monitor_loop())
+        # Drive the streaming-spinner animation. The tick is cheap when
+        # nothing is streaming (early-out below); during a streaming
+        # window it re-renders the conversation once per frame so the
+        # spinner glyph advances visually even when no new text deltas
+        # are arriving (e.g., the model is mid-reasoning).
+        self.set_interval(_SPINNER_INTERVAL_SECONDS, self._tick_spinner)
 
     async def on_unmount(self) -> None:
         """Stop runtime services and background tasks."""
@@ -740,6 +809,8 @@ class FeatherTextualApp(App[None]):
                 logger.exception("textual_tui.log_triage_bot_stop_failed")
             self._log_triage_bot = None
         if self._supervisor is not None:
+            if self._runtime is not None:
+                self._runtime.detach_supervisor()
             try:
                 await self._supervisor.shutdown()
             except Exception:  # noqa: BLE001
@@ -825,6 +896,7 @@ class FeatherTextualApp(App[None]):
             project_root=self._root,
             agent_name="lead",
         )
+        self._runtime.attach_supervisor(self._supervisor)
         await self._supervisor.start(self._active_session_id)
         # Crash-recovery: a previous TUI session may have been SIGKILLed
         # mid-restart, leaving `restart_requested_at` set on disk. If we
@@ -871,6 +943,22 @@ class FeatherTextualApp(App[None]):
         """Return whichever of supervisor / in-process agent owns ``run``."""
 
         return self._supervisor if self._supervisor is not None else self._agent
+
+    def _on_agent_rebuilt(self, name: str, new_agent: Any) -> None:
+        """Refresh ``self._agent`` after :meth:`FeatherRuntime.rebuild_agent`.
+
+        Wired in :meth:`on_mount` via ``register_agent_rebuilt_listener``.
+        When a worker supervisor owns the run path, the in-process
+        ``self._agent`` is not on the request route — the supervisor
+        handles its own swap via ``request_config_reload`` — so we skip
+        the rebind to avoid masking supervisor-side reload failures.
+        """
+
+        if name != "lead":
+            return
+        if self._supervisor is not None:
+            return
+        self._agent = new_agent
 
     async def _cancel_in_flight_run(self) -> bool:
         """Cancel the agent driver's current run task, if any.
@@ -1143,6 +1231,7 @@ class FeatherTextualApp(App[None]):
             "onboard": self._cmd_onboard,
             "qdrant": self._cmd_qdrant,
             "clear": self._cmd_clear,
+            "config": self._cmd_config,
             "copy": self._cmd_copy,
             "queue": self._cmd_queue,
             "agents": self._cmd_agents,
@@ -1176,6 +1265,7 @@ class FeatherTextualApp(App[None]):
         # multi-line bodies after a slash command do not silently vanish
         # (review fix M1).
         self._slash_handlers_accepts_args: set[str] = {
+            "config",
             "telegram",
             "line",
             "whatsapp",
@@ -1590,6 +1680,80 @@ class FeatherTextualApp(App[None]):
         self._assistant_parts = []
         self._render_conversation()
         self._write_marker("Cleared", "transcript cleared (session history kept)")
+
+    def _cmd_config(self, args: str) -> None:
+        """Dispatch the `/config <sub> [args]` slash command.
+
+        When invoked with no arguments (bare ``/config``), pushes the
+        interactive :class:`~feather.textual_config_screen.ConfigScreen`
+        modal. With subcommands, falls through to the headless dispatcher.
+
+        Args:
+            args: Raw argument string after the ``/config`` token, e.g.
+                ``"get app.active_provider"`` or ``"set app.active_provider claude"``.
+        """
+
+        from feather.config_service import ConfigService
+        from feather.config_slash import handle_config_command
+        from feather.paths import FeatherPaths as _Paths
+
+        assert self._runtime is not None
+        # Get paths defensively — fallback to a fresh FeatherPaths if the TUI
+        # doesn't track them explicitly.
+        paths = getattr(self, "_paths", None) or _Paths(project_root=self._root)
+
+        service = ConfigService(
+            paths=paths,
+            app_config=self._runtime.config,
+        )
+
+        # Bare /config → open the interactive modal (Phase 2).
+        if not args.strip():
+            from feather.textual_config_screen import ConfigScreen
+
+            self.push_screen(ConfigScreen(service=service, runtime=self._runtime))
+            return
+
+        result = handle_config_command(service, args)
+        self._write_marker(
+            "Config",
+            result.body,
+            style="cyan" if result.ok else "red",
+        )
+
+        if result.ok and result.requires_apply:
+            runtime = self._runtime
+
+            async def _apply() -> None:
+                try:
+                    outcome = await runtime.apply_config_change(
+                        list(result.requires_apply or [])
+                    )
+                except Exception as exc:  # noqa: BLE001 - surface apply errors to user
+                    self._write_marker(
+                        "Config apply error",
+                        f"apply error: {type(exc).__name__}: {exc}",
+                        style="red",
+                    )
+                    return
+                msg_parts: list[str] = []
+                if outcome.applied:
+                    msg_parts.append(f"Applied: {', '.join(outcome.applied)}")
+                if outcome.needs_restart_lead:
+                    msg_parts.append(
+                        "Needs /restart-lead: " + ", ".join(outcome.needs_restart_lead)
+                    )
+                if outcome.needs_restart_app:
+                    msg_parts.append(
+                        "Needs full restart: " + ", ".join(outcome.needs_restart_app)
+                    )
+                self._write_marker(
+                    "Config apply",
+                    "\n".join(msg_parts) or "no changes applied",
+                    style="cyan",
+                )
+
+            self._spawn_async_command(_apply())
 
     def _cmd_copy(self, args: str) -> None:
         """Copy the transcript to the terminal clipboard."""
@@ -2288,6 +2452,22 @@ class FeatherTextualApp(App[None]):
         self._transcript_blocks.append(format_transcript_block(title, body))
         self._render_conversation()
 
+    def _tick_spinner(self) -> None:
+        """Advance the streaming spinner frame and re-render if active.
+
+        Cheap when nothing is streaming — the early-out skips the
+        ``_render_conversation`` repaint, so an idle session pays only
+        the cost of one attribute read per 100 ms tick. During an active
+        streaming window the conversation repaints at the spinner cadence
+        so the glyph cycles even when text deltas pause (e.g., the model
+        is mid-reasoning between visible-output chunks).
+        """
+
+        if not self._assistant_parts:
+            return
+        self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
+        self._render_conversation()
+
     def _render_conversation(self) -> None:
         log = self.query_one("#conversation", RichLog)
         log.clear()
@@ -2295,10 +2475,11 @@ class FeatherTextualApp(App[None]):
             self._write_conversation_block(log, block)
         if self._assistant_parts:
             agent_name = self._agent.config.name if self._agent is not None else "Lead"
+            spinner = _SPINNER_FRAMES[self._spinner_frame % len(_SPINNER_FRAMES)]
             self._write_conversation_block(
                 log,
                 _ConversationBlock(
-                    title=f"{agent_name} streaming",
+                    title=f"{spinner} {agent_name} streaming",
                     body="".join(self._assistant_parts),
                     label_style="bold green",
                     body_style="bold white",
@@ -2592,10 +2773,50 @@ def _agent_message_sender(payload: dict[str, Any]) -> str:
 
 
 async def run_textual_tui(root: Path, session_id: str | None) -> None:
-    """Run the Textual TUI app."""
+    """Run the Textual TUI app and force-exit when it returns.
+
+    Why the explicit ``os._exit``: when the user hits Esc during a turn,
+    the active asyncio Task awaiting :func:`asyncio.to_thread` (e.g.,
+    inside ``parallel_client.search``) is cancelled, but the underlying
+    worker thread keeps running the sync HTTP call until it completes.
+    Cancellation cannot be propagated into a running sync function from
+    outside the thread.
+
+    Python 3.12's :func:`asyncio.run` then enters ``Runner.close`` which
+    calls ``loop.shutdown_default_executor(timeout=THREAD_JOIN_TIMEOUT)``.
+    That constant is **300 seconds** — so a user-initiated ``/exit``
+    after Esc'ing a slow tool call can stall for up to five minutes
+    waiting for an orphaned HTTP request that nobody is reading anymore.
+    The user-observed symptom is exactly this: ``KeyboardInterrupt``
+    inside ``Runner.close`` followed by a second ``KeyboardInterrupt``
+    inside ``threading._shutdown`` joining the same orphan thread.
+
+    By the time ``await app.run_async`` returns here, ``on_unmount`` has
+    already completed — every DB store, HTTP client, subagent process,
+    and background task we own has been closed/cancelled. The orphan
+    default-executor threads carry no work we still care about.
+    ``os._exit`` skips the asyncio cleanup AND the atexit thread joins,
+    terminating the process immediately.
+
+    Stdout/stderr/logging are flushed first so no diagnostic output is
+    lost. Map exit codes to standard shell conventions: 0 on clean exit,
+    130 on Ctrl+C, 1 on any other fatal error.
+    """
 
     app = FeatherTextualApp(root=root, session_id=session_id)
-    await app.run_async(mouse=_mouse_enabled())
+    exit_code = 0
+    try:
+        await app.run_async(mouse=_mouse_enabled())
+    except KeyboardInterrupt:
+        exit_code = 130
+    except BaseException:  # noqa: BLE001
+        logger.exception("textual_tui.fatal_error")
+        exit_code = 1
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        logging.shutdown()
+        os._exit(exit_code)
 
 
 def _mouse_enabled() -> bool:
