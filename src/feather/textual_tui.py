@@ -119,6 +119,20 @@ def _should_use_lead_worker(yaml_enabled: bool = False) -> bool:
     return bool(yaml_enabled)
 
 
+#: Braille-dot spinner frames. Cycling these at ~10 fps renders as a smooth
+#: rotating dot pattern in any monospace terminal. Used inline next to the
+#: "<Agent> streaming" label so the user sees the turn is still alive even
+#: when reasoning models pause between text deltas.
+_SPINNER_FRAMES: tuple[str, ...] = (
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+)
+
+#: Tick interval for advancing :data:`_SPINNER_FRAMES`. 100 ms is the upper
+#: bound of "smooth" for terminal animation; faster trips repaint cost on
+#: long conversations without adding perceived motion.
+_SPINNER_INTERVAL_SECONDS: float = 0.1
+
+
 @dataclass(slots=True, frozen=True)
 class _ConversationBlock:
     """One styled conversation block rendered by the Textual transcript."""
@@ -657,6 +671,11 @@ class FeatherTextualApp(App[None]):
         self._transcript_blocks: list[str] = []
         self._active_tool: str | None = None
         self._status = "idle"
+        # Animated streaming indicator. Braille dots cycling at 10 fps
+        # render as a smooth spinner in any monospaced terminal. The tick
+        # only triggers a conversation re-render while ``_assistant_parts``
+        # is non-empty, so idle sessions pay nothing.
+        self._spinner_frame: int = 0
         self._stop_event = asyncio.Event()
         self._pending_answer: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
         self._new_run_queue: asyncio.Queue[str] = asyncio.Queue()
@@ -740,6 +759,12 @@ class FeatherTextualApp(App[None]):
         self._driver_task = asyncio.create_task(self._agent_driver())
         self._watcher_task = asyncio.create_task(self._inbox_watcher())
         self._monitor_task = asyncio.create_task(self._monitor_loop())
+        # Drive the streaming-spinner animation. The tick is cheap when
+        # nothing is streaming (early-out below); during a streaming
+        # window it re-renders the conversation once per frame so the
+        # spinner glyph advances visually even when no new text deltas
+        # are arriving (e.g., the model is mid-reasoning).
+        self.set_interval(_SPINNER_INTERVAL_SECONDS, self._tick_spinner)
 
     async def on_unmount(self) -> None:
         """Stop runtime services and background tasks."""
@@ -2426,6 +2451,22 @@ class FeatherTextualApp(App[None]):
         self._transcript_blocks.append(format_transcript_block(title, body))
         self._render_conversation()
 
+    def _tick_spinner(self) -> None:
+        """Advance the streaming spinner frame and re-render if active.
+
+        Cheap when nothing is streaming — the early-out skips the
+        ``_render_conversation`` repaint, so an idle session pays only
+        the cost of one attribute read per 100 ms tick. During an active
+        streaming window the conversation repaints at the spinner cadence
+        so the glyph cycles even when text deltas pause (e.g., the model
+        is mid-reasoning between visible-output chunks).
+        """
+
+        if not self._assistant_parts:
+            return
+        self._spinner_frame = (self._spinner_frame + 1) % len(_SPINNER_FRAMES)
+        self._render_conversation()
+
     def _render_conversation(self) -> None:
         log = self.query_one("#conversation", RichLog)
         log.clear()
@@ -2433,10 +2474,11 @@ class FeatherTextualApp(App[None]):
             self._write_conversation_block(log, block)
         if self._assistant_parts:
             agent_name = self._agent.config.name if self._agent is not None else "Lead"
+            spinner = _SPINNER_FRAMES[self._spinner_frame % len(_SPINNER_FRAMES)]
             self._write_conversation_block(
                 log,
                 _ConversationBlock(
-                    title=f"{agent_name} streaming",
+                    title=f"{spinner} {agent_name} streaming",
                     body="".join(self._assistant_parts),
                     label_style="bold green",
                     body_style="bold white",

@@ -254,6 +254,58 @@ def test_finishing_streamed_turn_clears_stream_before_final_write(monkeypatch) -
     assert recorded == [("Lead", "hello world")]
 
 
+def test_tick_spinner_skips_render_when_nothing_is_streaming(monkeypatch) -> None:
+    """An idle session must pay almost nothing for the 10 fps spinner timer:
+    no conversation repaint, no frame advance. Only the early-out check
+    runs."""
+
+    app = FeatherTextualApp(root=Path("."), session_id="s1")
+    rendered = 0
+
+    def render() -> None:
+        nonlocal rendered
+        rendered += 1
+
+    monkeypatch.setattr(app, "_render_conversation", render)
+    assert app._assistant_parts == []
+    starting_frame = app._spinner_frame
+
+    app._tick_spinner()
+    app._tick_spinner()
+    app._tick_spinner()
+
+    assert rendered == 0
+    assert app._spinner_frame == starting_frame
+
+
+def test_tick_spinner_advances_frame_and_renders_when_streaming(monkeypatch) -> None:
+    """When ``_assistant_parts`` has content the tick must advance the
+    frame counter AND repaint the conversation so the spinner glyph
+    cycles even while text deltas are paused (model mid-reasoning)."""
+
+    from feather.textual_tui import _SPINNER_FRAMES
+
+    app = FeatherTextualApp(root=Path("."), session_id="s1")
+    rendered = 0
+
+    def render() -> None:
+        nonlocal rendered
+        rendered += 1
+
+    monkeypatch.setattr(app, "_render_conversation", render)
+    app._assistant_parts = ["streaming text"]
+    app._spinner_frame = 0
+
+    for _ in range(len(_SPINNER_FRAMES) + 2):
+        app._tick_spinner()
+
+    # Every tick repainted exactly once.
+    assert rendered == len(_SPINNER_FRAMES) + 2
+    # The frame counter cycles modulo the frame set; after N+2 ticks
+    # starting from 0 we land on (N+2) % N == 2.
+    assert app._spinner_frame == 2
+
+
 def test_write_conversation_updates_render_state(monkeypatch) -> None:
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     rendered = 0
