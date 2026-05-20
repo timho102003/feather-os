@@ -457,11 +457,28 @@ def _task_title(task_text: str) -> str:
     return first or "Sub-agent task"
 
 
+_NULLISH_LITERALS: frozenset[str] = frozenset({"null", "none"})
+
+
 def _optional_str(value: object) -> str | None:
+    """Normalize an optional string field from tool arguments.
+
+    See ``feather.tools.task_tools._optional_str`` for the full rationale
+    — keep these two helpers in sync. The short version: models sometimes
+    send the literal string ``"null"`` for absent optional IDs after the
+    OpenRouter translator flattens nullable union types, and that string
+    must coerce to ``None`` here or it reaches the task store as an ID
+    lookup and crashes.
+    """
+
     if not isinstance(value, str):
         return None
-    value = value.strip()
-    return value or None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.lower() in _NULLISH_LITERALS:
+        return None
+    return stripped
 
 
 async def _drain_stream(

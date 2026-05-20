@@ -963,11 +963,30 @@ def _require_str(arguments: dict[str, Any], key: str) -> str:
     return value.strip()
 
 
+_NULLISH_LITERALS: frozenset[str] = frozenset({"null", "none"})
+
+
 def _optional_str(value: object) -> str | None:
+    """Normalize an optional string field from tool arguments.
+
+    Returns ``None`` for actual ``None``, non-strings, empty/whitespace-only
+    strings, AND the literal JSON/Python null spellings ``"null"`` /
+    ``"None"`` (case-insensitive). Models occasionally stringify "no value"
+    as the literal word ``"null"`` after the openrouter_translator flattens
+    ``["string", "null"]`` schemas to plain ``"string"`` for cross-provider
+    compatibility — without this normalization the value reaches the task
+    store as a real ID and lookups fail with ``Unknown plan: null`` /
+    ``Unknown task: null`` (observed in user runtime).
+    """
+
     if not isinstance(value, str):
         return None
-    value = value.strip()
-    return value or None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    if stripped.lower() in _NULLISH_LITERALS:
+        return None
+    return stripped
 
 
 def _is_lead(context: ToolExecutionContext) -> bool:

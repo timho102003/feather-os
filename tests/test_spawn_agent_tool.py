@@ -315,6 +315,46 @@ async def test_spawn_agent_parent_agent_name_is_carried_through(
     assert argv[idx + 1] == "Engineer"
 
 
+async def test_spawn_agent_treats_null_string_task_id_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: model sends ``"task_id": "null"`` (literal stringified
+    JSON null) after schema flattening. The tool must treat that as
+    "no task id" and create a fresh task rather than passing the string
+    through to ``TaskStore.get_task`` which crashes with
+    ``Unknown task: null``.
+    """
+
+    proc = _FakeProc()
+    _install_subprocess_stub(monkeypatch, proc)
+    task_store = TaskStore(tmp_path / "feather.db")
+    await task_store.initialize()
+    try:
+        tool = SpawnAgentTool(
+            root=tmp_path,
+            agent_catalog=_default_catalog(),
+            registry=SubagentRegistry(),
+            task_store=task_store,
+        )
+
+        result = await tool.execute(
+            {
+                "agent_name": "explore",
+                "task": "investigate something",
+                "task_id": "null",  # the regression input
+            },
+            _context(),
+        )
+
+        # spawn_agent must have created a fresh task (not crashed).
+        tasks = await task_store.list_tasks(lead_session_id="lead-sess")
+        assert len(tasks) == 1
+        assert tasks[0].title  # auto-derived from the task description
+        assert f"task_id: {tasks[0].id}" in result.output
+    finally:
+        await task_store.close()
+
+
 async def test_spawn_agent_binds_existing_queued_task_without_duplicate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
