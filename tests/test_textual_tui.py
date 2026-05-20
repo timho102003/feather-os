@@ -20,6 +20,7 @@ from feather.textual_tui import (
     is_exit_command,
     normalize_pasted_attachment_text,
     region_contains_point,
+    run_textual_tui,
     summarize_agent_message_update,
     summarize_user_input_for_display,
     _mouse_enabled,
@@ -444,3 +445,149 @@ def test_app_unrelated_actions_not_muted_under_modal(monkeypatch) -> None:
 
     # copy_selection_or_transcript is not in the mute set
     assert app.check_action("copy_selection_or_transcript", ()) is not False
+
+
+# -------------------- run_textual_tui force-exit shutdown --------------------
+
+
+def _patch_run_textual_tui_lifecycle(
+    monkeypatch,
+    *,
+    run_async_impl,
+) -> dict:
+    """Common scaffolding for run_textual_tui tests.
+
+    Replaces ``FeatherTextualApp.run_async`` with ``run_async_impl``,
+    captures ``os._exit`` / ``logging.shutdown`` / stdio-flush calls
+    instead of actually performing them so the test process survives.
+    Returns the captured-state dict.
+    """
+
+    import logging as _logging
+    import sys as _sys
+
+    from feather import textual_tui as _tt
+
+    captured: dict = {
+        "exit_code": None,
+        "logging_shutdown_called": 0,
+        "stdout_flushed": 0,
+        "stderr_flushed": 0,
+        "mouse": None,
+    }
+
+    async def _fake_run_async(self, *, mouse: bool) -> None:
+        captured["mouse"] = mouse
+        await run_async_impl(self)
+
+    monkeypatch.setattr(FeatherTextualApp, "run_async", _fake_run_async)
+
+    def _fake_exit(code: int) -> None:
+        captured["exit_code"] = code
+
+    monkeypatch.setattr(_tt.os, "_exit", _fake_exit)
+
+    def _fake_logging_shutdown() -> None:
+        captured["logging_shutdown_called"] += 1
+
+    monkeypatch.setattr(_tt.logging, "shutdown", _fake_logging_shutdown)
+
+    original_stdout_flush = _sys.stdout.flush
+    original_stderr_flush = _sys.stderr.flush
+
+    def _stdout_flush() -> None:
+        captured["stdout_flushed"] += 1
+        original_stdout_flush()
+
+    def _stderr_flush() -> None:
+        captured["stderr_flushed"] += 1
+        original_stderr_flush()
+
+    monkeypatch.setattr(_sys.stdout, "flush", _stdout_flush)
+    monkeypatch.setattr(_sys.stderr, "flush", _stderr_flush)
+
+    return captured
+
+
+def test_run_textual_tui_force_exits_zero_on_clean_app_exit(monkeypatch) -> None:
+    """On a normal /exit (app.run_async returns cleanly), the wrapper must
+    force-exit with code 0. This bypasses asyncio.run's 5-minute wait on
+    orphan default-executor threads that can't be interrupted."""
+
+    import asyncio as _asyncio
+
+    async def _clean(_self):
+        return None
+
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_clean)
+
+    _asyncio.run(run_textual_tui(Path("/tmp"), "sess-1"))
+
+    assert captured["exit_code"] == 0
+    assert captured["mouse"] is True
+    # Stdio + logging flushed before exit so no diagnostic output is lost.
+    assert captured["stdout_flushed"] >= 1
+    assert captured["stderr_flushed"] >= 1
+    assert captured["logging_shutdown_called"] == 1
+
+
+def test_run_textual_tui_force_exits_130_on_keyboard_interrupt(monkeypatch) -> None:
+    """Ctrl+C during the TUI maps to the conventional shell exit code 130."""
+
+    import asyncio as _asyncio
+
+    async def _ctrl_c(_self):
+        raise KeyboardInterrupt
+
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_ctrl_c)
+
+    _asyncio.run(run_textual_tui(Path("/tmp"), None))
+
+    assert captured["exit_code"] == 130
+    # Cleanup still ran — no flushes dropped on the interrupt path.
+    assert captured["logging_shutdown_called"] == 1
+
+
+def test_run_textual_tui_force_exits_1_on_fatal_exception(monkeypatch, caplog) -> None:
+    """Any other unexpected exception inside run_async must (a) be logged
+    so the user can diagnose, (b) force-exit with code 1 — never propagate
+    to asyncio.run's cleanup where it would race the executor-wait hang."""
+
+    import asyncio as _asyncio
+    import logging as _logging
+
+    async def _boom(_self):
+        raise RuntimeError("boom")
+
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_boom)
+
+    with caplog.at_level(_logging.ERROR, logger="feather.textual_tui"):
+        _asyncio.run(run_textual_tui(Path("/tmp"), None))
+
+    assert captured["exit_code"] == 1
+    assert captured["logging_shutdown_called"] == 1
+    # The traceback was captured into the log before we forced-exit.
+    fatal_records = [
+        r for r in caplog.records if "textual_tui.fatal_error" in r.getMessage()
+    ]
+    assert fatal_records
+    # And the exception detail survives in the record.
+    assert any("boom" in (r.exc_text or "") for r in fatal_records)
+
+
+def test_run_textual_tui_passes_mouse_setting_through(monkeypatch) -> None:
+    """Regression guard: the FEATHER_TUI_MOUSE env var must still flow
+    through to app.run_async(mouse=...) after the force-exit wrapper."""
+
+    import asyncio as _asyncio
+
+    async def _clean(_self):
+        return None
+
+    monkeypatch.setenv("FEATHER_TUI_MOUSE", "0")
+    captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_clean)
+
+    _asyncio.run(run_textual_tui(Path("/tmp"), None))
+
+    assert captured["mouse"] is False
+    assert captured["exit_code"] == 0

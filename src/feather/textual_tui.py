@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -2772,10 +2773,50 @@ def _agent_message_sender(payload: dict[str, Any]) -> str:
 
 
 async def run_textual_tui(root: Path, session_id: str | None) -> None:
-    """Run the Textual TUI app."""
+    """Run the Textual TUI app and force-exit when it returns.
+
+    Why the explicit ``os._exit``: when the user hits Esc during a turn,
+    the active asyncio Task awaiting :func:`asyncio.to_thread` (e.g.,
+    inside ``parallel_client.search``) is cancelled, but the underlying
+    worker thread keeps running the sync HTTP call until it completes.
+    Cancellation cannot be propagated into a running sync function from
+    outside the thread.
+
+    Python 3.12's :func:`asyncio.run` then enters ``Runner.close`` which
+    calls ``loop.shutdown_default_executor(timeout=THREAD_JOIN_TIMEOUT)``.
+    That constant is **300 seconds** — so a user-initiated ``/exit``
+    after Esc'ing a slow tool call can stall for up to five minutes
+    waiting for an orphaned HTTP request that nobody is reading anymore.
+    The user-observed symptom is exactly this: ``KeyboardInterrupt``
+    inside ``Runner.close`` followed by a second ``KeyboardInterrupt``
+    inside ``threading._shutdown`` joining the same orphan thread.
+
+    By the time ``await app.run_async`` returns here, ``on_unmount`` has
+    already completed — every DB store, HTTP client, subagent process,
+    and background task we own has been closed/cancelled. The orphan
+    default-executor threads carry no work we still care about.
+    ``os._exit`` skips the asyncio cleanup AND the atexit thread joins,
+    terminating the process immediately.
+
+    Stdout/stderr/logging are flushed first so no diagnostic output is
+    lost. Map exit codes to standard shell conventions: 0 on clean exit,
+    130 on Ctrl+C, 1 on any other fatal error.
+    """
 
     app = FeatherTextualApp(root=root, session_id=session_id)
-    await app.run_async(mouse=_mouse_enabled())
+    exit_code = 0
+    try:
+        await app.run_async(mouse=_mouse_enabled())
+    except KeyboardInterrupt:
+        exit_code = 130
+    except BaseException:  # noqa: BLE001
+        logger.exception("textual_tui.fatal_error")
+        exit_code = 1
+    finally:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        logging.shutdown()
+        os._exit(exit_code)
 
 
 def _mouse_enabled() -> bool:
