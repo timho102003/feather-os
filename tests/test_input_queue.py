@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-from feather.core.input_queue import UserInputQueue
+from feather.core.session.input_queue import UserInputQueue
 
 
 async def test_enqueue_and_drain_preserves_order() -> None:

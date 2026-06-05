@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import AgentConfig, MCPServerConfig
 from feather.skills.catalog import SkillCatalog
 from feather.tools.ask_user_tool import AskUserTool
@@ -219,3 +219,76 @@ def test_prompt_builder_supports_additional_static_prompt_modules(tmp_path: Path
 
     assert "<additional_static_prompts>" in prompt
     assert '<prompt_module index="3">' in prompt
+
+
+def _basic_builder(tmp_path: Path, agent_catalog=None) -> PromptBuilder:
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    return PromptBuilder(skill_catalog, tool_registry, agent_catalog=agent_catalog)
+
+
+def _agent(role: str, **kw) -> AgentConfig:
+    base = dict(
+        name=role.title(),
+        role=role,
+        personality="Decisive",
+        prompt_modules=["feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT"],
+        registered_tools=["ask_user"],
+    )
+    base.update(kw)
+    return AgentConfig(**base)
+
+
+def test_prompt_builder_injects_soul_when_present(tmp_path: Path) -> None:
+    builder = _basic_builder(tmp_path)
+    cfg = _agent("lead", soul="You are Tim, a pragmatic operator.")
+    prompt = builder.build_sections(cfg, loaded_skill_names=[]).render()
+    assert "<agent_soul>" in prompt
+    assert "pragmatic operator" in prompt
+
+
+def test_prompt_builder_omits_soul_when_absent(tmp_path: Path) -> None:
+    builder = _basic_builder(tmp_path)
+    prompt = builder.build_sections(_agent("lead"), loaded_skill_names=[]).render()
+    assert "<agent_soul>" not in prompt
+
+
+def test_dispatch_catalog_gated_by_spawn_capability(tmp_path: Path) -> None:
+    from feather.core.agent.catalog import AgentCatalogEntry
+
+    class _FakeCatalog:
+        def list_entries(self):
+            return [
+                AgentCatalogEntry(name="lead", role="lead", description="", personality=""),
+                AgentCatalogEntry(
+                    name="explore", role="explore", description="Find code", personality=""
+                ),
+            ]
+
+    builder = _basic_builder(tmp_path, agent_catalog=_FakeCatalog())
+
+    # A lead (can_spawn) sees the dispatchable catalog (and not itself).
+    lead_prompt = builder.build_sections(_agent("lead"), loaded_skill_names=[]).render()
+    assert "<dispatchable_agents>" in lead_prompt
+    assert "`explore`" in lead_prompt
+
+    # A sub-agent (no can_spawn) never gets the catalog.
+    sub_prompt = builder.build_sections(_agent("explore"), loaded_skill_names=[]).render()
+    assert "<dispatchable_agents>" not in sub_prompt
+
+
+def test_dispatch_catalog_follows_capability_override(tmp_path: Path) -> None:
+    """A sub-agent YAML that grants can_spawn DOES get the catalog — the gate
+    is the capability, not the role string."""
+    from feather.core.agent.catalog import AgentCatalogEntry
+
+    class _FakeCatalog:
+        def list_entries(self):
+            return [
+                AgentCatalogEntry(name="explore", role="explore", description="x", personality="")
+            ]
+
+    builder = _basic_builder(tmp_path, agent_catalog=_FakeCatalog())
+    cfg = _agent("explore", capabilities={"can_spawn": True})
+    prompt = builder.build_sections(cfg, loaded_skill_names=[]).render()
+    assert "<dispatchable_agents>" in prompt

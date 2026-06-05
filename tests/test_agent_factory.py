@@ -6,9 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from feather.config import load_app_config
-from feather.core.agent_factory import AgentFactory
-from feather.core.default_agent import DefaultAgent
-from feather.core.lead_agent import LeadAgent
+from feather.core.agent.factory import AgentFactory
+from feather.core.agent.base import BaseAgent
 from feather.models import ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.runtime import FeatherRuntime
@@ -62,7 +61,7 @@ async def test_agent_factory_builds_lead_agent_with_shared_base_services(tmp_pat
         agent = factory.build("lead")
         tool_names = [tool["name"] for tool in agent._tool_registry.openai_tools_for(agent.config.registered_tools)]
 
-        assert isinstance(agent, LeadAgent)
+        assert isinstance(agent, BaseAgent) and agent.capabilities.is_lead
         assert agent.config.name == "Lead"
         assert agent._tool_output_store is tool_output_store
         assert agent._compactor is not None
@@ -368,7 +367,7 @@ async def test_agent_factory_falls_back_to_default_agent_for_unknown_roles(tmp_p
 
         agent = factory.build("worker")
 
-        assert isinstance(agent, DefaultAgent)
+        assert isinstance(agent, BaseAgent)
         assert agent.config.role == "worker"
         assert agent._compactor is not None
     finally:
@@ -390,7 +389,7 @@ async def test_feather_runtime_builds_agents_through_the_factory(tmp_path: Path)
 
     try:
         agent = runtime.build_agent("lead")
-        assert isinstance(agent, LeadAgent)
+        assert isinstance(agent, BaseAgent) and agent.capabilities.is_lead
         assert agent.config.registered_tools == ["grep"]
     finally:
         await runtime.close()
@@ -585,7 +584,7 @@ async def test_agent_factory_registers_user_info_only_for_lead(tmp_path: Path) -
     """``user_info`` must be registered for the lead and skipped for sub-agents."""
 
     from feather.profile import UserProfileStore
-    from feather.core.agent_factory import _LEAD_ONLY_TOOLS
+    from feather.core.agent.factory import _CAPABILITY_GATED_TOOLS
 
     _write_app_config(tmp_path)
     _write_agent_config(
@@ -624,7 +623,7 @@ async def test_agent_factory_registers_user_info_only_for_lead(tmp_path: Path) -
             profile_store=profile_store,
         )
 
-        assert "user_info" in _LEAD_ONLY_TOOLS
+        assert _CAPABILITY_GATED_TOOLS["user_info"] == "can_message_user"
         assert "user_info" in factory._tool_builders
 
         lead = factory.build("lead")

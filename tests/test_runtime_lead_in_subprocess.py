@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from feather.core.input_queue import UserInputQueue
+from feather.core.session.input_queue import UserInputQueue
 from feather.runtime import FeatherRuntime
 
 

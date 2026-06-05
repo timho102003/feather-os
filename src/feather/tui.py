@@ -594,7 +594,7 @@ async def run_tui(root: Path, session_id: str | None) -> None:
     active_session_id: str | None = None
 
     try:
-        agent = runtime.build_agent("lead")
+        agent = runtime.build_agent(runtime.default_lead_name)
         active_session_id = session_id or await agent.create_session()
         printer = TuiEventPrinter(
             console,

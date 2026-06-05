@@ -2,12 +2,12 @@
 
 Feather's log lines previously embedded ``session_id=...`` and
 ``agent=...`` inside the free-form message body — consistent across
-:mod:`feather.core.base_agent` but absent from third-party dependencies
+:mod:`feather.core.agent.base` but absent from third-party dependencies
 (httpx, google-genai, openai) and inconsistent across Feather's own
 modules. This module lifts both identifiers into the log record so they
 can be rendered in a fixed position by the formatter:
 
-    2026-04-22 07:52:18 | INFO | <agent> | <session_id_8> | feather.core.base_agent | ...
+    2026-04-22 07:52:18 | INFO | <agent> | <session_id_8> | feather.core.agent.base | ...
 
 ``current_session_id`` is re-exported from
 :mod:`feather.memory.context` so existing consumers keep working; the

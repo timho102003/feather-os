@@ -15,7 +15,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from feather.core.cron_scheduler import CronScheduler
+from feather.core.scheduling.cron_scheduler import CronScheduler
 from feather.models import AgentMessageStatus, CronScheduleType, SchedulerConfig
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.cron_store import CronJobStore

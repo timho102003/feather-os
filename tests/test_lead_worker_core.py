@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from feather.core.input_queue import UserInputQueue
-from feather.core.lead_worker_core import WorkerCore
-from feather.core.worker_command_codec import (
+from feather.core.session.input_queue import UserInputQueue
+from feather.core.leads.worker_core import WorkerCore
+from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     ConfigReloadCommand,
     EnqueueUserInputCommand,
@@ -326,7 +326,7 @@ async def test_invalid_command_line_is_logged_but_does_not_crash(
 
     import logging as _logging
 
-    caplog.set_level(_logging.WARNING, logger="feather.core.lead_worker_core")
+    caplog.set_level(_logging.WARNING, logger="feather.core.leads.worker_core")
     agent = _FakeAgent()
     store = await _open_heartbeat_store(tmp_path)
     input_queue = UserInputQueue()

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.core.agent_catalog import (
+from feather.core.agent.catalog import (
     AgentCatalog,
     AgentCatalogEntry,
     render_catalog_block,
@@ -66,6 +66,27 @@ def test_agent_catalog_excludes_lead_from_dispatchable(tmp_path: Path) -> None:
     dispatchable = [e.name for e in catalog.list_dispatchable()]
     assert "lead" not in dispatchable
     assert "explore" in dispatchable
+
+
+def test_agent_catalog_list_leads_returns_only_leads(tmp_path: Path) -> None:
+    _write_agent_yaml(tmp_path, "lead", name="Lead", role="lead")
+    _write_agent_yaml(tmp_path, "tim", name="Tim", role="lead")
+    _write_agent_yaml(tmp_path, "explore", name="Explore", role="explore")
+    catalog = AgentCatalog(tmp_path)
+    leads = {e.name for e in catalog.list_leads()}
+    assert leads == {"lead", "tim"}
+    # Multiple leads coexist and are all non-dispatchable as sub-agents.
+    dispatchable = {e.name for e in catalog.list_dispatchable()}
+    assert dispatchable == {"explore"}
+
+
+def test_agent_catalog_entry_is_lead_dispatchable_mirror_role(tmp_path: Path) -> None:
+    _write_agent_yaml(tmp_path, "tim", name="Tim", role="lead")
+    _write_agent_yaml(tmp_path, "explore", name="Explore", role="explore")
+    catalog = AgentCatalog(tmp_path)
+    by_name = {e.name: e for e in catalog.list_entries()}
+    assert by_name["tim"].is_lead and not by_name["tim"].dispatchable
+    assert not by_name["explore"].is_lead and by_name["explore"].dispatchable
 
 
 def test_agent_catalog_skips_broken_yaml_with_warning(

@@ -26,8 +26,8 @@ from typing import Any
 import httpx
 import pytest
 
-from feather.core.base_agent import BaseAgent
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.base import BaseAgent
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import (
     AgentConfig,
     AgentOutcome,

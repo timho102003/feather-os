@@ -9,20 +9,22 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from feather.core.lead_supervisor import LeadSupervisor
+    from feather.core.agent.catalog import AgentCatalog
+    from feather.core.leads.manager import LeadManager
+    from feather.core.leads.supervisor import LeadSupervisor
 
 import httpx
 
 from feather.config import load_app_config
 from feather.config_schema import ReloadClass
 from feather.config_schema import lookup as _lookup_field
-from feather.core.agent_factory import AgentFactory
-from feather.core.base_agent import BaseAgent
-from feather.core.cron_scheduler import CronScheduler
-from feather.core.input_queue import UserInputQueue
-from feather.core.session_run_coordinator import SessionRunCoordinator
-from feather.core.subagent_registry import SubagentRegistry
-from feather.core.subagent_reaper import SubagentReaper
+from feather.core.agent.factory import AgentFactory
+from feather.core.agent.base import BaseAgent
+from feather.core.scheduling.cron_scheduler import CronScheduler
+from feather.core.session.input_queue import UserInputQueue
+from feather.core.session.coordinator import SessionRunCoordinator
+from feather.core.subagents.registry import SubagentRegistry
+from feather.core.subagents.reaper import SubagentReaper
 from feather.env import load_dotenv
 from feather.logging_utils import configure_logging
 from feather.memory.runtime import MemoryStack, build_memory_stack
@@ -46,6 +48,7 @@ from feather.skills.catalog import SkillCatalog
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.attachment_store import AttachmentStore
 from feather.storage.cron_store import CronJobStore
+from feather.storage.lead_session_store import LeadSessionStore
 from feather.storage.session_store import SessionStore
 from feather.storage.task_store import TaskStore
 from feather.storage.tool_output_store import ToolOutputStore
@@ -99,10 +102,14 @@ class FeatherRuntime:
         messaging_service: MessagingService,
         default_provider: BaseLLMProvider,
         app_config: AppConfig,
+        lead_session_store: LeadSessionStore,
+        db_path: Path,
         shutdown_timeout_s: float = 30.0,
     ) -> None:
         self._root = root
+        self._db_path = db_path
         self._session_store = session_store
+        self._lead_session_store = lead_session_store
         self._cron_store = cron_store
         self._agent_factory = agent_factory
         self._skill_catalog = skill_catalog
@@ -121,6 +128,7 @@ class FeatherRuntime:
         self._session_event_handlers: dict[str, EventHandler] = {}
         self._agents: dict[str, BaseAgent] = {}
         self._supervisor: "LeadSupervisor | None" = None
+        self._lead_manager: "LeadManager | None" = None
         # Callbacks fired after :meth:`rebuild_agent` swaps the cached
         # instance. Used by CLI / TUI drivers to refresh their captured
         # agent reference so the next turn sees the new provider/model.
@@ -190,6 +198,8 @@ class FeatherRuntime:
         await agent_message_store.initialize()
         task_store = TaskStore(db_path)
         await task_store.initialize()
+        lead_session_store = LeadSessionStore(db_path)
+        await lead_session_store.initialize()
 
         if provider_factory is not None:
             provider = provider_factory(app_config)
@@ -321,10 +331,54 @@ class FeatherRuntime:
             messaging_service=messaging_service,
             default_provider=provider,
             app_config=app_config,
+            lead_session_store=lead_session_store,
+            db_path=db_path,
             shutdown_timeout_s=app_config.memory.trigger.shutdown_timeout_s,
         )
         runtime._cron_scheduler.set_event_handler_resolver(runtime._resolve_session_event_handler)
         return runtime
+
+    @property
+    def agent_catalog(self) -> "AgentCatalog":
+        """The shared agent catalog (discovers leads + dispatchable sub-agents)."""
+        return self._agent_factory.agent_catalog
+
+    @property
+    def soul_library(self) -> "SoulLibrary":
+        """The layered library of selectable lead personality presets."""
+        return self._agent_factory.soul_library
+
+    @property
+    def default_lead_name(self) -> str:
+        """Name of the lead the TUI/CLI bootstraps by default."""
+        return self._app_config.default_lead
+
+    @property
+    def lead_session_store(self) -> LeadSessionStore:
+        """Durable lead_name → session_id pointer store."""
+        return self._lead_session_store
+
+    def build_lead_supervisor(self, agent_name: str) -> "LeadSupervisor":
+        """Construct a worker supervisor bound to one lead agent.
+
+        Centralizes the construction the TUI previously inlined, so multi-lead
+        callers (and the :class:`LeadManager`) all spawn workers identically.
+        """
+        from feather.core.leads.supervisor import LeadSupervisor
+
+        return LeadSupervisor(
+            db_path=self._db_path,
+            project_root=self._root,
+            agent_name=agent_name,
+        )
+
+    def lead_manager(self, *, worker_mode: bool) -> "LeadManager":
+        """Return the cached :class:`LeadManager` (built on first call)."""
+        if self._lead_manager is None:
+            from feather.core.leads.manager import LeadManager
+
+            self._lead_manager = LeadManager(self, worker_mode=worker_mode)
+        return self._lead_manager
 
     def build_agent(self, agent_name: str) -> BaseAgent:
         """Build a fresh agent and cache it for later :meth:`rebuild_agent` calls.
@@ -427,7 +481,7 @@ class FeatherRuntime:
         return _unsubscribe
 
     def attach_supervisor(self, supervisor: "LeadSupervisor") -> None:
-        """Register a :class:`~feather.core.lead_supervisor.LeadSupervisor`.
+        """Register a :class:`~feather.core.leads.supervisor.LeadSupervisor`.
 
         When a supervisor is attached, :meth:`apply_config_change` fans out
         the reload to the lead worker subprocess in addition to applying it
@@ -620,13 +674,13 @@ class FeatherRuntime:
         Args:
             lead_in_subprocess: When True, the lead agent is running in a
                 separate worker process (see
-                :class:`feather.core.lead_supervisor.LeadSupervisor`).
+                :class:`feather.core.leads.supervisor.LeadSupervisor`).
                 The **messaging router** is NOT started in that mode —
                 its inbound queue is the in-process
                 :class:`UserInputQueue` which the worker can't see. The
                 **cron scheduler** runs in both modes: it now routes
                 through the ``agent_messages`` mailbox (see
-                :mod:`feather.core.cron_scheduler`), which is
+                :mod:`feather.core.scheduling.cron_scheduler`), which is
                 process-shared via SQLite, so the worker's existing
                 ``resume_on_inbox`` path processes the cron-triggered
                 turns naturally with no race on session state. The
@@ -711,9 +765,15 @@ class FeatherRuntime:
             await self._memory_stack.aclose()
         except Exception:  # noqa: BLE001
             logger.exception("memory.shutdown.alternate_providers_close_error")
+        if self._lead_manager is not None:
+            try:
+                await self._lead_manager.shutdown()
+            except Exception:  # noqa: BLE001
+                logger.exception("runtime.shutdown.lead_manager_close_error")
         await self._cron_store.close()
         await self._task_store.close()
         await self._agent_message_store.close()
+        await self._lead_session_store.close()
         await self._session_store.close()
 
     def _resolve_session_event_handler(self, session_id: str) -> EventHandler | None:

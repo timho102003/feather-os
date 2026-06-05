@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from feather.core.subagent_registry import SubagentRegistry
+from feather.core.subagents.registry import SubagentRegistry
 from feather.models import ToolExecutionContext, ToolExecutionResult
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.session_store import SessionStore

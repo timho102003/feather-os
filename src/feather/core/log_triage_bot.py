@@ -1,7 +1,7 @@
 """Supervisor-side bot that surfaces recent ERROR log lines to the lead.
 
 When the lead runs as a worker subprocess (see
-:class:`feather.core.lead_supervisor.LeadSupervisor`), the supervisor
+:class:`feather.core.leads.supervisor.LeadSupervisor`), the supervisor
 process owns the log file. The lead has no in-process access to the
 file's tail; without a bridge, an error inside a tool would scroll past
 in the logs and the lead would stay oblivious. This bot scans the log

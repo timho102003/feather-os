@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import TaskRunStatus, TaskStatus
 from feather.runtime import FeatherRuntime
 from feather.storage.task_store import TaskStore

@@ -7,7 +7,7 @@ and watches the ``worker_heartbeats`` row for staleness so the user
 can be warned when the worker hangs.
 
 The TUI calls into the supervisor through a surface that mirrors
-:class:`feather.core.base_agent.BaseAgent`'s shape — :meth:`run`,
+:class:`feather.core.agent.base.BaseAgent`'s shape — :meth:`run`,
 :meth:`resume_on_inbox`, :meth:`enqueue_user_input`,
 :meth:`has_pending_inbox` — so the existing rendering and input
 plumbing keeps working with a one-line swap from the in-process agent
@@ -44,8 +44,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from feather.core.runtime_event_codec import EventCodecError, decode_event
-from feather.core.worker_command_codec import (
+from feather.core.ipc.event_codec import EventCodecError, decode_event
+from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     ConfigReloadCommand,
     EnqueueUserInputCommand,
@@ -392,7 +392,7 @@ class LeadSupervisor:
     ) -> ConfigReloadAckResult:
         """Send a config-reload request to the worker and await the ack.
 
-        Dispatches a :class:`~feather.core.worker_command_codec.ConfigReloadCommand`
+        Dispatches a :class:`~feather.core.ipc.command_codec.ConfigReloadCommand`
         to the worker subprocess and waits up to ``timeout`` seconds for the
         corresponding ``_config_reload_ack`` control event.
 

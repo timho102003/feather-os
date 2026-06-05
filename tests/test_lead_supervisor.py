@@ -1,4 +1,4 @@
-"""Tests for :class:`feather.core.lead_supervisor.LeadSupervisor`.
+"""Tests for :class:`feather.core.leads.supervisor.LeadSupervisor`.
 
 A fake :class:`WorkerHandle` replaces the real subprocess so the
 supervisor's orchestration is exercised in-memory — no real process,
@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-from feather.core.lead_supervisor import (
+from feather.core.leads.supervisor import (
     ConfigReloadAckResult,
     LeadSupervisor,
     SupervisorError,
     WorkerHandle,
 )
-from feather.core.runtime_event_codec import encode_event
-from feather.core.worker_command_codec import (
+from feather.core.ipc.event_codec import encode_event
+from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     ConfigReloadCommand,
     EnqueueUserInputCommand,
@@ -705,7 +705,7 @@ async def test_request_config_reload_serializes_against_run_lock() -> None:
     the lock is released.
     """
 
-    from feather.core.lead_supervisor import LeadSupervisor
+    from feather.core.leads.supervisor import LeadSupervisor
 
     sup = LeadSupervisor.__new__(LeadSupervisor)
     sup._run_lock = asyncio.Lock()  # noqa: SLF001 — directly mirror the attribute name

@@ -20,7 +20,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from feather.core.agent_catalog import AgentCatalog
+from feather.core.agent.catalog import AgentCatalog
 from feather.providers.base import BaseLLMProvider
 from feather.runtime import FeatherRuntime
 from feather.subagent_protocol import RESULT_BEGIN, RESULT_END

@@ -383,6 +383,9 @@ class AppConfig:
     openrouter: OpenRouterConfig | None = None
     claude: ClaudeConfig | None = None
     self_repair: SelfRepairConfig = field(default_factory=SelfRepairConfig)
+    # Name of the lead agent the TUI/CLI bootstraps by default. Other leads
+    # (additional ``role: lead`` YAMLs) are switchable in the multi-lead UI.
+    default_lead: str = "lead"
 
 
 @dataclass(slots=True)
@@ -422,6 +425,15 @@ class AgentConfig:
     max_output_tokens: int | None = None
     reasoning: ReasoningConfig | None = None
     mcp_servers: tuple[MCPServerConfig, ...] = ()
+    # Lead identity ("soul") + display metadata. All optional so every existing
+    # agent YAML keeps loading unchanged. ``soul`` is longer-form persona prose
+    # injected into the prompt when present (distinct from the one-line
+    # ``personality``); ``color``/``emoji`` are TUI display hints. ``capabilities``
+    # carries per-field overrides consumed by ``CapabilityProfile.from_config``.
+    soul: str = ""
+    color: str | None = None
+    emoji: str | None = None
+    capabilities: dict[str, bool] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -697,10 +709,17 @@ class ToolExecutionResult:
 
 @dataclass(slots=True, frozen=True)
 class ToolExecutionContext:
-    """Runtime context passed to one tool invocation."""
+    """Runtime context passed to one tool invocation.
+
+    ``is_lead`` mirrors the calling agent's ``CapabilityProfile.is_lead`` so
+    tools can scope behavior to a lead vs a sub-agent without hard-coding the
+    literal agent name ``"lead"`` (which breaks once leads carry custom names
+    like ``Tim``/``Sophia``).
+    """
 
     session_id: str
     agent_name: str
+    is_lead: bool = False
 
 
 @dataclass(slots=True)

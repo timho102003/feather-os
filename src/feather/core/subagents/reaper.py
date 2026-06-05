@@ -37,7 +37,7 @@ import asyncio
 import logging
 from typing import Any
 
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import TaskOutputKind, TaskRunStatus, TaskStatus
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.task_store import TaskStore

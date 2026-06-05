@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.core.input_queue import UserInputQueue
+from feather.core.session.input_queue import UserInputQueue
 from feather.messaging.models import (
     IncomingMessage,
     OutgoingMessage,

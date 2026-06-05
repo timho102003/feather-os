@@ -116,13 +116,13 @@ async def test_tool_writes_flag_and_returns_editable_notice(tmp_path: Path) -> N
         session = await store.create_session("lead")
         tool = RequestRestartTool(store, _editable_info())
         result = await tool.execute(
-            {"reason": "patched feather.core.compaction"},
+            {"reason": "patched feather.core.agent.compaction"},
             _ctx(session.id),
         )
         # Flag is set on the session row.
         flag = await store.get_restart_request(session.id)
         assert flag is not None
-        assert flag[1] == "patched feather.core.compaction"
+        assert flag[1] == "patched feather.core.agent.compaction"
         # Response surfaces install mode so the model can warn the user.
         assert "Restart queued" in result.output
         assert "editable" in result.output.lower()

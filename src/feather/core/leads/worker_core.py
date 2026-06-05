@@ -45,9 +45,9 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
 from feather.config_schema import ReloadClass
-from feather.core.input_queue import UserInputQueue
-from feather.core.runtime_event_codec import encode_event
-from feather.core.worker_command_codec import (
+from feather.core.session.input_queue import UserInputQueue
+from feather.core.ipc.event_codec import encode_event
+from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     CommandCodecError,
     ConfigReloadCommand,
@@ -72,7 +72,7 @@ EventSink = Callable[[str], None]
 
 
 class _AgentLike(Protocol):
-    """Subset of :class:`feather.core.base_agent.BaseAgent` the worker uses."""
+    """Subset of :class:`feather.core.agent.base.BaseAgent` the worker uses."""
 
     async def run(  # noqa: D401 — protocol surface
         self,

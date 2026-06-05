@@ -1,6 +1,6 @@
 """Real-subprocess smoke tests for the lead worker entry script.
 
-The orchestration logic in :class:`feather.core.lead_worker_core.WorkerCore`
+The orchestration logic in :class:`feather.core.leads.worker_core.WorkerCore`
 and the supervisor's drain logic are covered by in-memory unit tests.
 This module bounds the script-level "is the entry point even loadable
 under ``python -m``" risk that those unit tests cannot — argparse,

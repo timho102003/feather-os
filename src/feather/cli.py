@@ -199,7 +199,8 @@ async def run_cli(
     active_session_id: str | None = None
 
     try:
-        agent = runtime.build_agent("lead")
+        lead_name = runtime.default_lead_name
+        agent = runtime.build_agent(lead_name)
 
         active_session_id = session_id or await agent.create_session()
         console.print(f"[bold]Feather[/bold] session: {active_session_id}")
@@ -332,7 +333,7 @@ async def run_cli(
                 # talking to the pre-save provider for the rest of the
                 # session.
                 try:
-                    agent = runtime.get_agent("lead")
+                    agent = runtime.get_agent(lead_name)
                 except KeyError:  # pragma: no cover — lead is built at startup
                     pass
 
@@ -549,6 +550,12 @@ def main() -> None:
         "cli",
         help="Use the older streaming Rich CLI instead of the Textual TUI.",
     )
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Run the web/API server (full agent experience over HTTP + WebSocket).",
+    )
+    serve_parser.add_argument("--host", default="127.0.0.1", help="Bind host.")
+    serve_parser.add_argument("--port", type=int, default=8000, help="Bind port.")
 
     from feather.tui import add_tui_subparser
 
@@ -601,6 +608,20 @@ def main() -> None:
             maybe_run_onboarding(cwd, skip=args.skip_onboarding, paths=paths)
         )
         asyncio.run(run_cli(cwd, args.session_id, paths=paths))
+        return
+    if args.command == "serve":
+        try:
+            import uvicorn
+
+            from feather.api.server import create_app
+        except ImportError:
+            print(
+                "The web server needs the optional API extra. Install it with:\n"
+                "  uv pip install 'feather-agent-os[api]'   (or: uv sync --extra api)"
+            )
+            sys.exit(1)
+        app = create_app(cwd, provider_factory=None)
+        uvicorn.run(app, host=args.host, port=args.port)
         return
     # Default + explicit `tui`: launch the Textual TUI.
     from feather.textual_tui import run_textual_tui

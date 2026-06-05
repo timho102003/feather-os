@@ -99,6 +99,11 @@ class FeatherPaths:
         return self.global_config_dir / "agents"
 
     @property
+    def global_souls_dir(self) -> Path:
+        """User-supplied soul presets, layered over the packaged library."""
+        return self.global_config_dir / "souls"
+
+    @property
     def global_skills_dir(self) -> Path:
         return self.global_root / "skills"
 

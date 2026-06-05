@@ -14,10 +14,11 @@ from feather.attachments import (
     render_attachment_message,
     validate_pending_attachments,
 )
-from feather.core.compaction import ContextCompactor
-from feather.core.input_queue import UserInputQueue
-from feather.core.prompt_builder import PromptBuilder
-from feather.core.session_run_coordinator import SessionRunCoordinator
+from feather.core.agent.capabilities import CapabilityProfile
+from feather.core.agent.compaction import ContextCompactor
+from feather.core.session.input_queue import UserInputQueue
+from feather.core.agent.prompt_builder import PromptBuilder
+from feather.core.session.coordinator import SessionRunCoordinator
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.log_context import current_agent_name
 from feather.memory.context import current_session_id
@@ -94,8 +95,14 @@ class BaseAgent(ABC):
         profile_store: UserProfileStore | None = None,
         attachment_store: AttachmentStore | None = None,
         supports_multimodal_attachments: bool = True,
+        capabilities: CapabilityProfile | None = None,
     ) -> None:
         self._agent_config = agent_config
+        # The capability profile is the single source of truth for what this
+        # agent may do (lead = everything; sub-agent = a reduced subset).
+        # Derived from the config when not supplied so direct constructions
+        # (tests, ad-hoc) stay valid.
+        self._capabilities = capabilities or CapabilityProfile.from_config(agent_config)
         self._prompt_builder = prompt_builder
         self._provider = provider
         self._session_store = session_store
@@ -131,6 +138,12 @@ class BaseAgent(ABC):
         """Return the immutable config backing this agent instance."""
 
         return self._agent_config
+
+    @property
+    def capabilities(self) -> CapabilityProfile:
+        """Return this agent's capability profile (lead = all features on)."""
+
+        return self._capabilities
 
     async def create_session(self) -> str:
         """Create a new session for the current agent.
@@ -608,6 +621,7 @@ class BaseAgent(ABC):
                         ToolExecutionContext(
                             session_id=session_id,
                             agent_name=self._agent_config.name,
+                            is_lead=self._capabilities.is_lead,
                         ),
                     )
                 return tool_call, result, None

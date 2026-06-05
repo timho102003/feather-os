@@ -5,7 +5,8 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 
-from feather.core.agent_catalog import AgentCatalog, render_catalog_block
+from feather.core.agent.capabilities import CapabilityProfile
+from feather.core.agent.catalog import AgentCatalog, render_catalog_block
 from feather.models import AgentConfig, MCPServerConfig
 from feather.skills.catalog import SkillCatalog
 from feather.tools.registry import ToolRegistry
@@ -121,6 +122,11 @@ class PromptBuilder:
                 f"<agent_name>{agent_config.name}</agent_name>",
                 f"<agent_role>{agent_config.role}</agent_role>",
                 f"<agent_personality>{agent_config.personality}</agent_personality>",
+                *(
+                    [f"<agent_soul>\n{agent_config.soul.strip()}\n</agent_soul>"]
+                    if agent_config.soul
+                    else []
+                ),
                 "</agent_profile>",
                 "<user_profile>",
                 profile_text,
@@ -171,9 +177,16 @@ class PromptBuilder:
         return PromptSections(cached_prefix=cached_prefix, dynamic_suffix=dynamic_suffix)
 
     def _render_dispatchable_agents(self, agent_config: AgentConfig) -> str:
-        """Render the catalog block for agents that dispatch sub-agents (the lead)."""
+        """Render the catalog block for agents that can spawn sub-agents.
 
-        if self._agent_catalog is None or agent_config.role != "lead":
+        Gated on the ``can_spawn`` capability (the lead by default), so the
+        catalog appears only for agents that actually have the ``spawn_agent``
+        tool — not hard-coded to ``role == "lead"``.
+        """
+
+        if self._agent_catalog is None:
+            return ""
+        if not CapabilityProfile.from_config(agent_config).can_spawn:
             return ""
         return render_catalog_block(self._agent_catalog.list_entries())
 

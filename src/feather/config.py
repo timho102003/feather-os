@@ -261,6 +261,7 @@ def load_app_config(
         active_provider=active_provider,
         openrouter=openrouter_cfg,
         claude=claude_cfg,
+        default_lead=str(raw.get("default_lead") or "lead").strip() or "lead",
     )
 
 
@@ -584,6 +585,13 @@ def load_agent_config(
             int(max_output_tokens_raw) if max_output_tokens_raw is not None else None
         ),
         reasoning=reasoning_cfg,
+        soul=str(raw.get("soul") or "").strip(),
+        color=(str(raw["color"]).strip() if raw.get("color") else None),
+        emoji=(str(raw["emoji"]).strip() if raw.get("emoji") else None),
+        capabilities={
+            str(key): bool(value)
+            for key, value in (raw.get("capabilities") or {}).items()
+        },
     )
 
 

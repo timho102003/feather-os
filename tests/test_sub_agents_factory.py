@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from feather.config import load_app_config
-from feather.core.agent_factory import AgentFactory
-from feather.core.sub_agents import ExploreAgent, ResearchAgent, ValidateAgent
-from feather.core.subagent_registry import SubagentRegistry
+from feather.core.agent.factory import AgentFactory
+from feather.core.agent.base import BaseAgent
+from feather.core.subagents.registry import SubagentRegistry
 from feather.models import ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.skills.catalog import SkillCatalog
@@ -142,7 +142,7 @@ async def test_factory_routes_explore_role_to_explore_agent(tmp_path: Path) -> N
     try:
         agent = factory.build("explore")
         names = [tool["name"] for tool in agent._tool_registry.openai_tools_for(agent.config.registered_tools)]
-        assert isinstance(agent, ExploreAgent)
+        assert isinstance(agent, BaseAgent) and agent.config.role == "explore"
         assert names == [
             "read_file",
             "read_pdf",
@@ -181,7 +181,7 @@ async def test_factory_routes_research_role_to_research_agent(tmp_path: Path) ->
     try:
         agent = factory.build("research")
         names = [tool["name"] for tool in agent._tool_registry.openai_tools_for(agent.config.registered_tools)]
-        assert isinstance(agent, ResearchAgent)
+        assert isinstance(agent, BaseAgent) and agent.config.role == "research"
         assert names == [
             "web_search",
             "web_fetch",
@@ -209,7 +209,7 @@ async def test_factory_routes_validate_role_to_validate_agent(tmp_path: Path) ->
     try:
         agent = factory.build("validate")
         names = [tool["name"] for tool in agent._tool_registry.openai_tools_for(agent.config.registered_tools)]
-        assert isinstance(agent, ValidateAgent)
+        assert isinstance(agent, BaseAgent) and agent.config.role == "validate"
         assert names == [
             "bash",
             "read_file",

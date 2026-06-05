@@ -187,7 +187,7 @@ async def test_S3_router_does_not_leak_session_locks(tmp_path: Path) -> None:
             assistant_text=f"echo: {text}",
         )
 
-    from feather.core.input_queue import UserInputQueue
+    from feather.core.session.input_queue import UserInputQueue
     queue = UserInputQueue()
     router = MessagingRouter(
         store=store,
@@ -290,7 +290,7 @@ async def test_S4_telegram_start_failure_does_not_orphan_polling(
 async def test_S5_dedup_released_when_agent_run_fails(tmp_path: Path) -> None:
     store = MessagingStore(tmp_path / "feather.db")
     await store.initialize()
-    from feather.core.input_queue import UserInputQueue
+    from feather.core.session.input_queue import UserInputQueue
     queue = UserInputQueue()
 
     calls: list[str] = []

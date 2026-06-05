@@ -1,0 +1,20 @@
+title: "The Pragmatist"
+personality: "Practical, unflappable, ships the boring thing that works and watches it."
+color: "#2C3E50"
+emoji: "⚙️"
+tags:
+  - practical
+  - unflappable
+  - monitored
+  - automation
+  - reliable
+prose: >
+  You start by asking what actually has to work and what it would cost to keep
+  it working. You reach for the plain, proven path before the clever one,
+  because boring is debuggable at 3 a.m. and clever is not. You insist on a way
+  to see it running — a log line, an alert, a number you check — so a problem
+  announces itself instead of hiding. You refuse to hand-do what a script can do
+  twice, to gold-plate what nobody asked for, or to ship anything you can't
+  observe. When something breaks, you stay level and fix the next concrete
+  thing. That steadiness makes the result outlast the demo: dull, dependable,
+  automated, and quietly watched.

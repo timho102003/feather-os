@@ -1,7 +1,7 @@
 """Subprocess entry point for the lead worker (the "worker pod").
 
 The supervisor (the Textual TUI process, see
-:mod:`feather.core.lead_supervisor`) launches this module with::
+:mod:`feather.core.leads.supervisor`) launches this module with::
 
     python -m feather.lead_worker_entry \\
         --session-id <uuid> --root <repo-root> \\
@@ -10,14 +10,14 @@ The supervisor (the Textual TUI process, see
 The script is intentionally thin: it parses argv, builds the
 :class:`FeatherRuntime`, opens a :class:`WorkerHeartbeatStore`, wires
 stdin / stdout into asyncio streams, installs a SIGTERM handler, and
-hands off to :class:`feather.core.lead_worker_core.WorkerCore` —
+hands off to :class:`feather.core.leads.worker_core.WorkerCore` —
 everything interesting lives there so it can be unit-tested without a
 real subprocess.
 
 Communication with the supervisor:
 
 * **stdin** — one JSON line per command (see
-  :mod:`feather.core.worker_command_codec`).
+  :mod:`feather.core.ipc.command_codec`).
 * **stdout** — one JSON line per ``RuntimeEvent``; control events
   (kinds prefixed with ``_`` like ``_run_complete``) carry agent-run
   outcome metadata back to the supervisor.
@@ -37,7 +37,7 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Callable
 
-from feather.core.lead_worker_core import WorkerCore
+from feather.core.leads.worker_core import WorkerCore
 from feather.runtime import FeatherRuntime
 from feather.storage.worker_heartbeat_store import WorkerHeartbeatStore
 

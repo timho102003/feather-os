@@ -16,11 +16,11 @@ parses each line and dispatches the typed command:
 * :class:`ConfigReloadCommand` — instruct the worker to reload the on-disk
   config and, when ``reload_class`` is ``"next_turn"``, also rebuild any
   cached agents.  The worker acknowledges via a ``_config_reload_ack``
-  control event on stdout (see :mod:`feather.core.runtime_event_codec`).
+  control event on stdout (see :mod:`feather.core.ipc.event_codec`).
 
 Decoding is strict: malformed input raises :class:`CommandCodecError`
 so the worker can log + skip rather than misinterpret a partial line.
-The codec is symmetric with :mod:`feather.core.runtime_event_codec`,
+The codec is symmetric with :mod:`feather.core.ipc.event_codec`,
 so both directions of the worker pipe share the same JSONL grammar.
 """
 

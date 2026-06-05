@@ -17,13 +17,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _BUILTIN_ROLES = frozenset({"lead", "explore", "research", "validate"})
-_NON_DISPATCHABLE_ROLES = frozenset({"lead"})
 _CUSTOM_FILENAME_SUFFIX = "-custom"
 
 
 @dataclass(slots=True, frozen=True)
 class AgentCatalogEntry:
-    """Metadata for one agent discovered in the config directory."""
+    """Metadata for one agent discovered in the config directory.
+
+    ``is_lead`` / ``dispatchable`` are computed from ``role`` and mirror the
+    defaults in :class:`CapabilityProfile` (a lead is the only non-dispatchable
+    role), so the catalog reflects the same lead/sub-agent distinction the
+    factory and running agent use.
+    """
 
     name: str
     role: str
@@ -31,6 +36,14 @@ class AgentCatalogEntry:
     personality: str
     registered_tools: tuple[str, ...] = field(default_factory=tuple)
     is_builtin: bool = False
+
+    @property
+    def is_lead(self) -> bool:
+        return self.role == "lead"
+
+    @property
+    def dispatchable(self) -> bool:
+        return self.role != "lead"
 
 
 class AgentCatalog:
@@ -95,6 +108,15 @@ class AgentCatalog:
 
         return [entry for entry in self.list_entries() if self.is_dispatchable(entry)]
 
+    def list_leads(self) -> list[AgentCatalogEntry]:
+        """Return catalog entries that are leads (top-level, switchable).
+
+        These are the agents a multi-lead UI offers as switchable roots; they
+        are not dispatchable as sub-agents.
+        """
+
+        return [entry for entry in self.list_entries() if entry.is_lead]
+
     def get(self, agent_name: str) -> AgentCatalogEntry | None:
         """Return one catalog entry by filename slug, or ``None`` if missing."""
 
@@ -105,9 +127,13 @@ class AgentCatalog:
 
     @staticmethod
     def is_dispatchable(entry: AgentCatalogEntry) -> bool:
-        """Report whether ``entry`` should appear in the spawn_agent allow-list."""
+        """Report whether ``entry`` should appear in the spawn_agent allow-list.
 
-        return entry.role not in _NON_DISPATCHABLE_ROLES
+        Mirrors ``CapabilityProfile.dispatchable`` (computed at discovery time
+        in :meth:`_to_entry`), so a lead is never dispatchable as a sub-agent.
+        """
+
+        return entry.dispatchable
 
     @staticmethod
     def is_valid_name(agent_name: str) -> bool:

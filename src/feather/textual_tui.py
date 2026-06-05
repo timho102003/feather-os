@@ -7,7 +7,7 @@ import logging
 import os
 import shlex
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -15,13 +15,16 @@ from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Vertical, VerticalScroll
 from textual.geometry import Region
 from textual.screen import ModalScreen
-from textual.widgets import RichLog, Static, TextArea
+from textual.widgets import OptionList, RichLog, Static, TextArea
+from textual.widgets.option_list import Option
 
 from feather.attachments import parse_attachment_drops, render_attachment_message
-from feather.core.lead_supervisor import LeadSupervisor
+from feather.core.agent.catalog import AgentCatalog
+from feather.core.leads.scaffold import scaffold_lead_yaml
+from feather.core.leads.supervisor import LeadSupervisor
 from feather.core.log_triage_bot import LogTriageBot
 from feather.core.restart_watcher import RestartWatcher
 from feather.models import AgentOutcome, RuntimeEvent, TaskRecord, TaskStatus
@@ -142,6 +145,64 @@ class _ConversationBlock:
     body: str
     label_style: str
     body_style: str
+
+
+@dataclass
+class PerLeadState:
+    """All mutable state for one lead in the multi-lead cockpit.
+
+    Every lead — active or backgrounded — owns one of these. The active lead's
+    state is what the widgets render; a backgrounded lead keeps accumulating
+    here (its driver runs concurrently) and is shown the moment you switch to
+    it. Execution primitives (handle, queues, events, tasks) are always
+    per-lead so leads run truly independently.
+    """
+
+    name: str
+    display_name: str
+    handle: Any
+    session_id: str
+    agent: Any = None
+    supervisor: Any = None
+    color: str | None = None
+    emoji: str | None = None
+    # --- display state (rendered when this lead is active) ---
+    conversation_blocks: list[_ConversationBlock] = field(default_factory=list)
+    transcript_blocks: list[str] = field(default_factory=list)
+    assistant_parts: list[str] = field(default_factory=list)
+    status: str = "idle"
+    latest_usage_ratio: float | None = None
+    active_tool: str | None = None
+    queue_depth: int = 0
+    queued_messages: tuple[str, ...] = ()
+    running_agents: tuple[str, ...] = ()
+    task_rows: tuple[str, ...] = ()
+    task_updates: list[str] = field(default_factory=list)
+    # --- execution state (always per-lead) ---
+    pending_answer: asyncio.Queue[str] = field(
+        default_factory=lambda: asyncio.Queue(maxsize=1)
+    )
+    new_run_queue: asyncio.Queue[str] = field(default_factory=asyncio.Queue)
+    busy_event: asyncio.Event = field(default_factory=asyncio.Event)
+    awaiting_event: asyncio.Event = field(default_factory=asyncio.Event)
+    run_task: asyncio.Task[Any] | None = None
+    driver_task: asyncio.Task[None] | None = None
+
+
+def _lead_prop(field_name: str) -> property:
+    """Build a property delegating ``self._<scalar>`` to the active lead's state.
+
+    Lets the existing display code and tests keep using ``self._status`` etc.
+    while the real storage moved onto the per-lead :class:`PerLeadState`.
+    """
+
+    def getter(self: "FeatherTextualApp") -> Any:
+        return getattr(self._active(), field_name)
+
+    def setter(self: "FeatherTextualApp", value: Any) -> None:
+        setattr(self._active(), field_name, value)
+
+    return property(getter, setter)
 
 
 def render_dropdown_text(
@@ -526,7 +587,132 @@ class ComposerTextArea(TextArea):
                 event.prevent_default()
                 event.stop()
                 return
+        # Bare ←/→ switch leads, but only when the composer is empty so that
+        # cursor movement within typed text is never hijacked.
+        if event.key in ("left", "right") and not self.text:
+            app = self.app
+            if event.key == "left":
+                app.action_lead_prev()  # type: ignore[attr-defined]
+            else:
+                app.action_lead_next()  # type: ignore[attr-defined]
+            event.prevent_default()
+            event.stop()
+            return
         await super()._on_key(event)
+
+
+class SubagentDrillScreen(ModalScreen[None]):
+    """Read-only modal that shows a lead's sub-agents and one's transcript.
+
+    Transcript-on-demand (the Phase A decision): the sub-agent ran detached and
+    its messages are persisted under its own session id, so we just read them
+    from the session store. ``r`` refreshes, ``Esc`` closes.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", priority=True),
+        Binding("r", "refresh", "Refresh", priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    SubagentDrillScreen {
+        align: center middle;
+    }
+    #drill {
+        width: 90%;
+        height: 90%;
+        border: solid #888888;
+        background: #0b0d12;
+        padding: 0 1;
+    }
+    #drill_title { height: 1; color: #cccccc; }
+    #drill_list { height: 8; border: solid #444444; }
+    #drill_log { height: 1fr; border: solid #444444; background: #090b10; }
+    """
+
+    def __init__(
+        self,
+        *,
+        runtime: FeatherRuntime,
+        parent_session_id: str,
+        lead_display_name: str,
+    ) -> None:
+        super().__init__()
+        self._runtime = runtime
+        self._parent_session_id = parent_session_id
+        self._lead_display_name = lead_display_name
+        self._subagents: list[Any] = []
+        self._selected_session: str | None = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="drill"):
+            yield Static(
+                f"Sub-agents of {self._lead_display_name}  ·  Esc close · r refresh",
+                id="drill_title",
+            )
+            yield OptionList(id="drill_list")
+            yield RichLog(id="drill_log", wrap=True, markup=False, highlight=False)
+
+    async def on_mount(self) -> None:
+        await self._reload()
+
+    async def _reload(self) -> None:
+        live = await self._runtime.subagent_registry.snapshot()
+        self._subagents = [
+            entry for entry in live if entry.parent_session_id == self._parent_session_id
+        ]
+        option_list = self.query_one("#drill_list", OptionList)
+        option_list.clear_options()
+        for entry in self._subagents:
+            option_list.add_option(
+                Option(
+                    f"{entry.agent_name} {entry.session_id[:8]}: "
+                    f"{preview_inline(entry.task_text, limit=60)}",
+                    id=entry.session_id,
+                )
+            )
+        if not self._subagents:
+            log = self.query_one("#drill_log", RichLog)
+            log.clear()
+            log.write(Text("No live sub-agents for this lead.", style="dim"))
+            self._selected_session = None
+            return
+        if self._selected_session is None or self._selected_session not in {
+            entry.session_id for entry in self._subagents
+        }:
+            self._selected_session = self._subagents[0].session_id
+        await self._load_transcript(self._selected_session)
+
+    async def _load_transcript(self, session_id: str) -> None:
+        log = self.query_one("#drill_log", RichLog)
+        log.clear()
+        try:
+            messages = await self._runtime.session_store.list_messages(session_id)
+        except Exception:  # noqa: BLE001
+            log.write(Text("(could not load transcript)", style="red"))
+            return
+        if not messages:
+            log.write(Text("(no transcript yet — sub-agent just started)", style="dim"))
+            return
+        for message in messages:
+            role = message.role.value if hasattr(message.role, "value") else str(message.role)
+            log.write(Text(f"[{role}]", style="bold cyan"))
+            if message.content:
+                log.write(Text(message.content))
+            log.write("")
+
+    async def on_option_list_option_selected(
+        self, event: OptionList.OptionSelected
+    ) -> None:
+        if event.option.id:
+            self._selected_session = event.option.id
+            await self._load_transcript(event.option.id)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    async def action_refresh(self) -> None:
+        await self._reload()
 
 
 class FeatherTextualApp(App[None]):
@@ -607,6 +793,12 @@ class FeatherTextualApp(App[None]):
         Binding("shift+end", "work_end", "Work latest", priority=True, show=False),
         Binding("ctrl+c", "copy_selection_or_transcript", "Copy", priority=True, show=False),
         Binding("ctrl+y", "copy_transcript", "Copy transcript", priority=True, show=False),
+        # Switch which lead is on screen. ctrl+←/→ always works; bare ←/→ also
+        # switch, but only when the composer is empty (handled in
+        # ComposerTextArea._on_key) so text editing is never disrupted.
+        Binding("ctrl+left", "lead_prev", "◀ Lead", priority=True),
+        Binding("ctrl+right", "lead_next", "Lead ▶", priority=True),
+        Binding("ctrl+o", "open_subagents", "Sub-agents", priority=True),
     ]
 
     # Actions disabled while a ModalScreen (e.g. ConfigScreen) is on top —
@@ -624,6 +816,9 @@ class FeatherTextualApp(App[None]):
             "work_page_down",
             "work_home",
             "work_end",
+            "lead_prev",
+            "lead_next",
+            "open_subagents",
         }
     )
 
@@ -655,35 +850,25 @@ class FeatherTextualApp(App[None]):
         self._root = root
         self._requested_session_id = session_id
         self._runtime: FeatherRuntime | None = None
-        self._agent: Any = None
-        self._supervisor: LeadSupervisor | None = None
         self._log_triage_bot: LogTriageBot | None = None
         self._restart_watcher: RestartWatcher | None = None
         self._hang_watcher_task: asyncio.Task[None] | None = None
-        self._active_session_id: str | None = None
-        self._assistant_parts: list[str] = []
-        self._latest_usage_ratio: float | None = None
-        self._queue_depth = 0
-        self._queued_messages: tuple[str, ...] = ()
-        self._running_agents: tuple[str, ...] = ()
-        self._task_rows: tuple[str, ...] = ()
-        self._task_updates: list[str] = []
-        self._conversation_blocks: list[_ConversationBlock] = []
-        self._transcript_blocks: list[str] = []
-        self._active_tool: str | None = None
-        self._status = "idle"
+        self._active_lead_name: str | None = None
+        # Per-lead state lives in PerLeadState; the active lead's is what the
+        # widgets render. The scalar ``self._<field>`` names below are
+        # properties (see ``_lead_prop``) that delegate to the active lead, so
+        # display code and tests keep working; a ``_bootstrap_state`` backs
+        # them before on_mount wires the first real lead.
+        self._leads: dict[str, PerLeadState] = {}
+        self._bootstrap_state = PerLeadState(
+            name="", display_name="Lead", handle=None, session_id=""
+        )
         # Animated streaming indicator. Braille dots cycling at 10 fps
         # render as a smooth spinner in any monospaced terminal. The tick
         # only triggers a conversation re-render while ``_assistant_parts``
         # is non-empty, so idle sessions pay nothing.
         self._spinner_frame: int = 0
         self._stop_event = asyncio.Event()
-        self._pending_answer: asyncio.Queue[str] = asyncio.Queue(maxsize=1)
-        self._new_run_queue: asyncio.Queue[str] = asyncio.Queue()
-        self._busy_event = asyncio.Event()
-        self._awaiting_event = asyncio.Event()
-        self._run_task: asyncio.Task[Any] | None = None
-        self._driver_task: asyncio.Task[None] | None = None
         self._watcher_task: asyncio.Task[None] | None = None
         self._monitor_task: asyncio.Task[None] | None = None
         self.slash_registry: SlashCommandRegistry = (
@@ -703,6 +888,88 @@ class FeatherTextualApp(App[None]):
         # (review fix C1).
         self._slash_suppress_next_change: bool = False
 
+    def _active(self) -> PerLeadState:
+        """Return the active lead's state (a bootstrap placeholder pre-mount)."""
+
+        name = self._active_lead_name
+        if name is not None and name in self._leads:
+            return self._leads[name]
+        return self._bootstrap_state
+
+    def _lead_names(self) -> list[str]:
+        """Active lead names in stable display order."""
+
+        return sorted(self._leads)
+
+    def action_open_subagents(self) -> None:
+        """Open the read-only sub-agent transcript drill-down for the active lead."""
+
+        if self._runtime is None or not self._active_session_id:
+            return
+        display = self._agent.config.name if self._agent is not None else (
+            self._active_lead_name or "Lead"
+        )
+        self.push_screen(
+            SubagentDrillScreen(
+                runtime=self._runtime,
+                parent_session_id=self._active_session_id,
+                lead_display_name=display,
+            )
+        )
+
+    def action_lead_prev(self) -> None:
+        """Switch to the previous lead (ctrl+← / bare ← when composer empty)."""
+
+        self._switch_lead(-1)
+
+    def action_lead_next(self) -> None:
+        """Switch to the next lead (ctrl+→ / bare → when composer empty)."""
+
+        self._switch_lead(1)
+
+    def _switch_lead(self, delta: int) -> None:
+        """Rotate the active lead by ``delta`` over the sorted lead names."""
+
+        names = self._lead_names()
+        if len(names) <= 1 or self._active_lead_name is None:
+            return
+        try:
+            idx = names.index(self._active_lead_name)
+        except ValueError:
+            return
+        self._active_lead_name = names[(idx + delta) % len(names)]
+        self._render_active()
+
+    def _render_active(self) -> None:
+        """Repaint header + conversation + work from the active lead's state."""
+
+        self._render_conversation()
+        self._update_header()
+        self._update_work()
+
+    # Scalar accessors delegating to the active lead's PerLeadState. Display
+    # code and tests read/write these as before; the active lead is the target.
+    _agent = _lead_prop("agent")
+    _supervisor = _lead_prop("supervisor")
+    _active_session_id = _lead_prop("session_id")
+    _assistant_parts = _lead_prop("assistant_parts")
+    _latest_usage_ratio = _lead_prop("latest_usage_ratio")
+    _queue_depth = _lead_prop("queue_depth")
+    _queued_messages = _lead_prop("queued_messages")
+    _running_agents = _lead_prop("running_agents")
+    _task_rows = _lead_prop("task_rows")
+    _task_updates = _lead_prop("task_updates")
+    _conversation_blocks = _lead_prop("conversation_blocks")
+    _transcript_blocks = _lead_prop("transcript_blocks")
+    _active_tool = _lead_prop("active_tool")
+    _status = _lead_prop("status")
+    _pending_answer = _lead_prop("pending_answer")
+    _new_run_queue = _lead_prop("new_run_queue")
+    _busy_event = _lead_prop("busy_event")
+    _awaiting_event = _lead_prop("awaiting_event")
+    _run_task = _lead_prop("run_task")
+    _driver_task = _lead_prop("driver_task")
+
     def compose(self) -> ComposeResult:
         """Compose the app's primary sections."""
 
@@ -720,25 +987,78 @@ class FeatherTextualApp(App[None]):
             placeholder="Type a message. Press / for commands. Enter submits.",
         )
 
+    def _make_lead_event_handler(self, lead_name: str):
+        """Return an event handler bound to one lead's state."""
+
+        def handler(event: RuntimeEvent) -> None:
+            self._dispatch_lead_event(lead_name, event)
+
+        return handler
+
+    def _dispatch_lead_event(self, lead_name: str, event: RuntimeEvent) -> None:
+        """Route a runtime event to the owning lead's state.
+
+        The widgets are only touched when the event belongs to the active
+        lead; a backgrounded lead's state still accumulates so switching to it
+        shows the full picture.
+        """
+
+        state = self._leads.get(lead_name)
+        if state is None:
+            return
+        self._apply_event(state, event)
+
+    async def _bootstrap_lead(
+        self, lead_name: str, *, requested_session_id: str | None = None
+    ) -> PerLeadState:
+        """Build one lead's agent + durable session + state, ready to drive.
+
+        Reused for the default lead at startup, for any additional discovered
+        lead, and for leads created at runtime via ``/lead new``.
+        """
+
+        assert self._runtime is not None
+        agent = self._runtime.build_agent(lead_name)
+        state = PerLeadState(
+            name=lead_name,
+            display_name=agent.config.name,
+            handle=None,
+            session_id="",
+            agent=agent,
+            color=agent.config.color,
+            emoji=agent.config.emoji,
+        )
+        self._leads[lead_name] = state
+        store = self._runtime.lead_session_store
+        if requested_session_id:
+            session_id = await agent.ensure_session_with_id(requested_session_id)
+        else:
+            existing = await store.get(lead_name)
+            if existing is not None:
+                session_id = await agent.ensure_session_with_id(existing)
+            else:
+                session_id = await agent.create_session()
+        await store.upsert(lead_name, session_id)
+        state.session_id = session_id
+        self._runtime.set_session_event_handler(
+            session_id, self._make_lead_event_handler(lead_name)
+        )
+        return state
+
     async def on_mount(self) -> None:
         """Initialize Feather runtime services once Textual is mounted."""
 
         self._runtime = await FeatherRuntime.create(self._root)
-        self._agent = self._runtime.build_agent("lead")
-        # Re-bind ``self._agent`` whenever the runtime rebuilds the lead
-        # (e.g. after /config saves a NEXT_TURN-class field). Without
-        # this, ``self._agent`` keeps pointing at the pre-save provider
-        # instance and the next turn silently uses the old model.
-        self._runtime.register_agent_rebuilt_listener(
-            self._on_agent_rebuilt
+        lead_name = self._runtime.default_lead_name
+        # Re-bind the active agent whenever the runtime rebuilds a lead
+        # (e.g. after /config saves a NEXT_TURN-class field).
+        self._runtime.register_agent_rebuilt_listener(self._on_agent_rebuilt)
+        # Bootstrap the default lead (resumes its durable session). The
+        # ``--session-id`` override applies to the default lead.
+        await self._bootstrap_lead(
+            lead_name, requested_session_id=self._requested_session_id
         )
-        self._active_session_id = (
-            self._requested_session_id or await self._agent.create_session()
-        )
-        self._runtime.set_session_event_handler(
-            self._active_session_id,
-            self._handle_runtime_event,
-        )
+        self._active_lead_name = lead_name
         worker_mode = _should_use_lead_worker(
             yaml_enabled=self._runtime.config.self_repair.enabled,
         )
@@ -757,7 +1077,21 @@ class FeatherTextualApp(App[None]):
             body_style="grey70",
         )
         self.query_one("#composer", TextArea).focus()
-        self._driver_task = asyncio.create_task(self._agent_driver())
+        # Bring up every other discovered lead (in-process), so leads run
+        # concurrently and switching is instant. The default lead keeps the
+        # worker-mode self-repair treatment above; additional leads run
+        # in-process in this phase.
+        for entry in self._runtime.agent_catalog.list_leads():
+            if entry.name != lead_name and entry.name not in self._leads:
+                try:
+                    await self._bootstrap_lead(entry.name)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "textual_tui.bootstrap_lead_failed", extra={"lead": entry.name}
+                    )
+        # Start one concurrent driver per active lead.
+        for state in self._leads.values():
+            state.driver_task = asyncio.create_task(self._run_lead_driver(state))
         self._watcher_task = asyncio.create_task(self._inbox_watcher())
         self._monitor_task = asyncio.create_task(self._monitor_loop())
         # Drive the streaming-spinner animation. The tick is cheap when
@@ -771,17 +1105,18 @@ class FeatherTextualApp(App[None]):
         """Stop runtime services and background tasks."""
 
         self._stop_event.set()
-        # Cancel + await every background task in one pass. ``_hang_watcher_task``
-        # is included here (rather than in its own block) because it shares the
-        # same shape as the four core tasks — a raw asyncio.Task with no
-        # ``stop()`` method.
-        background_tasks = (
-            self._run_task,
-            self._driver_task,
+        # Cancel + await every background task in one pass. Per-lead drivers +
+        # run tasks (one set per active lead) plus the app-global watcher /
+        # monitor / hang-watcher. ``_hang_watcher_task`` shares the same shape
+        # as the rest — a raw asyncio.Task with no ``stop()`` method.
+        background_tasks: list[asyncio.Task[Any] | None] = [
             self._watcher_task,
             self._monitor_task,
             self._hang_watcher_task,
-        )
+        ]
+        for state in self._leads.values():
+            background_tasks.append(state.driver_task)
+            background_tasks.append(state.run_task)
         for task in background_tasks:
             if task is not None and not task.done():
                 task.cancel()
@@ -808,17 +1143,20 @@ class FeatherTextualApp(App[None]):
             except Exception:  # noqa: BLE001
                 logger.exception("textual_tui.log_triage_bot_stop_failed")
             self._log_triage_bot = None
-        if self._supervisor is not None:
-            if self._runtime is not None:
-                self._runtime.detach_supervisor()
-            try:
-                await self._supervisor.shutdown()
-            except Exception:  # noqa: BLE001
-                logger.exception("textual_tui.lead_supervisor_shutdown_failed")
-            self._supervisor = None
+        # Shut down every lead's supervisor (worker mode) and unregister its
+        # event handler.
+        for state in self._leads.values():
+            if state.supervisor is not None:
+                if self._runtime is not None and self._is_active(state):
+                    self._runtime.detach_supervisor()
+                try:
+                    await state.supervisor.shutdown()
+                except Exception:  # noqa: BLE001
+                    logger.exception("textual_tui.lead_supervisor_shutdown_failed")
+                state.supervisor = None
+            if self._runtime is not None and state.session_id:
+                self._runtime.set_session_event_handler(state.session_id, None)
         if self._runtime is not None:
-            if self._active_session_id is not None:
-                self._runtime.set_session_event_handler(self._active_session_id, None)
             await self._runtime.close()
 
     async def _hang_watcher(self) -> None:
@@ -888,13 +1226,8 @@ class FeatherTextualApp(App[None]):
 
         assert self._runtime is not None
         assert self._active_session_id is not None
-        db_path = Path(self._runtime.config.database.path)
-        if not db_path.is_absolute():
-            db_path = (self._root / db_path).resolve()
-        self._supervisor = LeadSupervisor(
-            db_path=db_path,
-            project_root=self._root,
-            agent_name="lead",
+        self._supervisor = self._runtime.build_lead_supervisor(
+            self._active_lead_name or self._runtime.default_lead_name
         )
         self._runtime.attach_supervisor(self._supervisor)
         await self._supervisor.start(self._active_session_id)
@@ -938,27 +1271,21 @@ class FeatherTextualApp(App[None]):
             self._active_session_id,
         )
 
-    @property
-    def _lead_handle(self) -> Any:
-        """Return whichever of supervisor / in-process agent owns ``run``."""
-
-        return self._supervisor if self._supervisor is not None else self._agent
-
     def _on_agent_rebuilt(self, name: str, new_agent: Any) -> None:
-        """Refresh ``self._agent`` after :meth:`FeatherRuntime.rebuild_agent`.
+        """Rebind the rebuilt lead's in-process agent after a config reload.
 
         Wired in :meth:`on_mount` via ``register_agent_rebuilt_listener``.
-        When a worker supervisor owns the run path, the in-process
-        ``self._agent`` is not on the request route — the supervisor
-        handles its own swap via ``request_config_reload`` — so we skip
-        the rebind to avoid masking supervisor-side reload failures.
+        Targets the specific lead by name (not just the active one), so a
+        background lead picks up its new provider/model too. When that lead is
+        worker-supervised, the in-process agent is not on the request route —
+        the supervisor handles its own swap via ``request_config_reload`` — so
+        we skip the rebind to avoid masking supervisor-side reload failures.
         """
 
-        if name != "lead":
+        state = self._leads.get(name)
+        if state is None or state.supervisor is not None:
             return
-        if self._supervisor is not None:
-            return
-        self._agent = new_agent
+        state.agent = new_agent
 
     async def _cancel_in_flight_run(self) -> bool:
         """Cancel the agent driver's current run task, if any.
@@ -1235,6 +1562,7 @@ class FeatherTextualApp(App[None]):
             "copy": self._cmd_copy,
             "queue": self._cmd_queue,
             "agents": self._cmd_agents,
+            "lead": self._cmd_lead,
             "tasks": self._cmd_tasks,
             "session": self._cmd_session,
             "skills": self._cmd_skills,
@@ -1270,6 +1598,7 @@ class FeatherTextualApp(App[None]):
             "line",
             "whatsapp",
             "qdrant",
+            "lead",
         }
 
     def _dispatch_slash_input(self, text: str) -> bool:
@@ -1797,6 +2126,142 @@ class FeatherTextualApp(App[None]):
             body_style="white",
         )
 
+    def _cmd_lead(self, args: str) -> None:
+        """Manage leads: ``/lead list | souls | switch <name> | new <name> [--soul <id>] [soul]``."""
+
+        parts = args.split(maxsplit=1) if args.strip() else []
+        sub = parts[0].lower() if parts else "list"
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if sub in ("list", "ls"):
+            self._lead_list()
+        elif sub in ("souls", "soul"):
+            self._lead_souls()
+        elif sub == "switch":
+            self._lead_switch(rest)
+        elif sub == "new":
+            self._lead_new(rest)
+        else:
+            self._write_marker(
+                "Lead",
+                "usage: /lead list | souls | switch <name> | new <name> [--soul <id>] [soul]",
+                style="yellow",
+            )
+
+    def _lead_souls(self) -> None:
+        """List the selectable personality presets from the soul library."""
+
+        if self._runtime is None:
+            self._write_marker("Souls", "soul library unavailable", style="yellow")
+            return
+        lines = [
+            f"{soul.emoji} {soul.title} [{soul.id}] — {soul.personality}"
+            for soul in self._runtime.soul_library.list()
+        ]
+        self._write_conversation(
+            "Souls",
+            "\n".join(lines) or "(none — packaged souls missing)",
+            label_style="bold cyan",
+            body_style="white",
+        )
+
+    def _lead_list(self) -> None:
+        lines: list[str] = []
+        for name in self._lead_names():
+            state = self._leads[name]
+            mark = "  ← active" if name == self._active_lead_name else ""
+            glyph = state.emoji or "•"
+            lines.append(f"{glyph} {state.display_name} [{name}] · {state.status}{mark}")
+        if self._runtime is not None:
+            active = set(self._leads)
+            for entry in self._runtime.agent_catalog.list_leads():
+                if entry.name not in active:
+                    lines.append(f"• {entry.name} (not started — /lead switch to start)")
+        self._write_conversation(
+            "Leads",
+            "\n".join(lines) or "(none)",
+            label_style="bold cyan",
+            body_style="white",
+        )
+
+    def _lead_switch(self, name: str) -> None:
+        if not name:
+            self._write_marker("Lead", "usage: /lead switch <name>", style="yellow")
+            return
+        name = name.lower()
+        if name not in self._leads:
+            self._write_marker("Lead", f"lead {name!r} is not active", style="yellow")
+            return
+        self._active_lead_name = name
+        self._render_active()
+
+    def _lead_new(self, rest: str) -> None:
+        if not rest:
+            self._write_marker(
+                "Lead", "usage: /lead new <name> [--soul <id>] [soul]", style="yellow"
+            )
+            return
+        name, soul_id, soul = self._parse_lead_new(rest)
+        if not AgentCatalog.is_valid_name(name):
+            self._write_marker(
+                "Lead", f"invalid lead name: {name!r} (use letters, digits, _ , -)", style="yellow"
+            )
+            return
+        name = name.lower()
+        if name in self._leads:
+            self._write_marker("Lead", f"lead {name!r} is already active", style="yellow")
+            return
+        if soul_id is not None and (
+            self._runtime is None or self._runtime.soul_library.get(soul_id) is None
+        ):
+            self._write_marker(
+                "Lead",
+                f"unknown soul: {soul_id!r} — see /lead souls",
+                style="yellow",
+            )
+            return
+        asyncio.create_task(self._lead_new_async(name, soul, soul_id))
+
+    @staticmethod
+    def _parse_lead_new(rest: str) -> tuple[str, str | None, str]:
+        """Parse ``<name> [--soul <id>] [free text]`` → (name, soul_id, free_text)."""
+
+        tokens = rest.split()
+        name = tokens[0] if tokens else ""
+        soul_id: str | None = None
+        text_parts: list[str] = []
+        i = 1
+        while i < len(tokens):
+            if tokens[i] in ("--soul", "-s") and i + 1 < len(tokens):
+                soul_id = tokens[i + 1]
+                i += 2
+                continue
+            text_parts.append(tokens[i])
+            i += 1
+        return name, soul_id, " ".join(text_parts)
+
+    async def _lead_new_async(self, name: str, soul: str, soul_id: str | None = None) -> None:
+        try:
+            self._scaffold_lead_yaml(name, soul, soul_id)
+            state = await self._bootstrap_lead(name)
+            state.driver_task = asyncio.create_task(self._run_lead_driver(state))
+            self._active_lead_name = name
+            self._render_active()
+            self._write_marker(
+                "Lead", f"created and switched to {state.display_name}", style="green"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("textual_tui.lead_new_failed")
+            self._leads.pop(name, None)
+            self._write_marker("Lead", f"failed to create lead: {exc}", style="red")
+
+    def _scaffold_lead_yaml(self, name: str, soul: str, soul_id: str | None = None) -> None:
+        """Write a project lead YAML, applying a soul preset when ``soul_id`` is set."""
+
+        preset = None
+        if soul_id and self._runtime is not None:
+            preset = self._runtime.soul_library.get(soul_id)
+        scaffold_lead_yaml(self._root, name, soul, soul_preset=preset)
+
     def _cmd_tasks(self, args: str) -> None:
         """Show tracked tasks."""
 
@@ -2112,92 +2577,130 @@ class FeatherTextualApp(App[None]):
             # No running loop (unit tests); just drop it.
             coro.close()
 
+    def _is_active(self, state: PerLeadState) -> bool:
+        """Whether ``state`` is the lead currently shown in the widgets.
+
+        Identity against ``_active()`` so the pre-mount bootstrap placeholder
+        (which ``_active()`` returns before a real lead is wired) also counts
+        as active and renders.
+        """
+
+        return state is self._active()
+
+    def _handle_for(self, state: PerLeadState) -> Any:
+        """The run surface for ``state`` (supervisor when worker-mode, else agent)."""
+
+        return state.supervisor if state.supervisor is not None else state.agent
+
     def _handle_runtime_event(self, event: RuntimeEvent) -> None:
+        """Apply an event to the active lead (back-compat entry point)."""
+
+        self._apply_event(self._active(), event)
+
+    def _apply_event(self, state: PerLeadState, event: RuntimeEvent) -> None:
+        """Apply one runtime event to ``state``; refresh widgets only if active."""
+
+        active = self._is_active(state)
         if event.kind == "assistant_text_delta":
-            self._status = "running"
-            self._assistant_parts.append(event.text or "")
-            self._update_header()
-            self._render_conversation()
+            state.status = "running"
+            state.assistant_parts.append(event.text or "")
+            if active:
+                self._update_header()
+                self._render_conversation()
             return
         if event.kind == "usage_updated":
             ratio = (event.payload or {}).get("usage_ratio")
             if isinstance(ratio, (int, float)):
-                self._latest_usage_ratio = max(0.0, min(1.0, float(ratio)))
-                self._update_header()
+                state.latest_usage_ratio = max(0.0, min(1.0, float(ratio)))
+                if active:
+                    self._update_header()
             return
 
-        self._finish_assistant_turn()
+        self._finish_assistant_turn(state)
         if event.kind == "tool_started":
-            self._status = "running"
-            self._active_tool = event.tool_name
-            self._update_header()
+            state.status = "running"
+            state.active_tool = event.tool_name
+            if active:
+                self._update_header()
             if event.tool_name != "ask_user":
-                self._write_tool_started(event)
+                self._write_tool_started(event, state=state)
         elif event.kind == "tool_finished":
-            self._active_tool = None
-            self._update_header()
+            state.active_tool = None
+            if active:
+                self._update_header()
             if event.tool_name == "ask_user":
                 return
             failed_title = _failed_tool_title(event.tool_name, event.text)
             if failed_title:
-                self._write_tool_finished(event, failed_title=failed_title)
+                self._write_tool_finished(event, failed_title=failed_title, state=state)
             else:
-                self._write_tool_finished(event, failed_title=None)
+                self._write_tool_finished(event, failed_title=None, state=state)
                 if event.tool_name == "spawn_agent":
                     self._record_task_update(
-                        f"started {_format_tool_result(event.tool_name, event.text)}"
+                        f"started {_format_tool_result(event.tool_name, event.text)}",
+                        state=state,
                     )
         elif event.kind == "awaiting_user":
-            self._status = "awaiting user"
+            state.status = "awaiting user"
             self._write_conversation(
-                f"{self._agent.config.name} asks",
+                f"{state.agent.config.name} asks",
                 event.text or "",
                 label_style="bold green",
+                state=state,
             )
-            self._update_header()
+            if active:
+                self._update_header()
         elif event.kind == "user_message_injected":
             self._write_conversation(
                 "Queued input",
                 event.text or "",
                 label_style="bold grey70",
                 body_style="grey70",
+                state=state,
             )
         elif event.kind == "agent_message_received":
-            self._record_task_update(summarize_agent_message_update(event))
+            self._record_task_update(summarize_agent_message_update(event), state=state)
             self._write_conversation(
                 "Sub-agent completed",
                 format_agent_message_event(event),
                 label_style="bold magenta",
+                state=state,
             )
         elif event.kind.startswith("compaction_"):
             self._write_marker(
                 _event_title(event.kind),
                 event.text or "",
                 style=_system_event_style(event.kind),
+                state=state,
             )
         elif event.kind.startswith("scheduled_task_"):
             self._write_marker(
                 _event_title(event.kind),
                 event.text or "",
                 style=_system_event_style(event.kind),
+                state=state,
             )
 
-    def _finish_assistant_turn(self) -> None:
-        if not self._assistant_parts:
+    def _finish_assistant_turn(self, state: PerLeadState | None = None) -> None:
+        state = state if state is not None else self._active()
+        if not state.assistant_parts:
             return
-        body = "".join(self._assistant_parts)
-        self._assistant_parts.clear()
+        body = "".join(state.assistant_parts)
+        state.assistant_parts.clear()
         self._write_conversation(
-            self._agent.config.name,
+            state.agent.config.name,
             body,
             label_style="bold green",
+            state=state,
         )
 
-    async def _agent_driver(self) -> None:
-        assert self._active_session_id is not None
-        assert self._agent is not None
+    async def _run_lead_driver(self, state: PerLeadState) -> None:
+        """Per-lead run loop. Runs concurrently for every active lead; refreshes
+        widgets only while ``state`` is the lead on screen."""
+
+        on_event = self._make_lead_event_handler(state.name)
         while not self._stop_event.is_set():
-            get_task = asyncio.create_task(self._new_run_queue.get())
+            get_task = asyncio.create_task(state.new_run_queue.get())
             stop_task = asyncio.create_task(self._stop_event.wait())
             await asyncio.wait(
                 {get_task, stop_task}, return_when=asyncio.FIRST_COMPLETED
@@ -2208,53 +2711,50 @@ class FeatherTextualApp(App[None]):
             stop_task.cancel()
             user_message = get_task.result()
 
-            self._busy_event.set()
-            self._status = "running"
-            self._update_header()
+            state.busy_event.set()
+            state.status = "running"
+            if self._is_active(state):
+                self._update_header()
             try:
+                handle = self._handle_for(state)
                 if user_message == _INBOX_WAKE:
-                    self._run_task = asyncio.create_task(
-                        self._lead_handle.resume_on_inbox(
-                            self._active_session_id,
-                            self._handle_runtime_event,
-                        )
+                    state.run_task = asyncio.create_task(
+                        handle.resume_on_inbox(state.session_id, on_event)
                     )
                 else:
-                    self._run_task = asyncio.create_task(
-                        self._lead_handle.run(
-                            self._active_session_id,
-                            user_message,
-                            self._handle_runtime_event,
-                        )
+                    state.run_task = asyncio.create_task(
+                        handle.run(state.session_id, user_message, on_event)
                     )
                 try:
-                    result = await self._run_task
+                    result = await state.run_task
                 except asyncio.CancelledError:
                     if self._stop_event.is_set():
                         return
-                    self._record_interrupted()
+                    self._record_interrupted(state=state)
                     continue
                 finally:
-                    self._run_task = None
+                    state.run_task = None
                 if result is None:
-                    self._status = "idle"
-                    self._update_header()
+                    state.status = "idle"
+                    if self._is_active(state):
+                        self._update_header()
                     continue
 
-                self._finish_assistant_turn()
-                await self._refresh_monitor()
+                self._finish_assistant_turn(state)
+                await self._refresh_monitor(state)
                 if result.status == AgentOutcome.COMPLETED:
-                    self._status = "idle"
-                self._update_header()
-                self._update_work()
+                    state.status = "idle"
+                if self._is_active(state):
+                    self._update_header()
+                    self._update_work()
 
                 while (
                     result.status == AgentOutcome.AWAITING_USER
                     and result.question is not None
                     and not self._stop_event.is_set()
                 ):
-                    self._awaiting_event.set()
-                    answer_task = asyncio.create_task(self._pending_answer.get())
+                    state.awaiting_event.set()
+                    answer_task = asyncio.create_task(state.pending_answer.get())
                     stop_task = asyncio.create_task(self._stop_event.wait())
                     await asyncio.wait(
                         {answer_task, stop_task},
@@ -2262,61 +2762,64 @@ class FeatherTextualApp(App[None]):
                     )
                     if self._stop_event.is_set():
                         answer_task.cancel()
-                        self._awaiting_event.clear()
+                        state.awaiting_event.clear()
                         return
                     stop_task.cancel()
                     answer = answer_task.result()
-                    self._run_task = asyncio.create_task(
-                        self._lead_handle.run(
-                            self._active_session_id,
-                            answer,
-                            self._handle_runtime_event,
-                        )
+                    state.run_task = asyncio.create_task(
+                        handle.run(state.session_id, answer, on_event)
                     )
                     try:
-                        result = await self._run_task
+                        result = await state.run_task
                     except asyncio.CancelledError:
                         if self._stop_event.is_set():
                             return
-                        self._record_interrupted()
+                        self._record_interrupted(state=state)
                         break
                     finally:
-                        self._run_task = None
-                    self._finish_assistant_turn()
-                    await self._refresh_monitor()
+                        state.run_task = None
+                    self._finish_assistant_turn(state)
+                    await self._refresh_monitor(state)
                     if result.status == AgentOutcome.COMPLETED:
-                        self._status = "idle"
-                    self._update_header()
-                    self._update_work()
+                        state.status = "idle"
+                    if self._is_active(state):
+                        self._update_header()
+                        self._update_work()
             except Exception as exc:  # noqa: BLE001
                 logger.exception("textual_tui.agent_driver_crashed")
-                self._write_marker("Agent error", f"{type(exc).__name__}: {exc}", style="red")
-                self._status = "idle"
-                self._update_header()
+                self._write_marker(
+                    "Agent error", f"{type(exc).__name__}: {exc}", style="red", state=state
+                )
+                state.status = "idle"
+                if self._is_active(state):
+                    self._update_header()
             finally:
-                self._busy_event.clear()
-                self._awaiting_event.clear()
+                state.busy_event.clear()
+                state.awaiting_event.clear()
 
     async def _inbox_watcher(self) -> None:
-        assert self._active_session_id is not None
-        assert self._agent is not None
+        """Wake any idle lead whose SQLite inbox has pending peer messages."""
+
         while not self._stop_event.is_set():
             try:
                 await asyncio.wait_for(self._stop_event.wait(), timeout=0.5)
                 return
             except asyncio.TimeoutError:
                 pass
-            if self._busy_event.is_set() or self._awaiting_event.is_set():
-                continue
-            try:
-                has_pending = await self._agent.has_pending_inbox(self._active_session_id)
-            except Exception:  # noqa: BLE001
-                continue
-            if has_pending and self._new_run_queue.empty():
-                await self._new_run_queue.put(_INBOX_WAKE)
+            for state in list(self._leads.values()):
+                if state.busy_event.is_set() or state.awaiting_event.is_set():
+                    continue
+                if state.agent is None or not state.session_id:
+                    continue
+                try:
+                    has_pending = await state.agent.has_pending_inbox(state.session_id)
+                except Exception:  # noqa: BLE001
+                    continue
+                if has_pending and state.new_run_queue.empty():
+                    await state.new_run_queue.put(_INBOX_WAKE)
 
     async def _monitor_loop(self) -> None:
-        """Refresh durable task and queue state even when no events arrive."""
+        """Refresh durable task and queue state for every lead, even when idle."""
 
         while not self._stop_event.is_set():
             try:
@@ -2324,68 +2827,82 @@ class FeatherTextualApp(App[None]):
                 return
             except asyncio.TimeoutError:
                 pass
-            try:
-                await self._refresh_monitor()
-            except Exception:  # noqa: BLE001
-                logger.exception("textual_tui.monitor_refresh_failed")
+            for state in list(self._leads.values()):
+                try:
+                    await self._refresh_monitor(state)
+                except Exception:  # noqa: BLE001
+                    logger.exception("textual_tui.monitor_refresh_failed")
 
-    async def _refresh_monitor(self) -> None:
+    async def _refresh_monitor(self, state: PerLeadState | None = None) -> None:
+        """Refresh one lead's queue/sub-agent/task rows; repaint work if active."""
+
         assert self._runtime is not None
-        assert self._active_session_id is not None
-        depth = await self._runtime.input_queue.depth(self._active_session_id)
-        pending = await self._runtime.input_queue.peek(self._active_session_id)
-        self._queue_depth = depth
-        self._queued_messages = tuple(
+        state = state if state is not None else self._active()
+        session_id = state.session_id
+        if not session_id:
+            return
+        depth = await self._runtime.input_queue.depth(session_id)
+        pending = await self._runtime.input_queue.peek(session_id)
+        state.queue_depth = depth
+        state.queued_messages = tuple(
             summarize_user_input_for_display(message, self._root)
             for message in pending
         )
         live = await self._runtime.subagent_registry.snapshot()
-        live = [
-            entry for entry in live if entry.parent_session_id == self._active_session_id
-        ]
+        live = [entry for entry in live if entry.parent_session_id == session_id]
         live_sessions = frozenset(entry.session_id for entry in live)
-        self._running_agents = tuple(
+        state.running_agents = tuple(
             f"{entry.agent_name} {entry.session_id[:8]}: "
             f"{preview_inline(entry.task_text, limit=80)}"
             for entry in live
         )
         tasks = await self._runtime.task_store.list_tasks(
-            lead_session_id=self._active_session_id,
+            lead_session_id=session_id,
             limit=50,
         )
-        self._task_rows = tuple(
+        state.task_rows = tuple(
             format_task_row(task, live_sessions=live_sessions) for task in tasks
         )
-        self._update_header()
-        self._update_work()
+        if self._is_active(state):
+            self._update_header()
+            self._update_work()
 
-    def _record_interrupted(self) -> None:
-        self._finish_assistant_turn()
+    def _record_interrupted(self, state: PerLeadState | None = None) -> None:
+        state = state if state is not None else self._active()
+        self._finish_assistant_turn(state)
         self._write_marker(
             "Interrupted",
             "Esc pressed; active run cancelled.",
             style="yellow",
+            state=state,
         )
-        self._status = "idle"
-        self._update_header()
+        state.status = "idle"
+        if self._is_active(state):
+            self._update_header()
 
-    def _record_task_update(self, update: str) -> None:
+    def _record_task_update(self, update: str, *, state: PerLeadState | None = None) -> None:
+        state = state if state is not None else self._active()
         update = update.strip()
         if not update:
             return
-        self._task_updates.append(update)
-        self._task_updates = self._task_updates[-5:]
-        self._update_work()
+        state.task_updates.append(update)
+        del state.task_updates[:-5]
+        if self._is_active(state):
+            self._update_work()
 
-    def _write_tool_started(self, event: RuntimeEvent) -> None:
+    def _write_tool_started(
+        self, event: RuntimeEvent, *, state: PerLeadState | None = None
+    ) -> None:
+        state = state if state is not None else self._active()
         title = _tool_started_title(event.tool_name)
         detail = _format_tool_payload(event.tool_name, event.payload or {})
         body = title if not detail else f"{title}\n{detail}"
         self._write_conversation(
-            self._agent.config.name,
+            state.agent.config.name,
             body,
             label_style="bold green",
             body_style="grey70",
+            state=state,
         )
 
     def _write_tool_finished(
@@ -2393,17 +2910,20 @@ class FeatherTextualApp(App[None]):
         event: RuntimeEvent,
         *,
         failed_title: str | None,
+        state: PerLeadState | None = None,
     ) -> None:
+        state = state if state is not None else self._active()
         if failed_title:
             body = f"{failed_title} - Error"
             detail = _format_tool_error(event.tool_name, event.text)
             if detail:
                 body = f"{body}\n{detail}"
             self._write_conversation(
-                self._agent.config.name,
+                state.agent.config.name,
                 body,
                 label_style="bold green",
                 body_style="red",
+                state=state,
             )
             return
 
@@ -2418,19 +2938,28 @@ class FeatherTextualApp(App[None]):
         if detail:
             body = f"{body}\n{detail}"
         self._write_conversation(
-            self._agent.config.name,
+            state.agent.config.name,
             body,
             label_style="bold green",
             body_style=body_style,
+            state=state,
         )
 
-    def _write_marker(self, title: str, text: str = "", *, style: str = "grey70") -> None:
+    def _write_marker(
+        self,
+        title: str,
+        text: str = "",
+        *,
+        style: str = "grey70",
+        state: PerLeadState | None = None,
+    ) -> None:
         marker = title if not text else f"{title} · {text}"
         self._write_conversation(
             "Feather",
             marker,
             label_style=f"bold {style}",
             body_style=style,
+            state=state,
         )
 
     def _write_conversation(
@@ -2440,8 +2969,10 @@ class FeatherTextualApp(App[None]):
         *,
         label_style: str,
         body_style: str = "bold white",
+        state: PerLeadState | None = None,
     ) -> None:
-        self._conversation_blocks.append(
+        state = state if state is not None else self._active()
+        state.conversation_blocks.append(
             _ConversationBlock(
                 title=title,
                 body=body,
@@ -2449,8 +2980,9 @@ class FeatherTextualApp(App[None]):
                 body_style=body_style,
             )
         )
-        self._transcript_blocks.append(format_transcript_block(title, body))
-        self._render_conversation()
+        state.transcript_blocks.append(format_transcript_block(title, body))
+        if self._is_active(state):
+            self._render_conversation()
 
     def _tick_spinner(self) -> None:
         """Advance the streaming spinner frame and re-render if active.
@@ -2501,12 +3033,10 @@ class FeatherTextualApp(App[None]):
 
     def _update_header(self) -> None:
         header = self.query_one("#header", Static)
-        ctx = "ctx --"
-        if self._latest_usage_ratio is not None:
-            ctx = f"ctx {round(self._latest_usage_ratio * 100)}%"
-        active = f"active {self._active_tool}" if self._active_tool else "no active tool"
         session_id = self._active_session_id or "(starting)"
         agent_name = self._agent.config.name if self._agent is not None else "Lead"
+        strip = self._build_lead_strip()
+        header.styles.height = 4 if strip is not None else 3
         header.update(
             build_header_text(
                 agent_name=agent_name,
@@ -2515,8 +3045,21 @@ class FeatherTextualApp(App[None]):
                 queue_depth=self._queue_depth,
                 active_tool=self._active_tool,
                 session_id=session_id,
+                lead_strip=strip,
             )
         )
+
+    def _build_lead_strip(self) -> Text | None:
+        """Lead strip when more than one lead is active, else ``None``."""
+
+        if len(self._leads) <= 1 or self._active_lead_name is None:
+            return None
+        leads = tuple(
+            (s.display_name, s.emoji, s.status)
+            for _, s in sorted(self._leads.items())
+        )
+        active = self._leads[self._active_lead_name].display_name
+        return build_lead_strip(leads, active)
 
     def _update_work(self) -> None:
         work = self.query_one("#work_content", Static)
@@ -2531,6 +3074,36 @@ class FeatherTextualApp(App[None]):
         )
 
 
+_LEAD_STATUS_GLYPH = {"running": "●", "awaiting user": "◐", "idle": "○"}
+
+
+def build_lead_strip(
+    leads: tuple[tuple[str, str | None, str], ...],
+    active_name: str,
+) -> Text:
+    """Render the switchable-lead strip.
+
+    ``leads`` is ``(display_name, emoji, status)`` per lead in display order.
+    The active lead is highlighted; each lead shows a status glyph so a busy
+    background lead is visible without switching to it.
+    """
+
+    strip = Text()
+    strip.append("leads ", style="dim")
+    for index, (display_name, emoji, status) in enumerate(leads):
+        if index:
+            strip.append(" · ", style="dim")
+        glyph = _LEAD_STATUS_GLYPH.get(status, "○")
+        label = f"{emoji + ' ' if emoji else ''}{display_name} {glyph}"
+        is_active = display_name == active_name
+        strip.append(
+            f"[{label}]" if is_active else label,
+            style="bold white" if is_active else "grey58",
+        )
+    strip.append("   ctrl+←/→", style="dim")
+    return strip
+
+
 def build_header_text(
     *,
     agent_name: str,
@@ -2539,12 +3112,13 @@ def build_header_text(
     queue_depth: int,
     active_tool: str | None,
     session_id: str,
+    lead_strip: Text | None = None,
 ) -> Text:
     """Build the Textual header renderable."""
 
     ctx = "ctx --" if context_ratio is None else f"ctx {round(context_ratio * 100)}%"
     active = f"active {active_tool}" if active_tool else "no active tool"
-    return Text.assemble(
+    header = Text.assemble(
         ("Feather", "bold white"),
         "  ",
         (agent_name, "white"),
@@ -2559,6 +3133,10 @@ def build_header_text(
         "\n",
         (f"lead session {session_id}", "dim"),
     )
+    if lead_strip is not None:
+        header.append("\n")
+        header.append_text(lead_strip)
+    return header
 
 
 def build_work_text(

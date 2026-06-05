@@ -22,7 +22,7 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from feather.core.input_queue import UserInputQueue
+from feather.core.session.input_queue import UserInputQueue
 from feather.messaging.models import (
     IncomingMessage,
     OutgoingMessage,

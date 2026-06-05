@@ -1,7 +1,7 @@
 """Constants shared between the spawn_agent tool and the sub-agent subprocess entry.
 
 Kept in its own module so importing the markers does not drag in
-``feather.runtime`` (the sub-agent entry) or ``feather.core.agent_factory``
+``feather.runtime`` (the sub-agent entry) or ``feather.core.agent.factory``
 (the tool), which would form an import cycle.
 """
 

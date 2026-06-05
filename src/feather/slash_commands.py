@@ -279,6 +279,12 @@ def default_registry() -> SlashCommandRegistry:
             category="info",
         ),
         SlashCommand(
+            name="lead",
+            summary="Manage leads: /lead list | souls | switch <name> | new <name> [--soul <id>] [soul]",
+            aliases=("leads",),
+            category="info",
+        ),
+        SlashCommand(
             name="tasks",
             summary="Show tracked tasks for this lead session",
             aliases=("task",),

@@ -8,18 +8,17 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from feather.config import load_agent_config
-from feather.core.agent_catalog import AgentCatalog
-from feather.core.base_agent import BaseAgent
-from feather.core.compaction import ContextCompactor
-from feather.core.default_agent import DefaultAgent
-from feather.core.input_queue import UserInputQueue
+from feather.core.agent.catalog import AgentCatalog
+from feather.core.leads.soul_library import SoulLibrary
+from feather.core.agent.base import BaseAgent
+from feather.core.agent.capabilities import CapabilityProfile
+from feather.core.agent.compaction import ContextCompactor
+from feather.core.session.input_queue import UserInputQueue
 from feather.core.install_mode import detect_install_mode
-from feather.core.lead_agent import LeadAgent
-from feather.core.prompt_builder import PromptBuilder
-from feather.core.session_run_coordinator import SessionRunCoordinator
-from feather.core.subagent_registry import SubagentRegistry
+from feather.core.agent.prompt_builder import PromptBuilder
+from feather.core.session.coordinator import SessionRunCoordinator
+from feather.core.subagents.registry import SubagentRegistry
 from feather.storage.agent_message_store import AgentMessageStore
-from feather.core.sub_agents import CustomAgent, ExploreAgent, ResearchAgent, ValidateAgent
 from feather.memory.context import current_session_id
 from feather.memory.reader import NoOpMemoryReader
 from feather.memory.runtime import MemoryStack
@@ -78,28 +77,32 @@ logger = logging.getLogger(__name__)
 
 ToolBuilder = Callable[[], BaseTool]
 
-_LEAD_ONLY_TOOLS: frozenset[str] = frozenset(
-    {
-        "spawn_agent",
-        "terminate_agent",
-        "create_cron",
-        "update_cron",
-        "delete_cron",
-        "list_crons",
-        "ask_user",
-        # Only the lead is in direct conversation with the user, so only
-        # the lead can act on a "remember/forget" request. Sub-agents
-        # writing user memory behind the user's back is a footgun.
-        "manage_memory",
-        # Same rationale as manage_memory: the lead is the only agent
-        # talking to the user, so only the lead can mutate the persistent
-        # user profile.
-        "user_info",
-        "task_create",
-        "task_stop",
-        "task_resume",
-    }
-)
+# Tools gated behind a capability. A tool is dropped from an agent's toolkit
+# when the agent's CapabilityProfile lacks the required capability. This is the
+# single source of truth that replaced the old role-keyed ``_LEAD_ONLY_TOOLS``
+# frozenset: the lead has every capability (so keeps every tool), while a
+# sub-agent is the lead with these features disabled.
+#
+# Rationale per capability:
+#   can_spawn        — orchestration: launch/terminate sub-agents + own tasks.
+#   can_message_user — only the agent in direct conversation with the user may
+#                      ask questions or mutate user memory/profile behind the
+#                      scenes; a sub-agent doing so is a footgun.
+#   can_schedule     — only a top-level agent should create cron jobs.
+_CAPABILITY_GATED_TOOLS: dict[str, str] = {
+    "spawn_agent": "can_spawn",
+    "terminate_agent": "can_spawn",
+    "task_create": "can_spawn",
+    "task_stop": "can_spawn",
+    "task_resume": "can_spawn",
+    "ask_user": "can_message_user",
+    "manage_memory": "can_message_user",
+    "user_info": "can_message_user",
+    "create_cron": "can_schedule",
+    "update_cron": "can_schedule",
+    "delete_cron": "can_schedule",
+    "list_crons": "can_schedule",
+}
 
 
 class AgentFactory:
@@ -144,18 +147,17 @@ class AgentFactory:
         self._task_store = task_store
         self._subagent_registry = subagent_registry
         self._attachment_store = attachment_store
-        self._agent_classes = {
-            "lead": LeadAgent,
-            "explore": ExploreAgent,
-            "research": ResearchAgent,
-            "validate": ValidateAgent,
-            "custom": CustomAgent,
+        # Every role shares the single BaseAgent class; the CapabilityProfile
+        # differentiates a lead from a sub-agent. The injection point is kept so
+        # tests can substitute a stub class per role.
+        self._agent_classes: dict[str, type[BaseAgent]] = {
             **(dict(agent_classes) if agent_classes is not None else {}),
         }
         self._current_agent_name: str = ""
         self._profile_store = profile_store
         self._tool_builders = dict(tool_builders) if tool_builders is not None else self._default_tool_builders()
         self._agent_catalog = AgentCatalog(root, paths=self._paths)
+        self._soul_library = SoulLibrary(root, paths=self._paths)
         self._mcp_manager = MCPClientManager()
         # Cache of providers keyed by provider name, so a per-agent override
         # reuses one httpx client across rebuilds instead of spawning a new
@@ -163,6 +165,16 @@ class AgentFactory:
         self._providers_by_name: dict[str, BaseLLMProvider] = {
             self._default_provider_name(): provider,
         }
+
+    @property
+    def agent_catalog(self) -> AgentCatalog:
+        """The catalog used to discover leads + dispatchable sub-agents."""
+        return self._agent_catalog
+
+    @property
+    def soul_library(self) -> SoulLibrary:
+        """The layered library of selectable lead personality presets."""
+        return self._soul_library
 
     async def aclose(self) -> None:
         """Close any per-provider resources the factory built on demand.
@@ -407,12 +419,18 @@ class AgentFactory:
             supports_multimodal_attachments=self._supports_multimodal_attachments(
                 provider_name
             ),
+            capabilities=CapabilityProfile.from_config(agent_config),
         )
 
     def _resolve_agent_class(self, agent_config: AgentConfig) -> type[BaseAgent]:
-        """Resolve the runtime class for one configured agent."""
+        """Resolve the runtime class for one configured agent.
 
-        return self._agent_classes.get(agent_config.role, DefaultAgent)
+        All roles share :class:`BaseAgent`; the capability profile, not the
+        class, distinguishes a lead from a sub-agent. The per-role override map
+        is honored so tests can inject a stub class.
+        """
+
+        return self._agent_classes.get(agent_config.role, BaseAgent)
 
     def _supports_multimodal_attachments(self, provider_name: str) -> bool:
         """Return whether the selected provider/model accepts image/PDF blocks."""
@@ -471,7 +489,7 @@ class AgentFactory:
             and self._memory_stack.enabled
             and agent_config.memory_enabled
         )
-        is_lead = agent_config.role == "lead"
+        profile = CapabilityProfile.from_config(agent_config)
         for tool_name in tool_names:
             if tool_name in {"recall_memory", "manage_memory"} and not memory_live:
                 logger.warning(
@@ -481,12 +499,14 @@ class AgentFactory:
                     agent_config.name,
                 )
                 continue
-            if tool_name in _LEAD_ONLY_TOOLS and not is_lead:
+            required_capability = _CAPABILITY_GATED_TOOLS.get(tool_name)
+            if required_capability is not None and not getattr(profile, required_capability):
                 logger.warning(
-                    "skipping lead-only tool `%s` for non-lead agent=%s role=%s",
+                    "skipping tool `%s` for agent=%s role=%s: lacks capability %s",
                     tool_name,
                     agent_config.name,
                     agent_config.role,
+                    required_capability,
                 )
                 continue
             builder = self._tool_builders.get(tool_name)

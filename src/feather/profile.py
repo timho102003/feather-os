@@ -27,7 +27,7 @@ _MAX_FILE_BYTES = 16 * 1024
 # the lead and sub-agents see. Persisted prompt-injection is significantly
 # worse than transient injection (it survives sessions and compaction), so
 # we reject these unconditionally instead of escaping. The same names are
-# used by :class:`feather.core.prompt_builder.PromptBuilder`.
+# used by :class:`feather.core.agent.prompt_builder.PromptBuilder`.
 _FORBIDDEN_CONTROL_TOKENS: tuple[str, ...] = (
     "</user_profile>",
     "<user_profile>",

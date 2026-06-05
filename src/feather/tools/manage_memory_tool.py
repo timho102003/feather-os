@@ -10,7 +10,7 @@ lead act on a *direct* user instruction immediately:
 - "forget <X>" / "I never said that" → ``DELETE``
 
 Not useful for ambient observations — the auto-extractor handles those.
-The lead-only registration in :class:`feather.core.agent_factory.AgentFactory`
+The lead-only registration in :class:`feather.core.agent.factory.AgentFactory`
 prevents sub-agents from rewriting user memory behind the user's back.
 """
 

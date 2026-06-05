@@ -1404,6 +1404,9 @@ IGNORED_PATHS: frozenset[str] = frozenset({
     "app.openai.store",
     # MCP servers managed via a different (future) UI surface
     "app.mcp.servers",
+    # Default lead agent name — selected by which lead YAMLs exist + the
+    # multi-lead UI, not a free-text /config knob in this phase.
+    "app.default_lead",
     # Phase 1 keeps prompt_modules read-only — changing it risks
     # loading a non-existent module mid-session.
     "agents.*.prompt_modules",
@@ -1458,6 +1461,13 @@ IGNORED_PATHS: frozenset[str] = frozenset({
     # Agent identity fields — name and role are structural, not user-editable.
     "agents.*.name",
     "agents.*.role",
+    # Lead-identity + display + capability fields. Edited by hand in the agent
+    # YAML (and, in a later phase, the in-TUI lead manager); not surfaced as
+    # individual /config knobs in this phase.
+    "agents.*.soul",
+    "agents.*.color",
+    "agents.*.emoji",
+    "agents.*.capabilities",
 })
 
 

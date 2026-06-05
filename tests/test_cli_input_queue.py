@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from feather.core.input_queue import UserInputQueue
+from feather.core.session.input_queue import UserInputQueue
 
 
 async def _dispatch(

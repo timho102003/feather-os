@@ -5,9 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from feather.core.compaction import ContextCompactor
-from feather.core.lead_agent import LeadAgent
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.compaction import ContextCompactor
+from feather.core.agent.base import BaseAgent
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.core.prompts.compaction_prompt import COMPACTION_PROMPT
 from feather.models import AgentConfig, CompactionConfig, ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
@@ -76,7 +76,7 @@ async def test_agent_compaction_clears_remote_cursor_and_replays_latest_compact(
             ]
         )
         prompt_builder = PromptBuilder(SkillCatalog(tmp_path / ".feather" / "skills"), ToolRegistry([]))
-        agent = LeadAgent(
+        agent = BaseAgent(
             agent_config=AgentConfig(
                 name="Lead",
                 role="lead",

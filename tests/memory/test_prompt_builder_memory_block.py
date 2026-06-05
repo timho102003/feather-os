@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import AgentConfig
 from feather.skills.catalog import SkillCatalog
 from feather.tools.ask_user_tool import AskUserTool
