@@ -44,7 +44,7 @@ import traceback
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Protocol
 
-from feather.config_schema import ReloadClass
+from feather.config.schema import ReloadClass
 from feather.core.session.input_queue import UserInputQueue
 from feather.core.ipc.event_codec import encode_event
 from feather.core.ipc.command_codec import (

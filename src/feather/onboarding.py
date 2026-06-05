@@ -349,7 +349,7 @@ class OnboardingAnswers:
         """Return only the non-empty (KEY, value) pairs for ``.env``.
 
         Empty values are dropped so we never write ``KEY=`` lines that
-        would later override a real value loaded by ``feather.env``.
+        would later override a real value loaded by ``feather.config.env``.
         """
 
         candidates = {

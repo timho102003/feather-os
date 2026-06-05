@@ -18,8 +18,8 @@ if TYPE_CHECKING:
 import httpx
 
 from feather.config import load_app_config
-from feather.config_schema import ReloadClass
-from feather.config_schema import lookup as _lookup_field
+from feather.config.schema import ReloadClass
+from feather.config.schema import lookup as _lookup_field
 from feather.core.agent.factory import AgentFactory
 from feather.core.agent.base import BaseAgent
 from feather.core.scheduling.cron_scheduler import CronScheduler
@@ -27,7 +27,7 @@ from feather.core.session.input_queue import UserInputQueue
 from feather.core.session.coordinator import SessionRunCoordinator
 from feather.core.subagents.registry import SubagentRegistry
 from feather.core.subagents.reaper import SubagentReaper
-from feather.env import load_dotenv
+from feather.config.env import load_dotenv
 from feather.logging_utils import configure_logging
 from feather.memory.runtime import MemoryStack, build_memory_stack
 from feather.messaging.adapters.line import LineAdapter
@@ -600,7 +600,7 @@ class FeatherRuntime:
     ) -> ConfigApplyResult:
         """Apply the cumulative reload effect of ``changed_paths``.
 
-        Looks up each path's :class:`~feather.config_schema.ReloadClass` from
+        Looks up each path's :class:`~feather.config.schema.ReloadClass` from
         the registry and fans out accordingly:
 
         - ``LIVE``-only changes → :meth:`reload_config` only.

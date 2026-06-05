@@ -2,7 +2,7 @@
 
 The TUI's slash handler calls :func:`handle_config_command` with the
 raw arg string. This module parses the subcommand and dispatches to
-the appropriate :class:`feather.config_service.ConfigService` method,
+the appropriate :class:`feather.config.service.ConfigService` method,
 returning a rendered string for the TUI to display.
 
 Interactive (modal) handling is wired separately in
@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from feather.config_paths import PathScope
-from feather.config_service import ConfigService
+from feather.config.resolver import PathScope
+from feather.config.service import ConfigService
 
 
 @dataclass(slots=True, frozen=True)
@@ -32,7 +32,7 @@ def handle_config_command(
     """Parse and dispatch one `/config <sub> [args]` invocation.
 
     Args:
-        service: Configured :class:`~feather.config_service.ConfigService`
+        service: Configured :class:`~feather.config.service.ConfigService`
             instance to delegate reads/writes to.
         args: Raw argument string after the ``/config`` command token.
 
@@ -91,7 +91,7 @@ def _parse_scope(rest: list[str]) -> tuple[PathScope, bool, list[str]]:
         rest: Token list that may contain scope and force flags.
 
     Returns:
-        Tuple of (resolved :class:`~feather.config_paths.PathScope`,
+        Tuple of (resolved :class:`~feather.config.resolver.PathScope`,
         force flag, remaining positional tokens).
     """
 

@@ -143,7 +143,7 @@ class ApiHub:
 
     def list_config_fields(self) -> list[ConfigFieldOut]:
         """Every editable config field (path, value, source, reload class)."""
-        from feather.config_service import ConfigService
+        from feather.config.service import ConfigService
 
         service = ConfigService(paths=self._runtime.paths, app_config=self._runtime.config)
         out: list[ConfigFieldOut] = []
@@ -195,8 +195,8 @@ class ApiHub:
         self, path: str, value: object, *, scope: str = "global", force: bool = False
     ) -> ConfigApplyOut:
         """Write one config field then apply its reload class (TUI /config set)."""
-        from feather.config_paths import PathScope
-        from feather.config_service import ConfigService
+        from feather.config.resolver import PathScope
+        from feather.config.service import ConfigService
 
         service = ConfigService(paths=self._runtime.paths, app_config=self._runtime.config)
         path_scope = PathScope.PROJECT if scope == "project" else PathScope.GLOBAL

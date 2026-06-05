@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import fields, is_dataclass
 from typing import get_args, get_origin
 
-from feather.config_schema import IGNORED_PATHS, REGISTRY, Scope
+from feather.config.schema import IGNORED_PATHS, REGISTRY, Scope
 from feather.models import AgentConfig, AppConfig
 
 

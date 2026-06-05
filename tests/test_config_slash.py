@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from feather.config import load_app_config
-from feather.config_service import ConfigService
-from feather.config_slash import handle_config_command
+from feather.config.service import ConfigService
+from feather.config.slash import handle_config_command
 from feather.paths import FeatherPaths
 
 

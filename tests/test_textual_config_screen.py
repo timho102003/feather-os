@@ -17,7 +17,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
 from feather.config import load_app_config
-from feather.config_service import ConfigService
+from feather.config.service import ConfigService
 from feather.paths import FeatherPaths
 from feather.textual_config_screen import ConfigScreen
 
@@ -421,7 +421,7 @@ async def test_reset_focused_field(service: ConfigService) -> None:
     async with _Host(service).run_test() as pilot:
         # Navigate to the section containing app.active_provider.
         # That's the "agent" synthetic section (leaf under app.)
-        from feather.config_schema import REGISTRY as REG
+        from feather.config.schema import REGISTRY as REG
         sections: list[str] = []
         for f in REG:
             if not f.path.startswith("app."):
@@ -490,7 +490,7 @@ async def test_tab_cycles_field_focus(service: ConfigService) -> None:
         assert screen._active_field_index == 0
 
         # Navigate to a section with multiple fields (compaction has 6 fields).
-        from feather.config_schema import REGISTRY as REG
+        from feather.config.schema import REGISTRY as REG
         sections: list[str] = []
         for f in REG:
             if not f.path.startswith("app."):
@@ -527,7 +527,7 @@ async def test_shift_tab_cycles_field_focus_backward(service: ConfigService) -> 
         assert isinstance(screen, ConfigScreen)
 
         # Navigate to compaction (multiple fields).
-        from feather.config_schema import REGISTRY as REG
+        from feather.config.schema import REGISTRY as REG
         sections: list[str] = []
         for f in REG:
             if not f.path.startswith("app."):
@@ -676,7 +676,7 @@ def _navigate_to_field(screen: ConfigScreen, target_path: str) -> bool:
     Returns True if reached, False otherwise.
     """
 
-    from feather.config_schema import REGISTRY as REG
+    from feather.config.schema import REGISTRY as REG
 
     # Find the right tab.
     if target_path.startswith("app."):
@@ -812,7 +812,7 @@ async def test_enter_on_model_field_opens_choice_picker_with_catalog(
 
         picker = screen.query("#config-inline-editor").first()
         assert hasattr(picker, "_choices")
-        from feather.models_catalog import load_catalog
+        from feather.config.model_catalog import load_catalog
 
         catalog_slugs = set(load_catalog().slugs_for("openai"))
         assert catalog_slugs.issubset(set(picker._choices))
@@ -1019,7 +1019,7 @@ async def test_agent_provider_inherit_writes_reset_on_save(
 ) -> None:
     """Picking (inherit) on agent.provider clears the overlay key on save."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Stage a non-default value so reset has something to remove.
     service.set("agents.Explore.provider", "claude", scope=PathScope.GLOBAL)
@@ -1069,7 +1069,7 @@ async def test_agent_model_picker_uses_resolved_provider_catalog(
 ) -> None:
     """agents.<name>.model picker offers only the resolved provider's catalog."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Pin Explore to openai so model choices come from openai catalog.
     service.set("agents.Explore.provider", "openai", scope=PathScope.GLOBAL)
@@ -1088,7 +1088,7 @@ async def test_agent_model_picker_uses_resolved_provider_catalog(
         assert "claude-opus-4-7" not in picker._choices
         assert "anthropic/claude-opus-4-7" not in picker._choices
         # But should contain OpenAI catalog entries.
-        from feather.models_catalog import load_catalog
+        from feather.config.model_catalog import load_catalog
 
         openai_slugs = set(load_catalog(paths=service.paths).slugs_for("openai"))
         assert set(picker._choices) & openai_slugs  # non-empty intersection
@@ -1124,7 +1124,7 @@ async def test_agent_model_picker_falls_back_to_active_provider(
 ) -> None:
     """When agent.provider is None (inherit), model picker uses app.active_provider."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Make sure agent.provider is None (inherit) and app.active_provider=claude.
     service.set("app.active_provider", "claude", scope=PathScope.GLOBAL)
@@ -1183,7 +1183,7 @@ async def test_temperature_field_is_editable_for_chat_model(
     the temperature field is editable and the placeholder shows the model's
     actual range."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     service.set("app.openai.model", "gpt-4o", scope=PathScope.GLOBAL)
 
@@ -1205,7 +1205,7 @@ async def test_reasoning_effort_disabled_for_chat_model(
     """gpt-4o is a chat model — reasoning.effort is not a valid knob, so
     it should be marked N/A."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     service.set("app.openai.model", "gpt-4o", scope=PathScope.GLOBAL)
 
@@ -1226,7 +1226,7 @@ async def test_parallel_tool_calls_disabled_for_o3(
 ) -> None:
     """The o-series does not accept parallel_tool_calls — must be N/A."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     service.set("app.openai.model", "o3", scope=PathScope.GLOBAL)
 
@@ -1263,7 +1263,7 @@ async def test_agent_temperature_disabled_when_resolved_model_is_reasoning(
     overriding temperature on a reasoning model would silently have no
     effect (the OpenAI API ignores it)."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Pin app to openai+gpt-5-mini so Lead (which inherits) resolves to a
     # reasoning model regardless of what the shipped default happens to be.
@@ -1288,7 +1288,7 @@ async def test_agent_temperature_editable_when_resolved_model_is_chat(
 ) -> None:
     """If user pins an agent to a chat model, temperature becomes editable."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     service.set("agents.Lead.provider", "openai", scope=PathScope.GLOBAL)
     service.set("agents.Lead.model", "gpt-4o", scope=PathScope.GLOBAL)
@@ -1318,7 +1318,7 @@ async def test_pending_inherit_on_agent_provider_steers_model_picker_to_active(
     provider value. Otherwise the "switch + pick in one pass" UX is broken for
     the inherit case."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Persisted: agent pinned to claude. App default: openai.
     service.set("app.active_provider", "openai", scope=PathScope.GLOBAL)
@@ -1349,7 +1349,7 @@ async def test_dirty_app_model_steers_capability_gating(
     temperature [N/A] AFTER switching to gpt-4o because the picker still
     reads the persisted reasoning model."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Persisted: gpt-5-mini (reasoning, no temp).
     service.set("app.openai.model", "gpt-5-mini", scope=PathScope.GLOBAL)
@@ -1400,7 +1400,7 @@ def test_reset_wraps_filesystem_errors(tmp_path: Path) -> None:
     svc = ConfigService(paths=paths, app_config=cfg)
 
     # Patch delete_yaml_value to raise OSError; reset must return ok=False.
-    with patch("feather.config_writer.delete_yaml_value", side_effect=OSError("disk full")):
+    with patch("feather.config.writer.delete_yaml_value", side_effect=OSError("disk full")):
         result = svc.reset("app.active_provider")
     assert result.ok is False
     assert "disk full" in str(result.error)
@@ -1456,7 +1456,7 @@ async def test_memory_operations_extraction_model_picker_scoped_to_op_provider(
     openai catalog (plus inherit) — even if app.active_provider is set to
     something else."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     service.set("app.active_provider", "claude", scope=PathScope.GLOBAL)
     service.set(
@@ -1483,7 +1483,7 @@ async def test_memory_operations_extraction_model_picker_scoped_to_op_provider(
 def test_embedding_model_is_dropdown_with_known_catalog() -> None:
     """app.memory.embedding.model is a DROPDOWN with the small embedding catalog."""
 
-    from feather.config_schema import EMBEDDING_MODEL_CATALOG, lookup
+    from feather.config.schema import EMBEDDING_MODEL_CATALOG, lookup
 
     field = lookup("app.memory.embedding.model")
     assert field is not None
@@ -1495,7 +1495,7 @@ def test_embedding_model_is_dropdown_with_known_catalog() -> None:
 def test_gemini_task_types_are_dropdown() -> None:
     """app.memory.embedding.task_type_{document,query} are DROPDOWN."""
 
-    from feather.config_schema import GEMINI_TASK_TYPES, lookup
+    from feather.config.schema import GEMINI_TASK_TYPES, lookup
 
     for path in (
         "app.memory.embedding.task_type_document",
@@ -1511,7 +1511,7 @@ def test_gemini_task_types_are_dropdown() -> None:
 def test_tokenizer_encoding_is_dropdown() -> None:
     """app.memory.chunking.tokenizer_encoding is a DROPDOWN with known encodings."""
 
-    from feather.config_schema import TIKTOKEN_ENCODINGS, lookup
+    from feather.config.schema import TIKTOKEN_ENCODINGS, lookup
 
     field = lookup("app.memory.chunking.tokenizer_encoding")
     assert field is not None
@@ -1523,7 +1523,7 @@ def test_tokenizer_encoding_is_dropdown() -> None:
 def test_url_fields_have_url_validator() -> None:
     """openrouter/claude base URLs and qdrant URL reject non-http(s) inputs."""
 
-    from feather.config_schema import lookup
+    from feather.config.schema import lookup
 
     for path in (
         "app.openrouter.base_url",
@@ -1546,7 +1546,7 @@ def test_url_fields_have_url_validator() -> None:
 def test_agent_provider_field_is_dropdown_with_inherit_sentinel() -> None:
     """Schema: agents.*.provider is a DROPDOWN whose choices include inherit."""
 
-    from feather.config_schema import INHERIT_SENTINEL, lookup
+    from feather.config.schema import INHERIT_SENTINEL, lookup
 
     for name in ("Lead", "Explore", "Research", "Validate"):
         field = lookup(f"agents.{name}.provider")
@@ -1564,7 +1564,7 @@ async def test_picker_preserves_unknown_current_value_as_first_option(
 ) -> None:
     """When current value isn't in choices, it's prepended so Enter keeps it."""
 
-    from feather.config_paths import PathScope
+    from feather.config.resolver import PathScope
 
     # Pin a custom model not in MODEL_CATALOG so the picker has to handle it.
     service.set("app.openai.model", "gpt-7-experimental", scope=PathScope.GLOBAL)

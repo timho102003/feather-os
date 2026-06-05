@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.config_paths import (
+from feather.config.resolver import (
     ConfigPathResolver,
     PathResolution,
     PathScope,

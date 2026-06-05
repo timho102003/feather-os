@@ -1,4 +1,4 @@
-"""Tests for :mod:`feather.models_catalog`."""
+"""Tests for :mod:`feather.config.model_catalog`."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pytest
 def test_model_capability_supports_minimal_fields() -> None:
     """ModelCapability accepts only the required fields with sensible defaults."""
 
-    from feather.models_catalog import ModelCapability
+    from feather.config.model_catalog import ModelCapability
 
     cap = ModelCapability(
         slug="test-model",
@@ -39,7 +39,7 @@ def test_model_capability_supports_minimal_fields() -> None:
 def test_model_capability_temperature_range_consistency() -> None:
     """temperature_range must be None when supports_temperature=False."""
 
-    from feather.models_catalog import ModelCapability
+    from feather.config.model_catalog import ModelCapability
 
     with pytest.raises(ValueError, match="temperature_range"):
         ModelCapability(
@@ -55,7 +55,7 @@ def test_model_capability_temperature_range_consistency() -> None:
 def test_model_capability_reasoning_efforts_only_when_supported() -> None:
     """reasoning_efforts must be empty when supports_reasoning=False."""
 
-    from feather.models_catalog import ModelCapability
+    from feather.config.model_catalog import ModelCapability
 
     with pytest.raises(ValueError, match="reasoning_efforts"):
         ModelCapability(
@@ -76,7 +76,7 @@ def test_model_capability_reasoning_efforts_only_when_supported() -> None:
 def test_load_catalog_returns_packaged_models() -> None:
     """Loading the packaged catalog yields openai/anthropic/openrouter entries."""
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     assert "openai" in catalog.providers
@@ -92,7 +92,7 @@ def test_load_catalog_contains_shipped_app_yaml_defaults() -> None:
     fields the model actually supports).
     """
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     assert catalog.capability("openai", "gpt-5-mini") is not None, (
@@ -105,7 +105,7 @@ def test_load_catalog_contains_shipped_app_yaml_defaults() -> None:
 def test_inherits_resolves_eagerly() -> None:
     """A child entry with `inherits:` is flattened so all fields are filled."""
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     # openrouter:anthropic/claude-opus-4-7 inherits from anthropic:claude-opus-4-7
@@ -120,7 +120,7 @@ def test_inherits_resolves_eagerly() -> None:
 def test_inherits_child_overrides_win() -> None:
     """A child entry overrides individual fields from its parent."""
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     child = catalog.capability("openrouter", "anthropic/claude-opus-4-7-fast")
@@ -135,7 +135,7 @@ def test_inherits_child_overrides_win() -> None:
 def test_inherits_unknown_parent_raises_at_load() -> None:
     """Pointing inherits: at a nonexistent slug fails loudly at load time."""
 
-    from feather.models_catalog import _resolve_inherits
+    from feather.config.model_catalog import _resolve_inherits
 
     raw = {
         "openrouter": {
@@ -149,7 +149,7 @@ def test_inherits_unknown_parent_raises_at_load() -> None:
 def test_inherits_cycle_detected_at_load() -> None:
     """A → B → A inherit cycle is detected and raised."""
 
-    from feather.models_catalog import _resolve_inherits
+    from feather.config.model_catalog import _resolve_inherits
 
     raw = {
         "openai": {
@@ -165,7 +165,7 @@ def test_global_overlay_deep_merges_per_slug(tmp_path: Path) -> None:
     """`~/.feather/models/catalog.yaml` patches individual fields without
     requiring a full re-declaration of the entry."""
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
     from feather.paths import FeatherPaths
 
     paths = FeatherPaths(project_root=tmp_path / "proj", home=tmp_path / "global")
@@ -194,7 +194,7 @@ def test_global_overlay_deep_merges_per_slug(tmp_path: Path) -> None:
 def test_global_overlay_can_register_a_brand_new_slug(tmp_path: Path) -> None:
     """User overlay can introduce a slug the packaged catalog doesn't know."""
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
     from feather.paths import FeatherPaths
 
     paths = FeatherPaths(project_root=tmp_path / "proj", home=tmp_path / "global")
@@ -225,7 +225,7 @@ def test_global_overlay_can_register_a_brand_new_slug(tmp_path: Path) -> None:
 
 
 def test_can_edit_temperature_reflects_support() -> None:
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     gpt5 = catalog.capability("openai", "gpt-5-mini")
@@ -238,7 +238,7 @@ def test_can_edit_temperature_reflects_support() -> None:
 
 
 def test_can_edit_reasoning_effort_reflects_support() -> None:
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     gpt5 = catalog.capability("openai", "gpt-5-mini")
@@ -250,7 +250,7 @@ def test_can_edit_reasoning_effort_reflects_support() -> None:
 
 
 def test_can_edit_thinking_only_on_supporting_models() -> None:
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     sonnet = catalog.capability("anthropic", "claude-sonnet-4-6")
@@ -268,7 +268,7 @@ def test_can_edit_thinking_only_on_supporting_models() -> None:
 
 
 def test_can_edit_parallel_tool_calls() -> None:
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     gpt4o = catalog.capability("openai", "gpt-4o")
@@ -283,7 +283,7 @@ def test_can_edit_returns_true_for_unknown_field_paths() -> None:
     """Fields the catalog has no opinion on (e.g. paths, log level) must
     remain editable — the catalog is a permission layer, not an allow-list."""
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     gpt5 = catalog.capability("openai", "gpt-5-mini")
@@ -298,7 +298,7 @@ def test_can_edit_returns_true_for_unknown_field_paths() -> None:
 
 
 def test_slugs_for_returns_per_provider_list() -> None:
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     openai_slugs = catalog.slugs_for("openai")
@@ -315,7 +315,7 @@ def test_slugs_for_returns_per_provider_list() -> None:
 
 
 def test_slugs_for_unknown_provider_returns_empty() -> None:
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     assert load_catalog().slugs_for("nonexistent") == ()
 
@@ -332,7 +332,7 @@ def test_every_slug_returned_by_slugs_for_has_capability_metadata() -> None:
     (no temperature range, no thinking support, etc.).
     """
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     missing: list[str] = []

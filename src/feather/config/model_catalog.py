@@ -32,7 +32,7 @@ import yaml
 from feather.resources import packaged_root
 
 if TYPE_CHECKING:
-    from feather.paths import FeatherPaths
+    from feather.config.app_paths import FeatherPaths
 
 
 _PACKAGED_CATALOG_PATH = packaged_root() / "models" / "catalog.yaml"

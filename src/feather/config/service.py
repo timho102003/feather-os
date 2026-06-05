@@ -3,9 +3,9 @@
 ConfigService is the single entry point the slash-command CLI and
 the future Textual modal both call. It owns:
 
-- field lookup (via :mod:`feather.config_schema`)
+- field lookup (via :mod:`feather.config.schema`)
 - value resolution (current value + source badge)
-- write dispatch (via :mod:`feather.config_writer`)
+- write dispatch (via :mod:`feather.config.writer`)
 - validation (via the registry's per-field validators + enum lists)
 
 The service is intentionally synchronous; reload orchestration lives
@@ -20,10 +20,10 @@ from typing import Any
 
 import yaml
 
-from feather.config_paths import ConfigPathResolver, PathScope
-from feather.config_schema import ConfigField, FieldType, REGISTRY, lookup
+from feather.config.resolver import ConfigPathResolver, PathScope
+from feather.config.schema import ConfigField, FieldType, REGISTRY, lookup
 from feather.models import AppConfig
-from feather.paths import FeatherPaths
+from feather.config.app_paths import FeatherPaths
 
 
 class ValueSource(str, Enum):
@@ -219,7 +219,7 @@ class ConfigService:
                 ),
             )
 
-        from feather.config_writer import write_yaml_value
+        from feather.config.writer import write_yaml_value
 
         validate = self.validate(dotted, value)
         if not validate.ok:
@@ -288,7 +288,7 @@ class ConfigService:
         field_def = lookup(dotted)
         if field_def is None:
             return WriteResult(ok=False, path=dotted, error=f"unknown path: {dotted}")
-        from feather.config_writer import delete_yaml_value
+        from feather.config.writer import delete_yaml_value
 
         res = self._resolver.resolve(dotted, scope=scope)
         try:

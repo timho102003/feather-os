@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from feather.config import load_app_config
-from feather.config_paths import PathScope
-from feather.config_service import ConfigService, ValueSource
+from feather.config.resolver import PathScope
+from feather.config.service import ConfigService, ValueSource
 from feather.paths import FeatherPaths
 
 

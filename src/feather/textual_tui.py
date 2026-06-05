@@ -2022,8 +2022,8 @@ class FeatherTextualApp(App[None]):
                 ``"get app.active_provider"`` or ``"set app.active_provider claude"``.
         """
 
-        from feather.config_service import ConfigService
-        from feather.config_slash import handle_config_command
+        from feather.config.service import ConfigService
+        from feather.config.slash import handle_config_command
         from feather.paths import FeatherPaths as _Paths
 
         assert self._runtime is not None

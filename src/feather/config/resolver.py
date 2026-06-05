@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from feather.paths import FeatherPaths
+from feather.config.app_paths import FeatherPaths
 
 
 class PathScope(str, Enum):

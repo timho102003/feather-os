@@ -1,7 +1,7 @@
 """Textual modal for /config — interactive config editor.
 
 The modal owns no business logic; every read/write call routes
-through ``feather.config_service.ConfigService``.
+through ``feather.config.service.ConfigService``.
 
 Layout::
 
@@ -30,7 +30,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, OptionList, Static
 from textual.widgets.option_list import Option
 
-from feather.config_schema import (
+from feather.config.schema import (
     ConfigField,
     INHERIT_SENTINEL,
     REGISTRY,
@@ -40,8 +40,8 @@ from feather.config_schema import (
     hint_for,
     lookup,
 )
-from feather.config_service import ConfigService
-from feather.models_catalog import ModelCatalog, load_catalog
+from feather.config.service import ConfigService
+from feather.config.model_catalog import ModelCatalog, load_catalog
 
 
 class _FocusableContainer(Container, can_focus=True):
@@ -202,7 +202,7 @@ def _discover_tabs(service: ConfigService) -> list[_TabSpec]:
 class ConfigScreen(ModalScreen[None]):
     """Interactive modal for editing Feather configuration.
 
-    All reads/writes route through :class:`~feather.config_service.ConfigService`.
+    All reads/writes route through :class:`~feather.config.service.ConfigService`.
     Changes accumulate in ``_dirty`` and are only persisted when the user
     presses ``s``.
 
@@ -462,7 +462,7 @@ class ConfigScreen(ModalScreen[None]):
         """Return registry fields for the currently active subsection.
 
         Returns:
-            Ordered list of :class:`~feather.config_schema.ConfigField`.
+            Ordered list of :class:`~feather.config.schema.ConfigField`.
         """
 
         sections = self._subsections()
@@ -831,7 +831,7 @@ class ConfigScreen(ModalScreen[None]):
     def _resolve_field_capability(
         self, field: ConfigField
     ) -> Any:  # ModelCapability | None
-        """Return the :class:`~feather.models_catalog.ModelCapability` that
+        """Return the :class:`~feather.config.model_catalog.ModelCapability` that
         applies to ``field``, or ``None`` when the field isn't model-scoped.
 
         Lookup rules:

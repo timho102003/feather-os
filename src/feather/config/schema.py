@@ -175,7 +175,7 @@ def hint_for(field: "ConfigField") -> str | None:
 #
 # The dropdown choices for ``app.<provider>.model``, ``agents.<name>.model``,
 # and ``app.memory.operations.<op>.model`` are all sourced at picker-open
-# time from the YAML catalog (``feather.models_catalog``) — see
+# time from the YAML catalog (``feather.config.model_catalog``) — see
 # ``ConfigScreen._picker_choices_for``. That keeps every model picker
 # pointing at one source of truth instead of forking a hard-coded
 # ``MODEL_CATALOG`` here that had to be kept in sync by hand (it wasn't,

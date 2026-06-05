@@ -47,7 +47,7 @@ from feather.resources import (
 )
 
 if TYPE_CHECKING:
-    from feather.paths import FeatherPaths
+    from feather.config.app_paths import FeatherPaths
 
 
 logger = logging.getLogger(__name__)
@@ -87,7 +87,7 @@ def load_app_config(
     Args:
         root: Working directory whose ``config/app.yaml`` (if present)
             acts as the authoritative base.
-        paths: Optional :class:`feather.paths.FeatherPaths` whose global
+        paths: Optional :class:`feather.config.app_paths.FeatherPaths` whose global
             config layer is merged on top.
 
     Returns:
@@ -545,7 +545,7 @@ def load_agent_config(
         root: Working directory whose ``config/agents/`` (if present) is
             checked first.
         agent_name: Agent config name without extension.
-        paths: Optional :class:`feather.paths.FeatherPaths` for the
+        paths: Optional :class:`feather.config.app_paths.FeatherPaths` for the
             global override layer.
 
     Returns:
