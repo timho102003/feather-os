@@ -435,8 +435,8 @@ class FeatherRuntime:
         agent instance, so the new agent picks up the in-flight conversation
         transparently on the next turn.
 
-        The factory's internal ``_app_config`` AND ``_provider`` are updated
-        to the runtime's current config so provider-bound state (model,
+        The factory's cached app config + default provider are swapped via
+        :meth:`AgentFactory.rebind_provider` so provider-bound state (model,
         reasoning, HTTP clients) reflects the freshly reloaded values.
 
         Args:
@@ -446,15 +446,15 @@ class FeatherRuntime:
             The newly built agent instance, already stored in the cache.
         """
 
-        # Sync the factory's config view with whatever reload_config() loaded.
-        self._agent_factory._app_config = self._app_config
         # Rebuild the factory's default provider so the new agent gets a fresh
         # provider client (correct model, reasoning config, HTTP client, etc.)
-        # that matches the new active_provider setting.
+        # that matches the new active_provider setting, then rebind it on the
+        # factory through its public seam.
         new_default_provider = _build_default_provider(self._app_config)
         active = (self._app_config.active_provider or "openai").strip().lower()
-        self._agent_factory._provider = new_default_provider
-        self._agent_factory._providers_by_name[active] = new_default_provider
+        self._agent_factory.rebind_provider(
+            app_config=self._app_config, provider=new_default_provider
+        )
         new_agent = self._agent_factory.build(name)
         self._agents[name] = new_agent
         logger.info("runtime.agent.rebuilt name=%s provider=%s", name, active)

@@ -151,20 +151,20 @@ class UserProfileStore:
 
         self._reject_control_sequences(value)
         async with self._lock:
-            self._mutate(create={field_name: value})
+            await asyncio.to_thread(self._mutate, create={field_name: value})
 
     async def update(self, field_name: str, value: str) -> None:
         """Update an existing structured field. Raises if absent."""
 
         self._reject_control_sequences(value)
         async with self._lock:
-            self._mutate(update={field_name: value})
+            await asyncio.to_thread(self._mutate, update={field_name: value})
 
     async def delete(self, field_name: str) -> None:
         """Delete an existing structured field. Raises if absent."""
 
         async with self._lock:
-            self._mutate(delete={field_name})
+            await asyncio.to_thread(self._mutate, delete={field_name})
 
     async def append_note(self, text: str) -> None:
         """Append a dated bullet under the ``## Notes`` section."""
@@ -173,7 +173,7 @@ class UserProfileStore:
             raise ValueError("note text cannot be empty.")
         self._reject_control_sequences(text)
         async with self._lock:
-            self._mutate(note=text.strip())
+            await asyncio.to_thread(self._mutate, note=text.strip())
 
     @staticmethod
     def _reject_control_sequences(text: str) -> None:

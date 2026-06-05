@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import copy
+import functools
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-
-_FLAT_MEMORY_OPS_WARNED = False
 
 import yaml
 
@@ -48,6 +48,20 @@ from feather.resources import (
 
 if TYPE_CHECKING:
     from feather.paths import FeatherPaths
+
+
+logger = logging.getLogger(__name__)
+
+
+@functools.lru_cache(maxsize=1)
+def _warn_flat_memory_ops_once() -> None:
+    """Emit the deprecated-flat-memory-shape warning at most once per process."""
+
+    logger.warning(
+        "memory.{extraction,classification,query_builder} flat shape is "
+        "deprecated; move under memory.operations.{...} (loader still "
+        "accepts both for now)."
+    )
 
 
 def load_app_config(
@@ -463,19 +477,10 @@ def _parse_memory_config(raw: dict[str, Any]) -> MemoryConfig:
     query_builder_raw = (
         operations_raw.get("query_builder") or raw.get("query_builder") or {}
     )
-    global _FLAT_MEMORY_OPS_WARNED
     if not operations_raw and any(
         raw.get(k) for k in ("extraction", "classification", "query_builder")
     ):
-        if not _FLAT_MEMORY_OPS_WARNED:
-            import logging
-
-            logging.getLogger(__name__).warning(
-                "memory.{extraction,classification,query_builder} flat shape is "
-                "deprecated; move under memory.operations.{...} (loader still "
-                "accepts both for now)."
-            )
-            _FLAT_MEMORY_OPS_WARNED = True
+        _warn_flat_memory_ops_once()
     extraction = _parse_operation_model(
         extraction_raw, default_max=2000, default_temp=0.1
     )

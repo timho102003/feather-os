@@ -166,6 +166,23 @@ class AgentFactory:
             self._default_provider_name(): provider,
         }
 
+    def rebind_provider(
+        self, *, app_config: AppConfig, provider: BaseLLMProvider
+    ) -> None:
+        """Swap the cached app config + active default provider after a reload.
+
+        Owns the three fields the runtime previously mutated directly
+        (``_app_config``, ``_provider``, ``_providers_by_name[active]``); going
+        through this seam keeps a rename of factory internals from silently
+        breaking the NEXT_TURN provider-reload path. ``_app_config`` is set
+        first so ``_default_provider_name()`` keys the cache off the *new*
+        active provider.
+        """
+
+        self._app_config = app_config
+        self._provider = provider
+        self._providers_by_name[self._default_provider_name()] = provider
+
     @property
     def agent_catalog(self) -> AgentCatalog:
         """The catalog used to discover leads + dispatchable sub-agents."""

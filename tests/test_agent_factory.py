@@ -642,6 +642,47 @@ async def test_agent_factory_registers_user_info_only_for_lead(tmp_path: Path) -
         await session_store.close()
 
 
+async def test_rebind_provider_swaps_config_and_active_provider(tmp_path: Path) -> None:
+    """``rebind_provider`` replaces the cached app_config + active default provider.
+
+    This is the public seam the runtime's NEXT_TURN reload uses instead of
+    reaching into ``_app_config`` / ``_provider`` / ``_providers_by_name``.
+    """
+
+    _write_app_config(tmp_path)
+    _write_agent_config(
+        tmp_path, "lead", name="Lead", role="lead", registered_tools=["read_file"]
+    )
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+
+    session_store = SessionStore(tmp_path / "feather.db")
+    await session_store.initialize()
+    try:
+        app_config = load_app_config(tmp_path)
+        tool_output_store = ToolOutputStore(tmp_path, app_config.storage.temp_directory)
+        first_provider = FakeProvider()
+        factory = AgentFactory(
+            root=tmp_path,
+            app_config=app_config,
+            provider=first_provider,
+            session_store=session_store,
+            tool_output_store=tool_output_store,
+            skill_catalog=SkillCatalog((tmp_path / ".feather" / "skills").resolve()),
+        )
+        active = factory._default_provider_name()
+        assert factory._providers_by_name[active] is first_provider
+
+        second_provider = FakeProvider()
+        new_config = load_app_config(tmp_path)
+        factory.rebind_provider(app_config=new_config, provider=second_provider)
+
+        assert factory._app_config is new_config
+        assert factory._provider is second_provider
+        assert factory._providers_by_name[active] is second_provider
+    finally:
+        await session_store.close()
+
+
 def _write_app_config(root: Path) -> None:
     """Write a minimal app config for runtime construction tests."""
 

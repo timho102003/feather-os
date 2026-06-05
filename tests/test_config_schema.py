@@ -17,6 +17,23 @@ def test_lookup_finds_by_exact_path() -> None:
     assert "openrouter" in field.enum
 
 
+def test_lookup_index_matches_first_registry_match() -> None:
+    """The O(1) path index returns the same field a linear scan would.
+
+    Pins the lookup optimization: ``lookup`` must resolve to the *first*
+    REGISTRY entry for a path (first-occurrence-wins), identical to the
+    previous linear scan, and unknown paths still return ``None``.
+    """
+
+    from feather.config_schema import _REGISTRY_BY_PATH
+
+    for field in REGISTRY:
+        first = next(f for f in REGISTRY if f.path == field.path)
+        assert lookup(field.path) is first
+        assert _REGISTRY_BY_PATH[field.path] is first
+    assert lookup("definitely.not.a.real.path") is None
+
+
 def test_lookup_handles_agent_wildcard() -> None:
     field = lookup("agents.Lead.model")
     assert field is not None

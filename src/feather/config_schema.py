@@ -1471,6 +1471,12 @@ IGNORED_PATHS: frozenset[str] = frozenset({
 })
 
 
+# Path -> field index for O(1) lookup. Built from ``reversed(REGISTRY)`` so
+# that on the (unexpected) duplicate path the earliest REGISTRY entry wins,
+# preserving the previous linear-scan "first match" semantics.
+_REGISTRY_BY_PATH: dict[str, ConfigField] = {f.path: f for f in reversed(REGISTRY)}
+
+
 def lookup(path: str) -> ConfigField | None:
     """Return the registry entry for ``path``, or ``None``.
 
@@ -1479,10 +1485,7 @@ def lookup(path: str) -> ConfigField | None:
     entry — the agent name is part of the literal path, not a wildcard).
     """
 
-    for field in REGISTRY:
-        if field.path == path:
-            return field
-    return None
+    return _REGISTRY_BY_PATH.get(path)
 
 
 __all__ = (

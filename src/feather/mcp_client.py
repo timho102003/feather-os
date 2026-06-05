@@ -20,6 +20,7 @@ from feather.models import (
     ToolExecutionContext,
     ToolExecutionResult,
 )
+from feather import __version__ as _FEATHER_VERSION
 from feather.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,7 @@ class MCPStreamableHTTPClient:
                 {
                     "protocolVersion": _MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "feather", "version": "0.1.0"},
+                    "clientInfo": {"name": "feather", "version": _FEATHER_VERSION},
                 },
             )
             await self._notify("notifications/initialized")
@@ -358,7 +359,7 @@ class MCPStdioClient:
                 {
                     "protocolVersion": _MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "feather", "version": "0.1.0"},
+                    "clientInfo": {"name": "feather", "version": _FEATHER_VERSION},
                 },
             )
             await self._notify("notifications/initialized")
@@ -725,7 +726,6 @@ class MCPProxyTool(BaseTool):
                 )
             output = await client.call_tool(tool_name, tool_args)
             return ToolExecutionResult(output=_cap_mcp_output(output))
-        raise RuntimeError("MCP proxy client exited before producing a result")
 
 
 def _decode_jsonrpc_response(response: httpx.Response) -> dict[str, Any]:

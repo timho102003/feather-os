@@ -463,8 +463,10 @@ async def run_cli(
             for task in (reader_task, driver_task, watcher_task):
                 try:
                     await task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                except asyncio.CancelledError:
                     pass
+                except Exception:  # noqa: BLE001 - log, don't mask shutdown
+                    logging.getLogger(__name__).exception("cli.teardown.task_error")
     finally:
         if active_session_id is not None:
             runtime.set_session_event_handler(active_session_id, None)

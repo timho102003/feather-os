@@ -9,10 +9,14 @@ tmp-file + rename so an interrupted write never leaves a half-written
 from __future__ import annotations
 
 import io
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from ruamel.yaml import YAML
+
+__all__ = ("write_yaml_value", "delete_yaml_value")
 
 
 def _yaml() -> YAML:
@@ -21,6 +25,25 @@ def _yaml() -> YAML:
     yaml.width = 4096
     yaml.indent(mapping=2, sequence=4, offset=2)
     return yaml
+
+
+def _atomic_write_text(file: Path, text: str) -> None:
+    """Write ``text`` to ``file`` atomically via a unique temp file + rename.
+
+    A per-write unique temp name (``tempfile.mkstemp``) — not a fixed ``.tmp``
+    sibling — so two concurrent writers to the same ``app.yaml`` (TUI multi-field
+    save, or API + TUI at once) cannot clobber each other's half-written temp.
+    """
+
+    fd, tmp_name = tempfile.mkstemp(dir=file.parent, suffix=".tmp")
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, file)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def write_yaml_value(file: Path, yaml_path: list[str], value: Any) -> None:
@@ -60,11 +83,7 @@ def write_yaml_value(file: Path, yaml_path: list[str], value: Any) -> None:
 
     buffer = io.StringIO()
     yaml.dump(data, buffer)
-    new_text = buffer.getvalue()
-
-    tmp = file.with_suffix(file.suffix + ".tmp")
-    tmp.write_text(new_text, encoding="utf-8")
-    tmp.replace(file)
+    _atomic_write_text(file, buffer.getvalue())
 
 
 def delete_yaml_value(file: Path, yaml_path: list[str]) -> bool:
@@ -95,7 +114,5 @@ def delete_yaml_value(file: Path, yaml_path: list[str]) -> bool:
 
     buffer = io.StringIO()
     yaml.dump(data, buffer)
-    tmp = file.with_suffix(file.suffix + ".tmp")
-    tmp.write_text(buffer.getvalue(), encoding="utf-8")
-    tmp.replace(file)
+    _atomic_write_text(file, buffer.getvalue())
     return True
