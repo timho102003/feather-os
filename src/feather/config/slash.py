@@ -43,7 +43,16 @@ def handle_config_command(
     tokens = args.strip().split()
     if not tokens:
         return ConfigCommandResult(
-            ok=False, body="Interactive /config modal is not yet wired (Phase 2)."
+            ok=True,
+            body=(
+                "Usage: /config <subcommand>\n"
+                "  get <path>           show a field's value and where it comes from\n"
+                "  set <path> <value>   write a field (project scope) and apply it live\n"
+                "  list [section]       list fields, optionally filtered by dotted prefix\n"
+                "  diff                 show fields overridden from the packaged default\n"
+                "  reset <path>         remove an override\n"
+                "The Textual TUI also opens an interactive editor for /config."
+            ),
         )
 
     sub, *rest = tokens

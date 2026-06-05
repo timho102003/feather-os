@@ -105,12 +105,17 @@ def test_unknown_subcommand(tmp_path: Path) -> None:
     assert "unknown" in result.body.lower()
 
 
-def test_bare_config_returns_modal_pending(tmp_path: Path) -> None:
+def test_bare_config_returns_usage_help(tmp_path: Path) -> None:
     svc = _service(tmp_path)
 
     result = handle_config_command(svc, "")
 
-    assert not result.ok
+    # Bare /config is help, not an error (the modal is wired in the TUI now).
+    assert result.ok
+    body = result.body.lower()
+    assert "usage" in body
+    for sub in ("get", "set", "list", "diff", "reset"):
+        assert sub in body
 
 
 # ---------------------------------------------------------------------------

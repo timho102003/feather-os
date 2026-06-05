@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable
 
@@ -27,6 +28,20 @@ from feather.paths import FeatherPaths
 
 _MIGRATED_BREADCRUMB = "MIGRATED_TO_GLOBAL.txt"
 _DECLINED_BREADCRUMB = "MIGRATION_DECLINED.txt"
+
+
+class MigrationOutcome(str, Enum):
+    """Terminal outcomes of :func:`maybe_migrate`.
+
+    A ``str`` Enum so existing ``== "migrated"`` style comparisons (and the
+    CLI, which currently ignores the return) keep working unchanged.
+    """
+
+    NOT_APPLICABLE = "not-applicable"
+    ALREADY_HANDLED = "already-handled"
+    DEFERRED = "deferred"
+    DECLINED = "declined"
+    MIGRATED = "migrated"
 
 
 @dataclass(slots=True, frozen=True)
@@ -86,24 +101,24 @@ def maybe_migrate(
     *,
     ask: Callable[[str], str] = input,
     say: Callable[[str], None] = print,
-) -> str:
+) -> MigrationOutcome:
     """Run the interactive migration if applicable.
 
-    Returns one of ``"not-applicable"``, ``"already-handled"``,
-    ``"migrated"``, or ``"declined"``. The behavior is intentionally
-    side-effect-free when nothing needs migrating, so the CLI can call
-    it on every run without surprising users who set up cleanly via
-    ``pip install``.
+    Returns a :class:`MigrationOutcome` — one of ``NOT_APPLICABLE``,
+    ``ALREADY_HANDLED``, ``DEFERRED`` (non-tty, can't prompt), ``DECLINED``,
+    or ``MIGRATED``. The behavior is intentionally side-effect-free when
+    nothing needs migrating, so the CLI can call it on every run without
+    surprising users who set up cleanly via ``pip install``.
     """
 
     if not paths.is_project_mode:
-        return "not-applicable"
+        return MigrationOutcome.NOT_APPLICABLE
     if already_handled(paths):
-        return "already-handled"
+        return MigrationOutcome.ALREADY_HANDLED
 
     artifacts = detect_legacy_artifacts(paths)
     if not artifacts.has_anything:
-        return "not-applicable"
+        return MigrationOutcome.NOT_APPLICABLE
 
     # Bail out cleanly when stdin is closed (CI smoke runs, piped
     # invocations, sandboxed installs). Only applies when we're going to
@@ -112,7 +127,7 @@ def maybe_migrate(
     import sys as _sys
 
     if ask is input and not _sys.stdin.isatty():
-        return "deferred"
+        return MigrationOutcome.DEFERRED
 
     say("")
     say("Detected legacy Feather state in this directory:")
@@ -132,14 +147,14 @@ def maybe_migrate(
     if answer in {"s", "skip"}:
         _write_breadcrumb(paths, _DECLINED_BREADCRUMB, "Migration declined.\n")
         say("Skipped. We won't ask again for this project.")
-        return "declined"
+        return MigrationOutcome.DECLINED
 
     if answer in {"n", "no"}:
         # User explicitly said no but didn't elect skip — leave the
         # door open for next run by NOT writing a breadcrumb. They might
         # want to migrate later.
         say("Not migrating now. Run again to be prompted next time.")
-        return "declined"
+        return MigrationOutcome.DECLINED
 
     # Anything else (including empty input) → migrate.
     paths.ensure_global_dirs()
@@ -156,7 +171,7 @@ def maybe_migrate(
         "Legacy state copied to ~/.feather/. Originals were preserved.\n",
     )
     say("Migration complete. Originals are untouched in this directory.")
-    return "migrated"
+    return MigrationOutcome.MIGRATED
 
 
 def _copy_if_missing(

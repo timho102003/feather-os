@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -244,10 +245,11 @@ class ConfigService:
         """
 
         out: list[ConfigRow] = []
+        file_cache: dict[Path, dict[str, Any] | None] = {}
         for field_def in REGISTRY:
             if section and not field_def.path.startswith(section):
                 continue
-            current, source = self._resolve_value(field_def)
+            current, source = self._resolve_value(field_def, file_cache=file_cache)
             out.append(ConfigRow(field=field_def, current=current, source=source))
         return out
 
@@ -261,8 +263,9 @@ class ConfigService:
         """
 
         out: dict[str, tuple[Any, Any]] = {}
+        file_cache: dict[Path, dict[str, Any] | None] = {}
         for field_def in REGISTRY:
-            current, source = self._resolve_value(field_def)
+            current, source = self._resolve_value(field_def, file_cache=file_cache)
             if source is ValueSource.DEFAULT:
                 continue
             default = self._dig_app_config(field_def.path)
@@ -301,11 +304,20 @@ class ConfigService:
 
     # ----- internal value lookup ---------------------------------
 
-    def _resolve_value(self, field_def: ConfigField) -> tuple[Any, ValueSource]:
+    def _resolve_value(
+        self,
+        field_def: ConfigField,
+        *,
+        file_cache: dict[Path, dict[str, Any] | None] | None = None,
+    ) -> tuple[Any, ValueSource]:
         """Walk PROJECT then GLOBAL overlays; fall back to AppConfig default.
 
         Args:
             field_def: Registry entry to resolve.
+            file_cache: Optional per-call memo of each overlay file's parsed
+                YAML. ``list()``/``diff()`` pass one so the same 1-2 overlay
+                files aren't re-read and re-parsed once per registry field
+                (~165x); ``get()`` resolves a single field and passes ``None``.
 
         Returns:
             Tuple of (current_value, source_enum).
@@ -316,14 +328,34 @@ class ConfigService:
             (PathScope.GLOBAL, ValueSource.GLOBAL),
         ):
             res = self._resolver.resolve(field_def.path, scope=scope)
-            if res.file.exists():
-                data = yaml.safe_load(res.file.read_text(encoding="utf-8")) or {}
+            data = self._read_overlay(res.file, file_cache)
+            if data is not None:
                 value = self._dig(data, res.yaml_path)
                 if value is not None:
                     return value, source_enum
         # Fallback: read the resolved current value from the live
         # AppConfig (which already reflects packaged defaults).
         return self._dig_app_config(field_def.path), ValueSource.DEFAULT
+
+    @staticmethod
+    def _read_overlay(
+        file: Path, file_cache: dict[Path, dict[str, Any] | None] | None
+    ) -> dict[str, Any] | None:
+        """Parse an overlay YAML file (``None`` when absent), memoized per call.
+
+        When ``file_cache`` is provided the parsed result (including the
+        ``None`` for a missing file) is cached by path, so a ``list()`` over the
+        whole registry reads each overlay exactly once.
+        """
+
+        if file_cache is not None and file in file_cache:
+            return file_cache[file]
+        data: dict[str, Any] | None = None
+        if file.exists():
+            data = yaml.safe_load(file.read_text(encoding="utf-8")) or {}
+        if file_cache is not None:
+            file_cache[file] = data
+        return data
 
     @staticmethod
     def _dig(data: dict[str, Any], yaml_path: list[str]) -> Any:

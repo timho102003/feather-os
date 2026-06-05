@@ -55,6 +55,37 @@ def test_get_unknown_path_raises(tmp_path: Path) -> None:
         svc.get("app.nope.foo")
 
 
+def test_list_reads_each_overlay_file_once(tmp_path: Path, monkeypatch) -> None:
+    """list() reads each overlay YAML once, not once per registry field.
+
+    Before the per-call memo, every ``app.*`` field re-read + re-parsed the
+    global ``app.yaml`` overlay (~dozens of reads); now it is read exactly once.
+    """
+
+    svc = _service(tmp_path)
+    overlay = svc.paths.global_config_dir / "app.yaml"
+    # A GLOBAL overlay (partial is fine — deep-merged, not the base) that the
+    # many app.* registry fields resolve against during list().
+    overlay.write_text(
+        "active_provider: openai\nopenai:\n  model: gpt-5\n", encoding="utf-8"
+    )
+
+    reads = 0
+    real_read_text = Path.read_text
+
+    def counting_read_text(self, *args, **kwargs):
+        nonlocal reads
+        if self == overlay:
+            reads += 1
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", counting_read_text)
+    rows = svc.list()
+
+    assert len(rows) > 50  # the full registry
+    assert reads == 1, f"global overlay read {reads}x; memo should read it once"
+
+
 # ---------------------------------------------------------------------------
 # Task 16: ConfigService.validate + set
 # ---------------------------------------------------------------------------
