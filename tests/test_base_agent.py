@@ -30,7 +30,7 @@ from feather.storage.attachment_store import AttachmentStore
 from feather.storage.session_store import SessionStore
 from feather.storage.tool_output_store import ToolOutputStore
 from feather.tools.base import BaseTool
-from feather.mcp_client import MCPProxyTool
+from feather.integrations.mcp.client import MCPProxyTool
 from feather.tools.registry import ToolRegistry
 
 

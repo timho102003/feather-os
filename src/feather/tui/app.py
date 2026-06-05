@@ -21,7 +21,7 @@ from textual.screen import ModalScreen
 from textual.widgets import OptionList, RichLog, Static, TextArea
 from textual.widgets.option_list import Option
 
-from feather.attachments import parse_attachment_drops, render_attachment_message
+from feather.integrations.attachments.parse import parse_attachment_drops, render_attachment_message
 from feather.core.agent.catalog import AgentCatalog
 from feather.core.leads.scaffold import scaffold_lead_yaml
 from feather.core.leads.supervisor import LeadSupervisor

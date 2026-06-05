@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from feather.attachments import parse_attachment_drops
+from feather.integrations.attachments.parse import parse_attachment_drops
 from feather.models import AttachmentKind, AttachmentRecord, PendingAttachment
 from feather.storage.session_store import SessionStore
 
@@ -242,7 +242,7 @@ def _is_under(path: Path, root: Path) -> bool:
 
 def _try_extract_pdf_text(path: Path) -> str:
     try:
-        from feather.pdf import extract_pdf_text
+        from feather.integrations.attachments.pdf import extract_pdf_text
     except Exception:
         return ""
     try:

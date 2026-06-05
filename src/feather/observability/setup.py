@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from feather.log_context import build_context_filter
+from feather.observability.context import build_context_filter
 from feather.models import LoggingConfig
 
 
@@ -15,7 +15,7 @@ def configure_logging(root: Path, config: LoggingConfig) -> logging.Logger:
     The format string embeds ``agent_ctx`` and ``session_ctx`` between
     the level and the module name; they are populated by the context
     filter installed once on the root logger (see
-    :mod:`feather.log_context`). Feather code sets the contextvars
+    :mod:`feather.observability.context`). Feather code sets the contextvars
     inside :meth:`BaseAgent.run_loop`; third-party libraries that
     don't set them render as ``-`` so the column layout stays stable.
 

@@ -28,7 +28,7 @@ from feather.core.session.coordinator import SessionRunCoordinator
 from feather.core.subagents.registry import SubagentRegistry
 from feather.core.subagents.reaper import SubagentReaper
 from feather.config.env import load_dotenv
-from feather.logging_utils import configure_logging
+from feather.observability.setup import configure_logging
 from feather.memory.runtime import MemoryStack, build_memory_stack
 from feather.messaging.adapters.line import LineAdapter
 from feather.messaging.adapters.telegram import TelegramAdapter

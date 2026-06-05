@@ -9,7 +9,7 @@ import logging
 from abc import ABC
 from typing import Any
 
-from feather.attachments import (
+from feather.integrations.attachments.parse import (
     build_attachment_content_blocks,
     render_attachment_message,
     validate_pending_attachments,
@@ -20,12 +20,12 @@ from feather.core.session.input_queue import UserInputQueue
 from feather.core.agent.prompt_builder import PromptBuilder
 from feather.core.session.coordinator import SessionRunCoordinator
 from feather.storage.agent_message_store import AgentMessageStore
-from feather.log_context import current_agent_name
+from feather.observability.context import current_agent_name
 from feather.memory.context import current_session_id
 from feather.memory.enums import MemoryOwner
 from feather.memory.reader import MemoryReader, NoOpMemoryReader
 from feather.memory.trigger import MemoryTrigger, NoOpMemoryTrigger
-from feather.mcp_client import (
+from feather.integrations.mcp.client import (
     MCPClientManager,
     mcp_proxy_tool_name,
     should_proxy_mcp_server,

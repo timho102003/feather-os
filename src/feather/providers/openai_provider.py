@@ -19,7 +19,7 @@ from feather.models import (
     RuntimeEvent,
     ToolCall,
 )
-from feather.mcp_client import openai_mcp_tools
+from feather.integrations.mcp.client import openai_mcp_tools
 from feather.providers.base import BaseLLMProvider
 
 logger = logging.getLogger(__name__)

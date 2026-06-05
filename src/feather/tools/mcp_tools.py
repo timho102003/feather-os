@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from feather.mcp_client import (
+from feather.integrations.mcp.client import (
     MCPClientManager,
     MCPStreamableHTTPClient,
     mcp_proxy_tool_name,

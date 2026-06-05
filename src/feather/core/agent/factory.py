@@ -23,7 +23,7 @@ from feather.memory.context import current_session_id
 from feather.memory.reader import NoOpMemoryReader
 from feather.memory.runtime import MemoryStack
 from feather.memory.trigger import NoOpMemoryTrigger
-from feather.mcp_client import (
+from feather.integrations.mcp.client import (
     MCPClientManager,
     MCPProxyTool,
     mcp_servers_for,

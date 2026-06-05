@@ -11,7 +11,7 @@ from typing import Any
 import httpx
 import pytest
 
-from feather.mcp_client import (
+from feather.integrations.mcp.client import (
     MCPClientManager,
     MCPProxyTool,
     MCPStdioClient,

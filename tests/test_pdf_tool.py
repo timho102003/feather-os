@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from feather import pdf as pdf_module
+from feather.integrations.attachments import pdf as pdf_module
 from feather.models import ToolExecutionContext
-from feather.pdf import extract_pdf_text
+from feather.integrations.attachments.pdf import extract_pdf_text
 from feather.tools import pdf_tool
 from feather.tools.pdf_tool import ReadPdfTool
 

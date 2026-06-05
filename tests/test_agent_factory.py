@@ -76,7 +76,7 @@ async def test_agent_factory_registers_mcp_management_tools_and_hides_proxy_unti
 ) -> None:
     """OpenRouter agents get tiny MCP controls without prompt-listing every server."""
 
-    from feather.mcp_client import MCPProxyTool
+    from feather.integrations.mcp.client import MCPProxyTool
 
     _write_app_config(tmp_path)
     cfg_path = tmp_path / "config" / "app.yaml"
