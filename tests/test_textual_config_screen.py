@@ -19,7 +19,7 @@ from textual.widgets import Input, Static
 from feather.config import load_app_config
 from feather.config.service import ConfigService
 from feather.paths import FeatherPaths
-from feather.textual_config_screen import ConfigScreen
+from feather.tui.config_screen import ConfigScreen
 
 
 # ---------------------------------------------------------------------------

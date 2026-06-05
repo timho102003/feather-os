@@ -10,7 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from feather.textual_tui import FeatherTextualApp, PerLeadState, build_lead_strip
+from feather.tui.app import FeatherTextualApp, PerLeadState, build_lead_strip
 from feather.models import RuntimeEvent
 
 

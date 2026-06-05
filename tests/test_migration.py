@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.migration import (
+from feather.setup.migration import (
     detect_legacy_artifacts,
     already_handled,
     maybe_migrate,

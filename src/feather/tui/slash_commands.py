@@ -2,7 +2,7 @@
 
 The module is deliberately decoupled from any UI framework so the matching
 and parsing rules can be exercised under unit tests without spinning up a
-Textual app. The Textual layer (``feather.textual_tui``) wires the registry
+Textual app. The Textual layer (``feather.tui.app``) wires the registry
 into its composer/dropdown widgets and dispatch table.
 
 Design highlights:

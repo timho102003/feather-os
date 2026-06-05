@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from textual.geometry import Region
 
 from feather.models import RuntimeEvent, TaskRecord, TaskStatus
-from feather.textual_tui import (
+from feather.tui.app import (
     ComposerTextArea,
     FeatherTextualApp,
     build_transcript_text,
@@ -284,7 +284,7 @@ def test_tick_spinner_advances_frame_and_renders_when_streaming(monkeypatch) -> 
     frame counter AND repaint the conversation so the spinner glyph
     cycles even while text deltas are paused (model mid-reasoning)."""
 
-    from feather.textual_tui import _SPINNER_FRAMES
+    from feather.tui.app import _SPINNER_FRAMES
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     rendered = 0
@@ -466,7 +466,7 @@ def _patch_run_textual_tui_lifecycle(
     import logging as _logging
     import sys as _sys
 
-    from feather import textual_tui as _tt
+    from feather.tui import app as _tt
 
     captured: dict = {
         "exit_code": None,
@@ -561,7 +561,7 @@ def test_run_textual_tui_force_exits_1_on_fatal_exception(monkeypatch, caplog) -
 
     captured = _patch_run_textual_tui_lifecycle(monkeypatch, run_async_impl=_boom)
 
-    with caplog.at_level(_logging.ERROR, logger="feather.textual_tui"):
+    with caplog.at_level(_logging.ERROR, logger="feather.tui.app"):
         _asyncio.run(run_textual_tui(Path("/tmp"), None))
 
     assert captured["exit_code"] == 1

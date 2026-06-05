@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from feather.textual_tui import SubagentDrillScreen
+from feather.tui.app import SubagentDrillScreen
 
 
 class _FakeOptionList:

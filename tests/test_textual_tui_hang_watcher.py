@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from feather.slash_commands import default_registry
-from feather.textual_tui import decide_hang_alert
+from feather.tui.slash_commands import default_registry
+from feather.tui.app import decide_hang_alert
 
 
 # --------------------------------------------------------------------- #
@@ -49,7 +49,7 @@ def test_restart_lead_handler_is_bound_in_textual_tui() -> None:
     runtime check raises at TUI construction. Smoke test by importing the
     binding map symbol indirectly via the module."""
 
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     # The handler binding lives inside _register_default_handlers; the
     # runtime guard there raises if the slash command exists with no

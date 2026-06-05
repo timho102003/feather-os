@@ -574,16 +574,16 @@ def main() -> None:
     if args.command == "init":
         if paths.project_root is None:
             paths = FeatherPaths.for_project(Path.cwd().resolve(), home=paths.global_root)
-        from feather.cli_commands import init_project
+        from feather.cli.commands import init_project
         sys.exit(init_project(paths))
     if args.command == "init-memory":
-        from feather.cli_commands import init_memory
+        from feather.cli.commands import init_memory
         sys.exit(init_memory(paths))
     if args.command == "stop-memory":
-        from feather.cli_commands import stop_memory
+        from feather.cli.commands import stop_memory
         sys.exit(stop_memory(paths))
     if args.command == "remove-memory":
-        from feather.cli_commands import remove_memory
+        from feather.cli.commands import remove_memory
         sys.exit(remove_memory(paths, purge=args.purge))
 
     # Below here the legacy code path still uses Path.cwd() — paths
@@ -595,7 +595,7 @@ def main() -> None:
     # Offer the legacy → global migration once per project. Skipped
     # silently when nothing legacy exists or when the breadcrumb says
     # we already prompted.
-    from feather.migration import maybe_migrate
+    from feather.setup.migration import maybe_migrate
 
     maybe_migrate(paths)
 
@@ -626,7 +626,7 @@ def main() -> None:
         uvicorn.run(app, host=args.host, port=args.port)
         return
     # Default + explicit `tui`: launch the Textual TUI.
-    from feather.textual_tui import run_textual_tui
+    from feather.tui.app import run_textual_tui
 
     tui_session_id = getattr(args, "tui_session_id", None) or args.session_id
     asyncio.run(

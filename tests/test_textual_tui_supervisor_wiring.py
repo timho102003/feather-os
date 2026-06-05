@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 
-from feather import textual_tui
+from feather.tui import app as textual_tui
 
 
 def test_start_lead_worker_supervisor_calls_attach_supervisor() -> None:

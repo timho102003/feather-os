@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from feather.textual_tui import _LEAD_WORKER_ENV, _should_use_lead_worker
+from feather.tui.app import _LEAD_WORKER_ENV, _should_use_lead_worker
 
 
 def test_default_is_false(monkeypatch) -> None:

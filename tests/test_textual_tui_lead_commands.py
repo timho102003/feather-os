@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from feather.config import load_agent_config
 from feather.core.agent.capabilities import CapabilityProfile
 from feather.core.leads.soul_library import SoulLibrary
-from feather.textual_tui import FeatherTextualApp, PerLeadState
+from feather.tui.app import FeatherTextualApp, PerLeadState
 
 
 def _state(name: str, display: str) -> PerLeadState:

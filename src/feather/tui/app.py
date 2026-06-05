@@ -29,7 +29,7 @@ from feather.core.log_triage_bot import LogTriageBot
 from feather.core.restart_watcher import RestartWatcher
 from feather.models import AgentOutcome, RuntimeEvent, TaskRecord, TaskStatus
 from feather.runtime import FeatherRuntime
-from feather.slash_commands import (
+from feather.tui.slash_commands import (
     SlashCommand,
     SlashCommandRegistry,
     default_registry,
@@ -2014,7 +2014,7 @@ class FeatherTextualApp(App[None]):
         """Dispatch the `/config <sub> [args]` slash command.
 
         When invoked with no arguments (bare ``/config``), pushes the
-        interactive :class:`~feather.textual_config_screen.ConfigScreen`
+        interactive :class:`~feather.tui.config_screen.ConfigScreen`
         modal. With subcommands, falls through to the headless dispatcher.
 
         Args:
@@ -2038,7 +2038,7 @@ class FeatherTextualApp(App[None]):
 
         # Bare /config → open the interactive modal (Phase 2).
         if not args.strip():
-            from feather.textual_config_screen import ConfigScreen
+            from feather.tui.config_screen import ConfigScreen
 
             self.push_screen(ConfigScreen(service=service, runtime=self._runtime))
             return

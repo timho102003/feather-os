@@ -78,7 +78,7 @@ def _resolve_qdrant_url(cfg: MemoryConfig) -> str | None:
     if env and env.strip():
         return env
     try:
-        from feather.cli_commands import memory_url_from_marker
+        from feather.cli.commands import memory_url_from_marker
         from feather.paths import FeatherPaths
 
         marker_url = memory_url_from_marker(FeatherPaths.global_only())

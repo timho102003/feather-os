@@ -6,7 +6,7 @@ the appropriate :class:`feather.config.service.ConfigService` method,
 returning a rendered string for the TUI to display.
 
 Interactive (modal) handling is wired separately in
-``feather.textual_tui`` (Phase 2). Phase 1 supports headless only.
+``feather.tui.app`` (Phase 2). Phase 1 supports headless only.
 """
 
 from __future__ import annotations
