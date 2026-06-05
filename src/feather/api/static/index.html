@@ -80,6 +80,29 @@
   .transcript .t-msg { border-bottom: 1px dashed var(--line); padding: 8px 0; white-space: pre-wrap; }
   .t-role { color: var(--accent); font-size: 11px; text-transform: uppercase; }
   .muted { color: var(--dim); }
+  /* usage pill, awaiting banner, mid-turn inject */
+  #topbar .pill.usage { color: var(--accent2); }
+  #topbar .pill.model { color: var(--accent); }
+  #awaiting-banner { display: none; padding: 8px 18px; background: #2a210f; border-bottom: 1px solid var(--amber); color: var(--amber); font-size: 12px; }
+  #awaiting-banner.show { display: block; }
+  #composer .inject { background: var(--panel); }
+  .msg.system .who { color: var(--accent2); }
+  /* raw event log */
+  .raw-head { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-top: 1px solid var(--line); background: var(--panel); font-size: 11px; color: var(--dim); }
+  #raw-log { height: 190px; overflow-y: auto; background: #080a0e; padding: 6px 12px; font-size: 11px; }
+  #raw-log .ev { white-space: pre-wrap; word-break: break-word; border-bottom: 1px dashed #161b29; padding: 2px 0; color: var(--dim); }
+  #raw-log .ev .k { color: var(--accent); }
+  /* config editor table */
+  .cfg-form { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; flex-wrap: wrap; }
+  .cfg-form input, .cfg-form select { width: auto; flex: 1; min-width: 110px; }
+  #cfg-result { font-size: 12px; margin: 4px 0 8px; min-height: 16px; }
+  .cfg-table-wrap { max-height: 46vh; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+  table.cfg { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.cfg th, table.cfg td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  table.cfg th { color: var(--dim); position: sticky; top: 0; background: var(--panel); }
+  table.cfg td.path { color: var(--accent); cursor: pointer; }
+  table.cfg .rc { color: var(--amber); }
+  table.cfg tr:hover td { background: var(--panel2); }
 </style>
 </head>
 <body>
@@ -88,6 +111,7 @@
     <div class="section-label">Leads</div>
     <ul id="lead-list" data-testid="lead-list"></ul>
     <div class="sidebar-actions">
+      <button id="refresh-leads-btn" data-testid="refresh-leads-btn">↻ Refresh leads</button>
       <button id="new-lead-btn" class="primary" data-testid="new-lead-btn">+ New lead</button>
     </div>
   </aside>
@@ -95,16 +119,25 @@
   <main id="main">
     <div id="topbar">
       <div class="title" id="active-lead-title" data-testid="active-lead-title">—</div>
+      <div class="status"><span class="pill model" id="model-pill" data-testid="model-pill" title="active model">model —</span></div>
       <div class="status">status <span class="pill" id="status-pill" data-testid="status-pill">idle</span></div>
+      <div class="status"><span class="pill usage" id="usage-pill" data-testid="usage-pill" title="context window used">ctx —</span></div>
       <div class="spacer"></div>
+      <button id="events-btn" data-testid="events-btn" title="Toggle the raw event stream">Events</button>
       <button id="subagents-btn" data-testid="subagents-btn">Sub-agents</button>
       <button id="config-btn" data-testid="config-btn">Config</button>
     </div>
+    <div id="awaiting-banner" data-testid="awaiting-banner">⏳ The agent is waiting for your reply — type below and Send.</div>
     <div id="stream" data-testid="stream"></div>
     <form id="composer" data-testid="composer">
       <textarea id="input" data-testid="message-input" placeholder="Message the active lead…  (Enter to send)"></textarea>
+      <button type="button" id="inject-btn" class="inject" data-testid="inject-btn" title="Inject mid-turn input to steer the running agent">Inject</button>
       <button type="submit" class="primary" data-testid="send-btn">Send</button>
     </form>
+    <div id="raw-wrap" style="display:none">
+      <div class="raw-head"><span>Raw event stream — every WebSocket event, nothing dropped</span><div style="flex:1"></div><button id="raw-clear" data-testid="raw-clear">Clear</button></div>
+      <div id="raw-log" data-testid="raw-log"></div>
+    </div>
   </main>
 
   <!-- New lead modal -->
@@ -137,7 +170,7 @@
       <div class="body">
         <div id="sub-list" data-testid="sub-list"></div>
         <div class="transcript" id="sub-transcript" data-testid="sub-transcript"></div>
-        <div class="row" style="margin-top:10px"><button id="subagents-close" data-testid="subagents-close">Close</button></div>
+        <div class="row" style="margin-top:10px"><button id="subagents-refresh" data-testid="subagents-refresh">↻ Refresh</button><button id="subagents-close" data-testid="subagents-close">Close</button></div>
       </div>
     </div>
   </div>
@@ -145,8 +178,19 @@
   <!-- Config modal -->
   <div class="modal-back" id="config-modal">
     <div class="modal">
-      <h3>Configuration</h3>
-      <div class="body"><pre id="config-body" data-testid="config-body" class="muted"></pre>
+      <h3>Configuration <span class="muted" style="font-size:12px">— edit + apply live (TUI /config parity)</span></h3>
+      <div class="body">
+        <div class="cfg-form">
+          <input id="cfg-path" data-testid="cfg-path" placeholder="path, e.g. app.compaction.trigger_ratio" />
+          <input id="cfg-value" data-testid="cfg-value" placeholder="value" />
+          <select id="cfg-scope" data-testid="cfg-scope"><option value="project">project</option><option value="global">global</option></select>
+          <button id="cfg-set" class="primary" data-testid="cfg-set">Set</button>
+        </div>
+        <div id="cfg-result" data-testid="cfg-result"></div>
+        <div class="cfg-table-wrap">
+          <table class="cfg"><thead><tr><th>Path</th><th>Value</th><th>Source</th><th>Reload</th></tr></thead>
+          <tbody id="cfg-rows" data-testid="cfg-rows"></tbody></table>
+        </div>
         <div class="row" style="margin-top:10px"><button id="config-close" data-testid="config-close">Close</button></div>
       </div>
     </div>
@@ -163,6 +207,11 @@ async function loadLeads() {
   state.leads = await api("/api/leads");
   renderLeads();
   if (!state.active && state.leads.length) selectLead(state.leads[0].name);
+}
+
+async function loadModel() {
+  try { const c = await api("/api/config"); $("#model-pill").textContent = "model " + (c.model || "—"); }
+  catch { $("#model-pill").textContent = "model —"; }
 }
 
 function renderLeads() {
@@ -184,12 +233,19 @@ function renderLeads() {
   }
 }
 
-function setStatus(s){ $("#status-pill").textContent = s; const l = state.leads.find(x=>x.name===state.active); if(l){ l.status=s; renderLeads(); } }
+function setStatus(s){
+  $("#status-pill").textContent = s;
+  $("#awaiting-banner").classList.toggle("show", s === "awaiting_user");
+  if (s === "awaiting_user") $("#input").focus();
+  const l = state.leads.find(x=>x.name===state.active); if(l){ l.status=s; renderLeads(); }
+}
 
 async function selectLead(name) {
   state.active = name;
   const lead = state.leads.find(l => l.name === name);
   $("#active-lead-title").textContent = (lead?.emoji ? lead.emoji + " " : "") + (lead?.display_name || name);
+  $("#usage-pill").textContent = "ctx —";
+  $("#awaiting-banner").classList.toggle("show", lead?.status === "awaiting_user");
   renderLeads();
   $("#stream").innerHTML = "";
   state.streamEl = null;
@@ -211,7 +267,25 @@ function openSocket(name) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ws = new WebSocket(`${proto}://${location.host}/api/leads/${name}/ws`);
   state.ws = ws;
-  ws.onmessage = (ev) => { if (state.active === name) handleEvent(JSON.parse(ev.data)); };
+  ws.onmessage = (ev) => {
+    if (state.active !== name) return;
+    const data = JSON.parse(ev.data);
+    logEvent(data);        // raw stream: every event, nothing dropped
+    handleEvent(data);     // pretty render
+  };
+}
+
+// Raw event log — append every WS event verbatim so the full wire is visible.
+function logEvent(ev) {
+  const log = $("#raw-log"); if (!log) return;
+  const line = document.createElement("div"); line.className = "ev";
+  const k = document.createElement("span"); k.className = "k"; k.textContent = ev.kind;
+  const rest = Object.assign({}, ev); delete rest.kind;
+  const body = document.createElement("span");
+  body.textContent = Object.keys(rest).length ? " " + JSON.stringify(rest) : "";
+  line.append(k, body); log.appendChild(line);
+  while (log.childNodes.length > 600) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
 }
 
 function addMsg(cls, who, body) {
@@ -247,14 +321,23 @@ function handleEvent(ev) {
       finishStream(); addMsg("awaiting", "awaiting you", ev.text || ""); break;
     case "agent_message_received":
       finishStream(); addMsg("subagent", "sub-agent", ev.text || ""); break;
+    case "usage_updated": {
+      const r = ev.payload?.usage_ratio;
+      if (typeof r === "number") $("#usage-pill").textContent = "ctx " + Math.round(r * 100) + "%";
+      break;
+    }
+    case "user_message_injected":
+      addMsg("system", "injected", ev.text || ""); break;
+    case "completion_guard_injected":
+      addMsg("system", "completion guard", ev.text || ""); break;
     case "status":
       finishStream(); setStatus(ev.payload?.status || "idle"); break;
     case "error":
       finishStream(); addMsg("error", "error", ev.text || ""); break;
     case "connected": break;
     default:
-      if (ev.kind?.startsWith("compaction_") || ev.kind?.startsWith("scheduled_task_"))
-        addMsg("system", ev.kind, ev.text || "");
+      // Surface anything else (compaction_*, scheduled_task_*, future kinds) as a system line.
+      addMsg("system", ev.kind, ev.text || (ev.payload ? JSON.stringify(ev.payload) : ""));
   }
 }
 
@@ -273,6 +356,18 @@ async function sendMessage(text) {
 // composer
 $("#composer").addEventListener("submit", (e) => { e.preventDefault(); const t=$("#input").value; $("#input").value=""; sendMessage(t); });
 $("#input").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#composer").requestSubmit(); } });
+
+// raw event log toggle + mid-turn inject + refresh
+$("#events-btn").onclick = () => { const w = $("#raw-wrap"); w.style.display = w.style.display === "none" ? "block" : "none"; };
+$("#raw-clear").onclick = () => { $("#raw-log").innerHTML = ""; };
+$("#refresh-leads-btn").onclick = () => loadLeads();
+$("#inject-btn").onclick = async () => {
+  const t = $("#input").value; if (!t.trim() || !state.active) return;
+  $("#input").value = "";
+  addMsg("user", "you · inject", t);
+  try { await api(`/api/leads/${state.active}/input`, { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ text: t }) }); }
+  catch (e) { addMsg("error", "inject failed", e.detail || ""); }
+};
 
 // new lead
 const nlModal = $("#new-lead-modal");
@@ -322,6 +417,7 @@ $("#new-lead-create").onclick = async () => {
 const saModal = $("#subagents-modal");
 $("#subagents-btn").onclick = async () => { saModal.classList.add("open"); await loadSubagents(); };
 $("#subagents-close").onclick = () => saModal.classList.remove("open");
+$("#subagents-refresh").onclick = () => loadSubagents();
 async function loadSubagents() {
   $("#sub-lead-name").textContent = "· " + state.active;
   const subs = await api(`/api/leads/${state.active}/subagents`);
@@ -346,10 +442,50 @@ async function loadTranscript(session_id) {
   }
 }
 
-// config
+// config — live editor (TUI /config parity)
 const cfgModal = $("#config-modal");
-$("#config-btn").onclick = async () => { const c = await api("/api/config"); $("#config-body").textContent = JSON.stringify(c.values, null, 2); cfgModal.classList.add("open"); };
+async function loadConfigFields() {
+  const rows = await api("/api/config/fields");
+  const tb = $("#cfg-rows"); tb.innerHTML = "";
+  for (const f of rows) {
+    const tr = document.createElement("tr");
+    const p = document.createElement("td"); p.className = "path"; p.textContent = f.path;
+    p.title = f.description || ""; p.onclick = () => { $("#cfg-path").value = f.path; $("#cfg-value").value = f.value == null ? "" : String(f.value); };
+    const v = document.createElement("td"); v.textContent = f.value == null ? "—" : String(f.value);
+    const s = document.createElement("td"); s.textContent = f.source;
+    const r = document.createElement("td"); r.className = "rc"; r.textContent = f.reload;
+    tr.append(p, v, s, r); tb.appendChild(tr);
+  }
+}
+$("#config-btn").onclick = async () => { $("#cfg-result").textContent = ""; await loadConfigFields(); cfgModal.classList.add("open"); };
 $("#config-close").onclick = () => cfgModal.classList.remove("open");
+function coerceValue(raw) {
+  if (raw === "true") return true;
+  if (raw === "false") return false;
+  if (raw === "" || raw === "null") return null;
+  if (!isNaN(Number(raw)) && raw.trim() !== "") return Number(raw);
+  return raw;
+}
+$("#cfg-set").onclick = async () => {
+  const path = $("#cfg-path").value.trim();
+  if (!path) return;
+  const value = coerceValue($("#cfg-value").value);
+  const scope = $("#cfg-scope").value;
+  const res = $("#cfg-result");
+  try {
+    const out = await api("/api/config", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({ path, value, scope }) });
+    if (out.ok) {
+      res.style.color = "var(--green)";
+      const bits = ["✓ set " + path];
+      if (out.applied.length) bits.push("applied: " + out.applied.join(", "));
+      if (out.needs_restart_lead.length) bits.push("needs lead restart: " + out.needs_restart_lead.join(", "));
+      if (out.needs_restart_app.length) bits.push("needs app restart: " + out.needs_restart_app.join(", "));
+      res.textContent = bits.join("  ·  ");
+    } else { res.style.color = "var(--red)"; res.textContent = "✗ " + (out.error || "rejected"); }
+    await loadConfigFields();
+    loadModel();  // provider/model edits should reflect in the topbar
+  } catch (e) { res.style.color = "var(--red)"; res.textContent = "✗ " + (e.detail || "request failed"); }
+};
 
 // keyboard: ctrl+arrow switch leads
 document.addEventListener("keydown", (e) => {
@@ -360,6 +496,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 loadLeads();
+loadModel();
 </script>
 </body>
 </html>

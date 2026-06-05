@@ -86,8 +86,17 @@ class LeadChannel:
     # --- driving ---------------------------------------------------------
 
     async def send(self, text: str) -> None:
-        """Enqueue a user message for this lead's driver."""
+        """Enqueue a user message for this lead's driver (runs as its own turn)."""
         await self._run_queue.put(text)
+
+    async def enqueue_input(self, text: str) -> bool:
+        """Inject mid-turn input to steer the agent's *current* turn.
+
+        Routes to the lead's input queue (drained by the run loop) rather than
+        the run queue, so it lands in the turn already in flight — TUI parity.
+        Returns False if the handle has no input queue wired.
+        """
+        return await self._handle.enqueue_user_input(text)
 
     def start(self) -> None:
         if self._driver_task is None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from typing import Annotated
 
@@ -11,8 +12,12 @@ from starlette.websockets import WebSocketState
 
 from feather.api.hub import ApiHub
 from feather.api.models import (
+    ConfigApplyOut,
+    ConfigFieldOut,
     ConfigOut,
+    ConfigSetIn,
     CreateLeadIn,
+    InputIn,
     LeadOut,
     MessageIn,
     SoulOut,
@@ -62,6 +67,16 @@ async def send_message(name: str, payload: MessageIn, hub: HubDep) -> dict[str, 
     return {"status": "queued"}
 
 
+@router.post("/leads/{name}/input", status_code=202)
+async def inject_input(name: str, payload: InputIn, hub: HubDep) -> dict[str, str]:
+    """Mid-turn input to steer the agent's current turn (TUI parity)."""
+    channel = hub.channel(name)
+    if channel is None:
+        raise HTTPException(status_code=404, detail=f"unknown lead: {name}")
+    accepted = await channel.enqueue_input(payload.text)
+    return {"status": "injected" if accepted else "no_input_queue"}
+
+
 @router.get("/leads/{name}/subagents")
 async def list_subagents(name: str, hub: HubDep) -> list[SubagentOut]:
     if hub.channel(name) is None:
@@ -85,6 +100,21 @@ async def session_transcript(session_id: str, hub: HubDep) -> TranscriptOut:
 @router.get("/config")
 async def get_config(hub: HubDep) -> ConfigOut:
     return hub.get_config()
+
+
+@router.get("/config/fields")
+async def list_config_fields(hub: HubDep) -> list[ConfigFieldOut]:
+    return hub.list_config_fields()
+
+
+@router.post("/config")
+async def set_config(payload: ConfigSetIn, hub: HubDep) -> ConfigApplyOut:
+    try:
+        return await hub.set_config(
+            payload.path, payload.value, scope=payload.scope, force=payload.force
+        )
+    except Exception as exc:  # noqa: BLE001 - surface apply errors to the client
+        raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
 
 
 @router.websocket("/leads/{name}/ws")
@@ -124,5 +154,10 @@ async def lead_events(websocket: WebSocket, name: str) -> None:
         events_task.cancel()
         inbound_task.cancel()
         channel.unsubscribe(queue)
+        # The peer may already be gone (browser navigated away / tab closed),
+        # in which case a pump task hit WebSocketDisconnect and the socket is
+        # already closing. Closing again raises "Unexpected ASGI message
+        # 'websocket.close'" from uvicorn — guard the state AND suppress the race.
         if websocket.application_state != WebSocketState.DISCONNECTED:
-            await websocket.close()
+            with contextlib.suppress(RuntimeError):
+                await websocket.close()

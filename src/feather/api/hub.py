@@ -13,6 +13,8 @@ from typing import Any, Callable
 
 from feather.api.channel import LeadChannel
 from feather.api.models import (
+    ConfigApplyOut,
+    ConfigFieldOut,
     ConfigOut,
     LeadOut,
     SoulOut,
@@ -26,6 +28,11 @@ from feather.runtime import FeatherRuntime
 logger = logging.getLogger(__name__)
 
 __all__ = ("ApiHub",)
+
+
+def _enum_str(value: object) -> str:
+    """Render an enum (or anything) as its wire string."""
+    return value.value if hasattr(value, "value") else str(value)
 
 
 class ApiHub:
@@ -134,6 +141,29 @@ class ApiHub:
             ],
         )
 
+    def list_config_fields(self) -> list[ConfigFieldOut]:
+        """Every editable config field (path, value, source, reload class)."""
+        from feather.config_service import ConfigService
+
+        service = ConfigService(paths=self._runtime.paths, app_config=self._runtime.config)
+        out: list[ConfigFieldOut] = []
+        for row in service.list():
+            field = row.field
+            sensitive = bool(getattr(field, "sensitive", False))
+            out.append(
+                ConfigFieldOut(
+                    path=field.path,
+                    value=None if sensitive else row.current,
+                    type=_enum_str(field.type),
+                    widget=_enum_str(field.widget),
+                    reload=_enum_str(field.reload),
+                    scope=_enum_str(field.scope),
+                    source=_enum_str(row.source),
+                    description=field.description,
+                )
+            )
+        return out
+
     def get_config(self) -> ConfigOut:
         config = self._runtime.config
         provider = config.active_provider
@@ -160,6 +190,27 @@ class ApiHub:
         )
 
     # --- writes ----------------------------------------------------------
+
+    async def set_config(
+        self, path: str, value: object, *, scope: str = "global", force: bool = False
+    ) -> ConfigApplyOut:
+        """Write one config field then apply its reload class (TUI /config set)."""
+        from feather.config_paths import PathScope
+        from feather.config_service import ConfigService
+
+        service = ConfigService(paths=self._runtime.paths, app_config=self._runtime.config)
+        path_scope = PathScope.PROJECT if scope == "project" else PathScope.GLOBAL
+        result = service.set(path, value, scope=path_scope, force=force)
+        if not result.ok:
+            return ConfigApplyOut(ok=False, path=path, error=result.error)
+        outcome = await self._runtime.apply_config_change([path])
+        return ConfigApplyOut(
+            ok=True,
+            path=path,
+            applied=list(outcome.applied),
+            needs_restart_lead=list(outcome.needs_restart_lead),
+            needs_restart_app=list(outcome.needs_restart_app),
+        )
 
     async def create_lead(
         self, name: str, soul: str = "", soul_id: str | None = None

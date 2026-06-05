@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from feather.core.agent.catalog import AgentCatalog
     from feather.core.leads.manager import LeadManager
     from feather.core.leads.supervisor import LeadSupervisor
+    from feather.core.leads.soul_library import SoulLibrary
+    from feather.paths import FeatherPaths
 
 import httpx
 
@@ -105,9 +107,11 @@ class FeatherRuntime:
         lead_session_store: LeadSessionStore,
         db_path: Path,
         shutdown_timeout_s: float = 30.0,
+        paths: "FeatherPaths | None" = None,
     ) -> None:
         self._root = root
         self._db_path = db_path
+        self._paths = paths
         self._session_store = session_store
         self._lead_session_store = lead_session_store
         self._cron_store = cron_store
@@ -334,9 +338,24 @@ class FeatherRuntime:
             lead_session_store=lead_session_store,
             db_path=db_path,
             shutdown_timeout_s=app_config.memory.trigger.shutdown_timeout_s,
+            paths=_paths,
         )
         runtime._cron_scheduler.set_event_handler_resolver(runtime._resolve_session_event_handler)
         return runtime
+
+    @property
+    def root(self) -> Path:
+        """The project root this runtime was created against."""
+        return self._root
+
+    @property
+    def paths(self) -> "FeatherPaths":
+        """Resolved global/project paths (rebuilt from root if not supplied)."""
+        if self._paths is None:
+            from feather.paths import FeatherPaths
+
+            self._paths = FeatherPaths(project_root=self._root)
+        return self._paths
 
     @property
     def agent_catalog(self) -> "AgentCatalog":

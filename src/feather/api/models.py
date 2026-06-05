@@ -82,3 +82,46 @@ class ConfigOut(BaseModel):
     memory_enabled: bool
     self_repair: bool
     values: dict[str, Any]
+
+
+class ConfigFieldOut(BaseModel):
+    """One editable configuration field (mirrors the TUI /config table)."""
+
+    path: str
+    value: Any
+    type: str
+    widget: str
+    reload: str
+    scope: str
+    source: str
+    description: str
+
+
+class ConfigSetIn(BaseModel):
+    """Write one config field, then apply its reload class.
+
+    Defaults to ``project`` scope: the console is rooted at a project, so edits
+    land in (and are reflected back from) that project's ``config/app.yaml``.
+    """
+
+    path: str = Field(min_length=1)
+    value: Any
+    scope: str = "project"
+    force: bool = False
+
+
+class ConfigApplyOut(BaseModel):
+    """Result of writing + applying a config change."""
+
+    ok: bool
+    path: str
+    error: str | None = None
+    applied: list[str] = Field(default_factory=list)
+    needs_restart_lead: list[str] = Field(default_factory=list)
+    needs_restart_app: list[str] = Field(default_factory=list)
+
+
+class InputIn(BaseModel):
+    """Mid-turn input injected to steer a running agent."""
+
+    text: str = Field(min_length=1)
