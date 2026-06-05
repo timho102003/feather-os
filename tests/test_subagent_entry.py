@@ -9,7 +9,7 @@ from typing import Any
 from feather.models import ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.subagent_entry import main, run_subagent_async
-from feather.subagent_protocol import RESULT_BEGIN, RESULT_END
+from feather.core.subagents.protocol import RESULT_BEGIN, RESULT_END
 
 
 class FakeOneShotProvider(BaseLLMProvider):
@@ -171,7 +171,7 @@ def test_main_emits_envelope_and_exits_success(
     task_file.write_text("hello explorer", encoding="utf-8")
 
     # Force main() to use FakeOneShotProvider by patching the runtime helper.
-    from feather import subagent_entry as subagent_entry_module
+    from feather.core.subagents import entry as subagent_entry_module
 
     real_run = subagent_entry_module.run_subagent_async
 

@@ -47,7 +47,7 @@ from feather.models import (
     ToolExecutionResult,
 )
 from feather.storage.task_store import TaskStore
-from feather.subagent_protocol import RESULT_BEGIN, RESULT_END
+from feather.core.subagents.protocol import RESULT_BEGIN, RESULT_END
 from feather.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
