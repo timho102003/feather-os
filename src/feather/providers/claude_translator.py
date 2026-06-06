@@ -129,6 +129,39 @@ def _sanitize_node(node: Any) -> Any:
 _CACHE_STRATEGY_BREAKPOINT = "anthropic_breakpoint"
 
 
+_CACHEABLE_BLOCK_TYPES: frozenset[str] = frozenset(
+    {"text", "tool_use", "tool_result", "image", "document"}
+)
+
+
+def _mark_rolling_breakpoint(messages: list[dict[str, Any]]) -> None:
+    """Anchor a rolling cache breakpoint at the end of the message history.
+
+    The Messages API is stateless, so Feather re-sends the whole (compacted)
+    conversation every turn. Marking the last content block lets the *next*
+    turn read this turn's entire history from cache (Anthropic walks back up
+    to 20 blocks to find a prior breakpoint) instead of reprocessing it at
+    full input price. Combined with the static-prefix breakpoint this uses 2
+    of the 4 allowed breakpoints.
+
+    Mutates ``messages`` in place on freshly-built blocks. A no-op when the
+    last block is missing or a non-cacheable type (e.g. ``thinking``), so a
+    malformed tail never raises.
+    """
+
+    if not messages:
+        return
+    content = messages[-1].get("content")
+    if not isinstance(content, list) or not content:
+        return
+    last_block = content[-1]
+    if not isinstance(last_block, dict):
+        return
+    if last_block.get("type") not in _CACHEABLE_BLOCK_TYPES:
+        return
+    last_block["cache_control"] = {"type": "ephemeral"}
+
+
 def _system_blocks_with_breakpoint(
     instructions: str, cache_prefix: str | None
 ) -> list[dict[str, Any]]:
@@ -515,12 +548,19 @@ def translate_request(
     else:
         system_field = instructions
 
+    messages = translate_input_items(input_items)
+    if cfg.cache_strategy == _CACHE_STRATEGY_BREAKPOINT:
+        # Cache the growing conversation too: the next turn reads this turn's
+        # full history from cache instead of reprocessing it (rolling
+        # breakpoint at the end of the message list).
+        _mark_rolling_breakpoint(messages)
+
     body: dict[str, Any] = {
         "model": model,
         "stream": True,
         "max_tokens": desired_max,
         "system": system_field,
-        "messages": translate_input_items(input_items),
+        "messages": messages,
     }
 
     thinking_on = False

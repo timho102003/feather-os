@@ -403,6 +403,56 @@ def test_translate_request_falls_back_to_single_block_without_prefix() -> None:
     ]
 
 
+def test_translate_request_marks_rolling_breakpoint_on_last_message() -> None:
+    """In breakpoint mode the last message block carries a rolling breakpoint.
+
+    Plus the static-prefix breakpoint, that is at most 2 of the 4 allowed.
+    """
+
+    cfg = ClaudeConfig(cache_strategy="anthropic_breakpoint")
+    body = translate_request(
+        instructions="STATIC\n\nDYNAMIC",
+        input_items=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ],
+        tools=[],
+        request_config=ProviderRequestConfig(),
+        cfg=cfg,
+        cache_prefix="STATIC",
+    )
+
+    messages = body["messages"]
+    # The rolling breakpoint is on the LAST block of the LAST message only.
+    assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in messages[0]["content"][-1]
+    # Total breakpoints across the request stay within Anthropic's limit of 4.
+    total = sum(
+        1 for b in body["system"] if b.get("cache_control")
+    ) + sum(
+        1
+        for m in messages
+        for b in m["content"]
+        if isinstance(b, dict) and b.get("cache_control")
+    )
+    assert total <= 4
+
+
+def test_translate_request_no_message_breakpoint_when_cache_off() -> None:
+    """Cache-off mode adds no message-level breakpoints."""
+
+    cfg = ClaudeConfig(cache_strategy="off")
+    body = translate_request(
+        instructions="sys",
+        input_items=[{"role": "user", "content": "hi"}],
+        tools=[],
+        request_config=ProviderRequestConfig(),
+        cfg=cfg,
+    )
+    assert body["messages"][-1]["content"][-1] == {"type": "text", "text": "hi"}
+
+
 def test_translate_request_single_block_when_prefix_equals_instructions() -> None:
     """A fully-stable prompt (prefix == instructions) stays one cached block."""
 
@@ -431,8 +481,19 @@ def test_translate_request_sets_required_fields() -> None:
     assert body["model"] == cfg.model
     assert body["stream"] is True
     assert body["max_tokens"] == cfg.max_output_tokens
+    # Default config is breakpoint mode, so the last message block carries the
+    # rolling conversation-history breakpoint.
     assert body["messages"] == [
-        {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "hi",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
     ]
     assert body["temperature"] == cfg.temperature
 
