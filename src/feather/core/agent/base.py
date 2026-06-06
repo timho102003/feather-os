@@ -20,6 +20,7 @@ from feather.core.session.input_queue import UserInputQueue
 from feather.core.agent.prompt_builder import PromptBuilder
 from feather.core.session.coordinator import SessionRunCoordinator
 from feather.storage.agent_message_store import AgentMessageStore
+from feather.observability.cache_stats import read_cache_usage
 from feather.observability.context import current_agent_name
 from feather.memory.context import current_session_id
 from feather.memory.enums import MemoryOwner
@@ -425,6 +426,7 @@ class BaseAgent(ABC):
                     request_config=request_config,
                 )
                 self._emit_usage_ratio(turn.usage, event_handler)
+                self._log_cache_usage(turn.usage)
                 await self._session_store.update_response_state(
                     session_id,
                     last_response_id=turn.response_id,
@@ -1375,6 +1377,31 @@ class BaseAgent(ABC):
         ratio = float(input_tokens) / float(window)
         event_handler(
             RuntimeEvent(kind="usage_updated", payload={"usage_ratio": ratio})
+        )
+
+    def _log_cache_usage(self, usage: dict[str, Any] | None) -> None:
+        """Surface prompt-cache hit/write tokens so caching can be observed.
+
+        A turn whose prompt was served from cache reports a non-zero ``read``;
+        a steady stream of ``write`` with no ``read`` across turns means the
+        cached prefix stopped being byte-stable (a prefix-busting regression).
+        Best-effort and silent when nothing was cacheable.
+        """
+
+        seen = read_cache_usage(usage)
+        if seen.total == 0:
+            return
+        logger.info(
+            "cache.usage agent=%s read=%s write=%s hit_rate=%.2f",
+            self._agent_config.name,
+            seen.read,
+            seen.write,
+            seen.hit_rate,
+            extra={
+                "cache_read_tokens": seen.read,
+                "cache_write_tokens": seen.write,
+                "cache_hit_rate": seen.hit_rate,
+            },
         )
 
     async def _maybe_auto_compact(
