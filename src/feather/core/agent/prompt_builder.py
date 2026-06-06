@@ -126,6 +126,11 @@ class PromptBuilder:
 
         static_prompt_sections = self._render_static_prompt_sections(prompt_module_texts)
         profile_text = (user_profile_block or "").strip() or "- No user profile available yet."
+        # The dispatchable-agent catalog is fixed for the agent's whole session
+        # (it depends only on the agent config + catalog, never per-turn state),
+        # so it lives in the cached prefix — caching it is both correct and a
+        # win. Gated on can_spawn, so non-spawn sub-agents emit nothing.
+        dispatch_block = self._render_dispatchable_agents(agent_config)
         cached_prefix = "\n\n".join(
             [
                 '<feather_system_prompt version="3">',
@@ -153,6 +158,11 @@ class PromptBuilder:
                 "<available_mcp_servers>",
                 mcp_catalog_prompt,
                 "</available_mcp_servers>",
+                *(
+                    ["<dispatchable_agents>", dispatch_block, "</dispatchable_agents>"]
+                    if dispatch_block
+                    else []
+                ),
                 "</static_cached_prefix>",
             ]
         )
@@ -163,15 +173,6 @@ class PromptBuilder:
             "\n\n".join(loaded_sections) if loaded_sections else "- No skills loaded in this session.",
             "</loaded_skills>",
         ]
-        dispatch_block = self._render_dispatchable_agents(agent_config)
-        if dispatch_block:
-            dynamic_parts.extend(
-                [
-                    "<dispatchable_agents>",
-                    dispatch_block,
-                    "</dispatchable_agents>",
-                ]
-            )
         if memory_block and memory_block.strip():
             dynamic_parts.extend(
                 [

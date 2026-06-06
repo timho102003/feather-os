@@ -352,6 +352,37 @@ def test_dispatch_catalog_gated_by_spawn_capability(tmp_path: Path) -> None:
     assert "<dispatchable_agents>" not in sub_prompt
 
 
+def test_dispatchable_agents_live_in_cached_prefix(tmp_path: Path) -> None:
+    """The dispatch catalog is static per session → it belongs in the cached prefix.
+
+    Keeping it cached (rather than in the per-turn dynamic suffix) is both
+    correct and a caching win, and the prefix stays byte-stable when per-turn
+    memory changes.
+    """
+
+    from feather.core.agent.catalog import AgentCatalogEntry
+
+    class _FakeCatalog:
+        def list_entries(self):
+            return [
+                AgentCatalogEntry(name="lead", role="lead", description="", personality=""),
+                AgentCatalogEntry(
+                    name="explore", role="explore", description="Find code", personality=""
+                ),
+            ]
+
+    builder = _basic_builder(tmp_path, agent_catalog=_FakeCatalog())
+    sections = builder.build_sections(_agent("lead"), loaded_skill_names=[])
+    assert "<dispatchable_agents>" in sections.cached_prefix
+    assert "<dispatchable_agents>" not in sections.dynamic_suffix
+
+    # Prefix (with the catalog) stays identical when only per-turn memory moves.
+    with_memory = builder.build_sections(
+        _agent("lead"), loaded_skill_names=[], memory_block="recalled fact"
+    )
+    assert with_memory.cached_prefix == sections.cached_prefix
+
+
 def test_dispatch_catalog_follows_capability_override(tmp_path: Path) -> None:
     """A sub-agent YAML that grants can_spawn DOES get the catalog — the gate
     is the capability, not the role string."""
