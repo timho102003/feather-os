@@ -101,6 +101,81 @@ Loaded skill body.
     assert "Loaded skill body." in with_skill.dynamic_suffix
 
 
+def test_cache_prefix_is_leading_substring_of_render(tmp_path: Path) -> None:
+    """The split point the providers slice on must be an exact leading substring.
+
+    The breakpoint translators do ``instructions[len(cache_prefix):]``; if
+    ``cache_prefix`` were not a true prefix of ``render()`` the slice would
+    corrupt the system prompt (and silently fall back to one cached block).
+    """
+
+    builder = _basic_builder(tmp_path)
+    sections = builder.build_sections(
+        _agent("lead"),
+        loaded_skill_names=[],
+        memory_block="## Relevant memory\n- recalled fact",
+        user_profile_block="name: Tim",
+    )
+
+    assert sections.cache_prefix  # non-empty
+    rendered = sections.render()
+    assert rendered.startswith(sections.cache_prefix)
+    assert sections.cache_prefix != rendered  # there IS a dynamic remainder to exclude
+
+
+def test_cached_prefix_byte_identical_across_memory_changes(tmp_path: Path) -> None:
+    """Per-turn memory must never perturb the cached prefix (byte-for-byte)."""
+
+    builder = _basic_builder(tmp_path)
+    cfg = _agent("lead")
+    base = builder.build_sections(cfg, loaded_skill_names=[]).cache_prefix
+    variants = [
+        builder.build_sections(
+            cfg, loaded_skill_names=[], memory_block="## Relevant memory\n- fact A"
+        ).cache_prefix,
+        builder.build_sections(
+            cfg, loaded_skill_names=[], memory_block="completely different recall"
+        ).cache_prefix,
+    ]
+    for prefix in variants:
+        assert prefix.encode("utf-8") == base.encode("utf-8")
+
+
+def test_cached_prefix_is_deterministic(tmp_path: Path) -> None:
+    """Same inputs → identical prefix bytes every build.
+
+    Guards against a future regression that smuggles a timestamp / uuid /
+    unordered-dict render into the cached prefix, which would silently drop the
+    runtime cache-hit rate to zero.
+    """
+
+    builder = _basic_builder(tmp_path)
+    cfg = _agent("lead")
+    prefixes = {
+        builder.build_sections(cfg, loaded_skill_names=[]).cache_prefix for _ in range(20)
+    }
+    assert len(prefixes) == 1
+
+
+def test_static_first_dynamic_last(tmp_path: Path) -> None:
+    """Static content lands before the cache boundary; dynamic content after it."""
+
+    builder = _basic_builder(tmp_path)
+    sections = builder.build_sections(
+        _agent("lead"),
+        loaded_skill_names=[],
+        memory_block="recalled fact xyz",
+        user_profile_block="name: Tim",
+    )
+    rendered = sections.render()
+    boundary = rendered.index("</static_cached_prefix>")
+    # Dynamic content lives strictly after the static boundary.
+    assert rendered.index("recalled fact xyz") > boundary
+    assert rendered.index("<long_term_memory>") > boundary
+    # The user profile is intentionally cached, so it sits before the boundary.
+    assert rendered.index("name: Tim") < boundary
+
+
 def test_prompt_builder_includes_mcp_catalog_metadata_without_connection_details(
     tmp_path: Path,
 ) -> None:

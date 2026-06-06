@@ -421,13 +421,15 @@ class OpenRouterChatProvider(BaseLLMProvider):
         the model needs.
         """
 
+        active_config = request_config or ProviderRequestConfig()
         body = translate_request(
             instructions=instructions,
             input_items=input_items,
             tools=tools,
-            request_config=request_config or ProviderRequestConfig(),
+            request_config=active_config,
             cfg=self._cfg,
             model_limits=None,
+            cache_prefix=active_config.cache_prefix,
         )
         logger.info(
             "openrouter request model=%s tools=%s previous_response_id=%s",

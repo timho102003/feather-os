@@ -27,6 +27,19 @@ class PromptSections:
 
         return "\n\n".join(part for part in [self.cached_prefix.strip(), self.dynamic_suffix.strip()] if part)
 
+    @property
+    def cache_prefix(self) -> str:
+        """The exact stable text :meth:`render` emits at the very front.
+
+        Providers that place an explicit cache breakpoint (Anthropic /
+        OpenRouter) split the rendered system prompt here so the breakpoint
+        anchors the *static* prefix only — the per-turn dynamic suffix stays
+        outside the cached region. Guaranteed to be a leading substring of
+        :meth:`render` so the split is a pure prefix slice.
+        """
+
+        return self.cached_prefix.strip()
+
 
 class PromptBuilder:
     """Build the system instructions for an agent."""

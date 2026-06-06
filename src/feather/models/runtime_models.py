@@ -46,6 +46,15 @@ class ProviderRequestConfig:
     ``trace_context`` carries the per-turn identity (session, agent) used
     by providers that broadcast trace metadata (OpenRouter → Opik etc.).
     Always safe to set; providers that don't consume it ignore it.
+
+    ``cache_prefix`` is the stable leading substring of ``instructions``
+    marking where the prompt-cache breakpoint should anchor. Providers with
+    explicit breakpoints (Anthropic / OpenRouter) cache only this prefix so
+    per-turn dynamic content (recalled memory, loaded skills) does not
+    invalidate the cached system prompt; providers with automatic prefix
+    caching (OpenAI) ignore it. ``None`` preserves the legacy single-block
+    behavior. Carried here rather than as a ``complete`` parameter so the
+    provider interface stays stable.
     """
 
     model: str | None = None
@@ -56,6 +65,7 @@ class ProviderRequestConfig:
     response_schema_name: str | None = None
     mcp_servers: tuple[MCPServerConfig, ...] = ()
     trace_context: TraceContext | None = None
+    cache_prefix: str | None = None
 
 
 @dataclass(slots=True)

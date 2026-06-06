@@ -370,12 +370,13 @@ class BaseAgent(ABC):
                 user_profile_block = (
                     self._profile_store.render() if self._profile_store is not None else None
                 )
-                instructions = self._prompt_builder.build(
+                prompt_sections = self._prompt_builder.build_sections(
                     effective_agent_config,
                     session.loaded_skills,
                     memory_block=memory_block,
                     user_profile_block=user_profile_block,
                 )
+                instructions = prompt_sections.render()
                 if not self._provider.stateful:
                     # Stateless providers (OpenRouter / Chat Completions)
                     # cannot use previous_response_id as a cursor. Keep an
@@ -411,6 +412,7 @@ class BaseAgent(ABC):
                     reasoning=self._agent_config.reasoning,
                     mcp_servers=native_mcp_servers,
                     trace_context=trace_context,
+                    cache_prefix=prompt_sections.cache_prefix,
                 )
                 turn = await self._provider.complete(
                     instructions=instructions,

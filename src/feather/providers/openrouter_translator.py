@@ -325,6 +325,46 @@ def _stringify_tool_arguments(arguments: Any) -> str:
 # -------------------------------------------------------------- translate_request
 
 
+_BREAKPOINT_STRATEGIES: frozenset[str] = frozenset(
+    {"anthropic_breakpoint", "gemini_breakpoint"}
+)
+
+
+def _system_content_with_breakpoint(
+    instructions: str, cache_prefix: str | None
+) -> list[dict[str, Any]]:
+    """Emit the system message ``content`` as cache-aware ``text`` blocks.
+
+    Mirrors the Anthropic translator: when ``cache_prefix`` is a non-empty
+    proper leading substring of ``instructions``, split into a cached stable
+    prefix block (carrying ``cache_control``) and an uncached dynamic
+    remainder, so per-turn dynamic content does not invalidate the cached
+    system prefix. Otherwise fall back to a single cached block (legacy
+    behavior). Caching providers (Anthropic / Gemini) honor the breakpoint;
+    non-caching upstreams ignore the hint.
+    """
+
+    if cache_prefix and cache_prefix != instructions and instructions.startswith(cache_prefix):
+        remainder = instructions[len(cache_prefix) :]
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": cache_prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        if remainder.strip():
+            blocks.append({"type": "text", "text": remainder})
+        return blocks
+    return [
+        {
+            "type": "text",
+            "text": instructions,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
+
 def translate_request(
     *,
     instructions: str,
@@ -333,16 +373,20 @@ def translate_request(
     request_config: ProviderRequestConfig,
     cfg: OpenRouterConfig,
     model_limits: dict[str, Any] | None,
+    cache_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Build the OpenRouter Chat Completions POST body for one turn.
 
     Key behaviors:
 
-    - When ``cfg.cache_strategy == "anthropic_breakpoint"`` the system
-      message is emitted as a list with one content block carrying
-      ``cache_control: {type: "ephemeral"}``. Non-caching providers
-      ignore the hint; Anthropic/Gemini use it to cache the stable
-      instructions prefix.
+    - When ``cfg.cache_strategy`` is a breakpoint strategy
+      (``anthropic_breakpoint`` or ``gemini_breakpoint``) the system
+      message ``content`` is emitted as ``text`` blocks carrying
+      ``cache_control: {type: "ephemeral"}``. If ``cache_prefix`` is the
+      stable leading substring of ``instructions`` it is split out into its
+      own cached block so the per-turn dynamic suffix stays outside the
+      cached region; otherwise a single cached block is emitted. Non-caching
+      upstreams ignore the hint; Anthropic/Gemini use it to cache the prefix.
     - When ``model_limits`` exposes ``top_provider.max_completion_tokens``
       (or a raw ``context_length``), ``max_tokens`` is capped at that
       ceiling. This avoids a class of 400s when the configured value
@@ -381,16 +425,10 @@ def translate_request(
         else cfg.temperature
     )
 
-    if cfg.cache_strategy == "anthropic_breakpoint":
+    if cfg.cache_strategy in _BREAKPOINT_STRATEGIES:
         system_msg: dict[str, Any] = {
             "role": "system",
-            "content": [
-                {
-                    "type": "text",
-                    "text": instructions,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
+            "content": _system_content_with_breakpoint(instructions, cache_prefix),
         }
     else:
         system_msg = {"role": "system", "content": instructions}

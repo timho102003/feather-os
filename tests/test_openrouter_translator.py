@@ -488,6 +488,71 @@ def test_translate_request_cache_off_emits_plain_system_string() -> None:
     assert body["messages"][0] == {"role": "system", "content": "sys"}
 
 
+def test_translate_request_splits_system_at_cache_prefix() -> None:
+    """The breakpoint anchors the static prefix; the dynamic suffix is uncached."""
+
+    prefix = "STATIC PREFIX"
+    instructions = f"{prefix}\n\nDYNAMIC SUFFIX"
+    cfg = _min_cfg(cache_strategy="anthropic_breakpoint")
+    body = translate_request(
+        instructions=instructions,
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(),
+        cfg=cfg,
+        model_limits=None,
+        cache_prefix=prefix,
+    )
+
+    content = body["messages"][0]["content"]
+    marked = [b for b in content if b.get("cache_control")]
+    assert len(marked) == 1
+    assert marked[0]["text"] == prefix
+    assert content[-1].get("cache_control") is None
+    assert "DYNAMIC SUFFIX" in content[-1]["text"]
+    assert "".join(b["text"] for b in content) == instructions
+
+
+def test_translate_request_gemini_breakpoint_emits_cache_control() -> None:
+    """gemini_breakpoint is a breakpoint strategy too — it must mark the prefix.
+
+    Previously only ``anthropic_breakpoint`` was handled, silently disabling
+    caching for Gemini, which DOES honor the cache_control hint via OpenRouter.
+    """
+
+    cfg = _min_cfg(cache_strategy="gemini_breakpoint")
+    body = translate_request(
+        instructions="STATIC\n\nDYNAMIC",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(),
+        cfg=cfg,
+        model_limits=None,
+        cache_prefix="STATIC",
+    )
+    content = body["messages"][0]["content"]
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert content[0]["text"] == "STATIC"
+
+
+def test_translate_request_falls_back_to_single_block_without_prefix() -> None:
+    """No cache_prefix → single cached block (un-threaded callers unaffected)."""
+
+    cfg = _min_cfg(cache_strategy="anthropic_breakpoint")
+    body = translate_request(
+        instructions="whole prompt",
+        input_items=[],
+        tools=[],
+        request_config=ProviderRequestConfig(),
+        cfg=cfg,
+        model_limits=None,
+    )
+    content = body["messages"][0]["content"]
+    assert content == [
+        {"type": "text", "text": "whole prompt", "cache_control": {"type": "ephemeral"}}
+    ]
+
+
 def test_translate_request_caps_max_tokens_at_model_limit() -> None:
     cfg = _min_cfg(max_output_tokens=32_000)
     body = translate_request(

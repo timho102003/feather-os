@@ -128,6 +128,42 @@ def _sanitize_node(node: Any) -> Any:
 # that want to add tool/message-level breakpoints later.
 _CACHE_STRATEGY_BREAKPOINT = "anthropic_breakpoint"
 
+
+def _system_blocks_with_breakpoint(
+    instructions: str, cache_prefix: str | None
+) -> list[dict[str, Any]]:
+    """Emit the ``system`` field as cache-aware ``text`` blocks.
+
+    When ``cache_prefix`` is a non-empty proper leading substring of
+    ``instructions``, the system prompt is split into two blocks: the stable
+    prefix (carrying the ``cache_control`` breakpoint) and the per-turn
+    dynamic remainder (uncached). This keeps the cached region byte-identical
+    across turns even as the dynamic suffix (loaded skills, recalled memory)
+    changes. Any other case — no prefix, empty, or a fully-stable prompt —
+    falls back to a single cached block (the legacy behavior), so callers that
+    don't thread a prefix are unaffected.
+    """
+
+    if cache_prefix and cache_prefix != instructions and instructions.startswith(cache_prefix):
+        remainder = instructions[len(cache_prefix) :]
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": cache_prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        if remainder.strip():
+            blocks.append({"type": "text", "text": remainder})
+        return blocks
+    return [
+        {
+            "type": "text",
+            "text": instructions,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
 # Anthropic's image-block ``source`` accepts a base64 inline payload or a
 # remote URL. Feather hands every image in as a single URL string; we
 # split ``data:`` URLs into the base64 form because the Messages API
@@ -428,6 +464,7 @@ def translate_request(
     tools: list[dict[str, Any]],
     request_config: ProviderRequestConfig,
     cfg: ClaudeConfig,
+    cache_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Build the Anthropic Messages POST body for one turn.
 
@@ -474,13 +511,7 @@ def translate_request(
     )
 
     if cfg.cache_strategy == _CACHE_STRATEGY_BREAKPOINT:
-        system_field: Any = [
-            {
-                "type": "text",
-                "text": instructions,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        system_field: Any = _system_blocks_with_breakpoint(instructions, cache_prefix)
     else:
         system_field = instructions
 

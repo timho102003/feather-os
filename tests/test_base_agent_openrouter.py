@@ -227,11 +227,19 @@ async def test_base_agent_completes_tool_loop_under_openrouter_provider(
         msg.get("role") == "tool" and msg.get("tool_call_id") == "call_abc"
         for msg in turn2
     ), f"turn-2 body lost structural tool result; got: {turn2}"
-    # cache_control breakpoint should sit on the system message in both turns.
+    # The prompt-cache breakpoint must sit on the STATIC prefix block (the
+    # first), NOT the per-turn dynamic remainder — that is what keeps the
+    # cached system prefix byte-identical across turns. The dynamic tail is
+    # split into its own uncached block.
     for body in bodies:
         sys_msg = body["messages"][0]
         assert sys_msg["role"] == "system"
-        assert sys_msg["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert sys_msg["content"][0]["cache_control"] == {"type": "ephemeral"}
+        marked = [b for b in sys_msg["content"] if b.get("cache_control")]
+        assert len(marked) == 1, "exactly one system breakpoint expected"
+        assert sys_msg["content"][-1].get("cache_control") is None, (
+            "dynamic suffix must stay outside the cached prefix"
+        )
 
 
 @pytest.mark.asyncio

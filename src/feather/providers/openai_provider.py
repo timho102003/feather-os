@@ -130,6 +130,12 @@ class OpenAIResponsesProvider(BaseLLMProvider):
 
         Returns:
             Normalized model turn.
+
+        Note:
+            ``request_config.cache_prefix`` is intentionally unused — OpenAI's
+            Responses API caches prompt prefixes automatically (≥1024 tokens),
+            so the static-first ordering already in ``instructions`` suffices;
+            no explicit breakpoint is needed.
         """
 
         request = self._build_request_kwargs(
