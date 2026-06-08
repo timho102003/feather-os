@@ -8,8 +8,11 @@ with the agent" in under five minutes.
 * **Python 3.12 or 3.13.** Check with `python3 --version`. If you don't
   have it, install from <https://www.python.org/downloads/> or use your
   OS package manager.
-* **An OpenAI API key.** Get one at
-  <https://platform.openai.com/api-keys>. The wizard will ask for it.
+* **An API key for at least one LLM provider** — OpenAI
+  (<https://platform.openai.com/api-keys>), OpenRouter
+  (<https://openrouter.ai/keys>), or Anthropic Claude
+  (<https://console.anthropic.com/settings/keys>). The wizard asks which
+  you want to wire and needs at least one.
 * **(Optional) Docker.** Only needed if you want long-term memory and you
   want Feather to spin up Qdrant for you. Skip this for now if you just
   want to try the chat.
@@ -52,15 +55,16 @@ The wizard asks for, in order:
 1. Your name. Required. The agent uses this to address you.
 2. Optional details: preferred name, role, what you work on, a short
    bio. Press Enter to skip any of them.
-3. Your OpenAI API key. Required. Pasted as a hidden input so it does
-   not land in your shell history.
-4. Provider choice. Press Enter to keep OpenAI. Type `2` to use
-   OpenRouter instead (you will be asked for an OpenRouter key).
-5. Whether to enable long-term memory. If you say yes, the wizard offers
+3. Which LLM providers to wire. The wizard asks independently about
+   OpenAI, OpenRouter, and Anthropic Claude — answer yes to each you have
+   a key for and paste that key (hidden input, so it never lands in your
+   shell history). You must wire at least one; if you wire more than one,
+   the wizard asks which should be the default provider.
+4. Whether to enable long-term memory. If you say yes, the wizard offers
    to start a local Qdrant Docker container for you, or to use one you
    already have, or to point at a remote Qdrant URL. You will also need
    a Gemini key for embeddings.
-6. Whether to enable web search. If yes, you will be asked for a
+5. Whether to enable web search. If yes, you will be asked for a
    Parallel AI key.
 
 When the wizard finishes you'll see a confirmation line that tells you

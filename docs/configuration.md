@@ -101,7 +101,7 @@ Drives the cron tools (see [scheduling.md](scheduling.md)). Set
 ## active_provider
 
 ```yaml
-active_provider: openai           # or: openrouter
+active_provider: openai           # or: openrouter, claude
 ```
 
 Top-level switch. Decides which `*_provider` block the runtime builds.
@@ -197,6 +197,32 @@ openrouter:
 
 The packaged `openrouter-examples/` folder has tested, drop-in blocks
 for popular models. See [providers.md](providers.md).
+
+## claude
+
+Talk to Anthropic's Claude models directly (instead of via OpenRouter).
+Set `ANTHROPIC_API_KEY` in `~/.feather/.env` and `active_provider: claude`.
+
+```yaml
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  model: claude-opus-4-7
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  cache_strategy: anthropic_breakpoint
+  stream_idle_timeout_seconds: 90
+```
+
+* `model`: any Anthropic Messages-API model. `temperature` is dropped
+  automatically for models that reject it (Opus 4.7+).
+* `cache_strategy: anthropic_breakpoint` (default) caches the **static**
+  prefix of the system prompt (identity, tools, skill/MCP catalogs,
+  dispatch catalog), keeping per-turn content (recalled memory, loaded
+  skills) outside the cached prefix. The native Claude provider
+  additionally places a rolling `cache_control` breakpoint on the last
+  message, so the growing conversation history is read from cache instead
+  of reprocessed each turn. `none` disables both.
 
 ## parallel
 

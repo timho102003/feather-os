@@ -263,6 +263,38 @@ reinstall) will silently overwrite it. To make the fix durable:
   from a clone) and re-apply the patch — future patches will then
   survive upgrades.
 
+## Prompt caching seems off (high cost, low hit rate)
+
+When `cache_strategy` is enabled (`anthropic_breakpoint` or
+`gemini_breakpoint`), Feather logs cache usage once per turn. Grep the
+runtime log:
+
+```bash
+grep cache.usage ~/.feather/state/logs/feather.log
+```
+
+Each line looks like:
+
+```
+cache.usage agent=lead read=5000 write=2000 hit_rate=0.71
+```
+
+* `read` — prompt tokens served from cache (the saving).
+* `write` — tokens written to cache this turn.
+* `hit_rate` — `read / (read + write)`.
+
+On a healthy multi-turn session the first turn is cold (`write > 0`,
+`read = 0`) and later turns show `read` climbing with `hit_rate` settling
+high. A turn with nothing cacheable logs no line at all.
+
+If `write` stays high and `read` stays near zero across turns, the cached
+prefix is being invalidated every turn — something in the **static** part
+of the system prompt is changing. The usual cause is a per-turn or
+per-day value (a timestamp, UUID, or session id) that leaked into a
+prompt constant or the cached prefix; keep those out (see the authoring
+guide in `feather/core/prompts/__init__.py`). `cache_strategy: none`
+disables caching entirely; `anthropic_breakpoint` is the default.
+
 ## Still stuck
 
 Feather's runtime log is the best clue. Find it at:
