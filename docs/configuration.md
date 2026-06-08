@@ -166,9 +166,16 @@ openrouter:
       build_sha: abc123
 ```
 
-* `cache_strategy: anthropic_breakpoint`: wraps the system prompt in
-  a content block with `cache_control: ephemeral` for Anthropic-style
-  providers (Claude, Z.ai, DeepSeek, Moonshot).
+* `cache_strategy`: enables prompt-cache breakpoints for caching
+  upstreams. `anthropic_breakpoint` (default) and `gemini_breakpoint`
+  both place a `cache_control: ephemeral` breakpoint at the end of the
+  **static** part of the system prompt (identity, tools, skill/MCP
+  catalogs, dispatch catalog), so the per-turn dynamic part (recalled
+  memory, loaded skill bodies) stays *outside* the cached region and the
+  cached prefix is reused across turns instead of re-billed each turn.
+  `none` disables it. The hint is ignored by upstreams that don't support
+  caching (Gemini uses only the last breakpoint), so it is safe to leave
+  on for Claude, Z.ai, DeepSeek, Moonshot, and Gemini routes.
 * `provider_preferences.require_parameters: true`: strongly
   recommended whenever the agent uses tools.
 * `fallback_models`: tried in order if the primary model is

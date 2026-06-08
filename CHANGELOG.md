@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Prompt caching now caches only the stable prefix.** The system-prompt
+  cache breakpoint is anchored at the end of the static section (identity,
+  tools, skill/MCP catalogs, dispatch catalog) instead of wrapping the whole
+  prompt, so per-turn dynamic content (recalled memory, loaded skill bodies)
+  no longer invalidates the cached prefix every turn. Claude additionally
+  caches the growing conversation via a rolling `cache_control` breakpoint on
+  the last message. The static dispatchable-agent catalog moved into the
+  cached prefix. Per-turn cache read/write/hit-rate is logged (`cache.usage`)
+  so caching can be verified at runtime.
+
+### Fixed
+
+- **`cache_strategy: gemini_breakpoint` now actually enables caching.** It was
+  silently treated as "no caching" (only `anthropic_breakpoint` was handled);
+  Gemini honors the `cache_control` hint via OpenRouter.
+
 ## [0.1.1] - 2026-05-08
 
 ### Added

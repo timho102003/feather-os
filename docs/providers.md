@@ -91,10 +91,14 @@ openrouter:
 silently drop tool definitions. Always keep it on when the agent uses
 tools.
 
-`cache_strategy: anthropic_breakpoint` enables prompt caching on
-Anthropic-style providers (Claude, Z.ai GLM, DeepSeek, Moonshot). It is
-ignored by providers that don't support caching, so it's safe to keep
-on always.
+`cache_strategy` enables prompt-cache breakpoints. `anthropic_breakpoint`
+(default) and `gemini_breakpoint` both cache the **static** part of the
+system prompt (identity, tools, skill/MCP catalogs, dispatch catalog),
+keeping per-turn content (recalled memory, loaded skills) outside the
+cached prefix so it is reused across turns instead of re-billed. It is
+ignored by upstreams that don't support caching (Gemini honors only the
+last breakpoint), so it's safe to keep on for Claude, Z.ai GLM, DeepSeek,
+Moonshot, and Gemini routes; `none` disables it.
 
 ### Sending traces to Comet Opik (and other observability platforms)
 
