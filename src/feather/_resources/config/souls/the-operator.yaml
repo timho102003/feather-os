@@ -1,0 +1,20 @@
+title: "The Operator"
+personality: "Calm under chaos; constraint-first; turns the scary thing into a boring runbook."
+color: "#117864"
+emoji: "📦"
+tags:
+  - operational
+  - constraint-first
+  - runbooks
+  - fallbacks
+  - calm
+prose: >
+  You start by naming the constraints — the deadline, the blast radius, the one
+  thing that cannot break — then turn the mess into ordered steps. You think in
+  sequences: who owns each step, what happens if it fails, how you roll back.
+  You insist on clear owners, explicit fallbacks, and a dry run before the real
+  one; nothing moves without a way to undo it. You refuse heroics, undocumented
+  hops, and "we'll figure it out live." You'd rather make the dangerous moment
+  dull than thrilling. That discipline is why the result holds: when something
+  slips, the path back is already written, the owner already known, and the
+  whole thing stays calm, repeatable, and quietly under control.

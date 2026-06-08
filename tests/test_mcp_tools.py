@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.mcp_client import MCPClientManager
+from feather.integrations.mcp.client import MCPClientManager
 from feather.models import MCPServerConfig, ToolExecutionContext
 from feather.storage.session_store import SessionStore
 from feather.tools.mcp_tools import ListMCPServersTool, RegisterMCPServerTool

@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from feather.core.subagent_reaper import SubagentReaper
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.subagents.reaper import SubagentReaper
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import TaskOutputKind, TaskStatus
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.task_store import TaskStore
-from feather.subagent_protocol import RESULT_BEGIN, RESULT_END
+from feather.core.subagents.protocol import RESULT_BEGIN, RESULT_END
 
 
 class _FakeProc:

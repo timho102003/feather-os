@@ -6,10 +6,10 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from feather.core.base_agent import BaseAgent
-from feather.core.compaction import ContextCompactor
-from feather.core.input_queue import UserInputQueue
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.base import BaseAgent
+from feather.core.agent.compaction import ContextCompactor
+from feather.core.session.input_queue import UserInputQueue
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import (
     AgentConfig,
     AgentOutcome,
@@ -30,7 +30,7 @@ from feather.storage.attachment_store import AttachmentStore
 from feather.storage.session_store import SessionStore
 from feather.storage.tool_output_store import ToolOutputStore
 from feather.tools.base import BaseTool
-from feather.mcp_client import MCPProxyTool
+from feather.integrations.mcp.client import MCPProxyTool
 from feather.tools.registry import ToolRegistry
 
 

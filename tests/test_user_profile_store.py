@@ -2,11 +2,37 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from feather.profile import UserProfile, UserProfileStore
+
+
+async def test_profile_mutation_runs_off_the_event_loop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Blocking profile writes (fsync + rename) are offloaded via to_thread.
+
+    The mutation path holds an asyncio.Lock and previously did a synchronous
+    fsync on the event loop; the write must now run in a worker thread while
+    still landing the value correctly.
+    """
+
+    store = UserProfileStore(tmp_path / "user.md")
+    offloaded: list[str] = []
+    real_to_thread = asyncio.to_thread
+
+    async def spy(func, /, *args, **kwargs):
+        offloaded.append(getattr(func, "__name__", repr(func)))
+        return await real_to_thread(func, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
+    await store.create("name", "Tim")
+
+    assert "_mutate" in offloaded
+    assert store.load().fields["name"] == "Tim"
 
 
 def test_user_profile_store_returns_empty_when_file_missing(tmp_path: Path) -> None:

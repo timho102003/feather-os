@@ -62,6 +62,32 @@ def has_packaged_agent(name: str) -> bool:
     return (packaged_root() / "config" / "agents" / f"{name}.yaml").is_file()
 
 
+def iter_packaged_soul_names() -> Iterator[str]:
+    """Yield the bare ids of every bundled soul preset YAML.
+
+    Ids are filenames with the ``.yaml`` suffix stripped, matching the
+    ``Soul.id`` selection key.
+    """
+    souls_dir = packaged_root() / "config" / "souls"
+    if not souls_dir.is_dir():
+        return
+    for child in souls_dir.iterdir():
+        if child.is_file() and child.name.endswith(".yaml"):
+            yield child.name[: -len(".yaml")]
+
+
+def packaged_soul_yaml_text(soul_id: str) -> str:
+    """Read a bundled soul YAML by bare id (e.g. ``"atlas-architect"``)."""
+    return (packaged_root() / "config" / "souls" / f"{soul_id}.yaml").read_text(
+        encoding="utf-8"
+    )
+
+
+def has_packaged_soul(soul_id: str) -> bool:
+    """True when the package bundles a soul YAML with this bare id."""
+    return (packaged_root() / "config" / "souls" / f"{soul_id}.yaml").is_file()
+
+
 def packaged_skills_root() -> Traversable:
     """Return the root of the bundled built-in skills tree."""
     return packaged_root() / "skills" / "built-in"

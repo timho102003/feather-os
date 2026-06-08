@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from feather.core.agent_catalog import AgentCatalog, AgentCatalogEntry
-from feather.core.subagent_registry import SubagentRegistry
+from feather.core.agent.catalog import AgentCatalog, AgentCatalogEntry
+from feather.core.subagents.registry import SubagentRegistry
 from feather.models import TaskStatus, ToolExecutionContext
 from feather.storage.task_store import TaskStore
 from feather.tools.spawn_agent_tool import SpawnAgentTool

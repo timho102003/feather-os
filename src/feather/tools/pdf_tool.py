@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from feather.models import ToolExecutionContext, ToolExecutionResult
-from feather.pdf import extract_pdf_text
+from feather.integrations.attachments.pdf import extract_pdf_text
 from feather.tools.base import BaseTool
 
 

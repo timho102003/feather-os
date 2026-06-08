@@ -52,7 +52,8 @@ def test_cli_onboard_force_propagates_flag(tmp_path: Path, monkeypatch) -> None:
 def test_cli_skip_onboarding_flag_does_not_call_wizard(tmp_path: Path, monkeypatch) -> None:
     """`--skip-onboarding` propagates ``skip=True`` to maybe_run_onboarding."""
 
-    from feather import cli, textual_tui
+    from feather import cli
+    from feather.tui import app as textual_tui
 
     captured = {"skip": None}
 
@@ -73,7 +74,8 @@ def test_cli_skip_onboarding_flag_does_not_call_wizard(tmp_path: Path, monkeypat
 def test_cli_default_run_invokes_onboarding_then_runtime(tmp_path: Path, monkeypatch) -> None:
     """A bare ``feather`` invocation runs onboarding first, then launches the Textual TUI."""
 
-    from feather import cli, textual_tui
+    from feather import cli
+    from feather.tui import app as textual_tui
 
     order: list[str] = []
 
@@ -95,7 +97,8 @@ def test_cli_default_run_invokes_onboarding_then_runtime(tmp_path: Path, monkeyp
 def test_cli_explicit_cli_subcommand_uses_rich_loop(tmp_path: Path, monkeypatch) -> None:
     """`feather cli` runs onboarding then the Rich streaming loop, not the TUI."""
 
-    from feather import cli, textual_tui
+    from feather import cli
+    from feather.tui import app as textual_tui
 
     order: list[str] = []
 

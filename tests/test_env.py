@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from feather.env import load_dotenv
+from feather.config.env import load_dotenv
 
 
 def test_load_dotenv_loads_simple_and_quoted_values(tmp_path: Path, monkeypatch) -> None:

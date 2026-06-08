@@ -335,6 +335,18 @@ WORKER_HEARTBEATS_TABLE = TableSchema(
     """,
 )
 
+LEAD_SESSIONS_TABLE = TableSchema(
+    name="lead_sessions",
+    create_sql="""
+    CREATE TABLE IF NOT EXISTS lead_sessions (
+        lead_name TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )
+    """,
+)
+
 TABLE_SCHEMAS = (
     SESSIONS_TABLE,
     MESSAGES_TABLE,
@@ -350,6 +362,7 @@ TABLE_SCHEMAS = (
     MESSAGING_CHATS_TABLE,
     MESSAGING_INBOUND_DEDUP_TABLE,
     WORKER_HEARTBEATS_TABLE,
+    LEAD_SESSIONS_TABLE,
 )
 
 

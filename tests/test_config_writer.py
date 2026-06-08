@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.config_writer import write_yaml_value
+from feather.config.writer import write_yaml_value
 
 
 def test_writer_preserves_inline_comment(tmp_path: Path) -> None:
@@ -99,7 +99,7 @@ def test_writer_atomic_no_partial_on_failure(tmp_path: Path, monkeypatch) -> Non
     src = tmp_path / "app.yaml"
     src.write_text("openai:\n  model: original\n", encoding="utf-8")
 
-    from feather import config_writer as cw
+    from feather.config import writer as cw
 
     def boom(*args, **kwargs):
         raise RuntimeError("simulated dump failure")
@@ -113,7 +113,7 @@ def test_writer_atomic_no_partial_on_failure(tmp_path: Path, monkeypatch) -> Non
 
 
 def test_delete_removes_leaf(tmp_path: Path) -> None:
-    from feather.config_writer import delete_yaml_value
+    from feather.config.writer import delete_yaml_value
 
     src = tmp_path / "app.yaml"
     src.write_text(
@@ -127,9 +127,49 @@ def test_delete_removes_leaf(tmp_path: Path) -> None:
 
 
 def test_delete_missing_leaf_returns_false(tmp_path: Path) -> None:
-    from feather.config_writer import delete_yaml_value
+    from feather.config.writer import delete_yaml_value
 
     src = tmp_path / "app.yaml"
     src.write_text("openai:\n  model: gpt-5-mini\n", encoding="utf-8")
 
     assert delete_yaml_value(src, ["openai", "missing"]) is False
+
+
+def test_concurrent_writes_do_not_collide_on_temp_file(tmp_path: Path) -> None:
+    """Two writers racing on the same file must not clobber each other's temp.
+
+    The old fixed ``<file>.tmp`` sibling let concurrent writers share — and
+    corrupt — one temp; a unique ``mkstemp`` name keeps each write isolated, so
+    the file is always a complete valid YAML and no temp residue is left.
+    """
+
+    import threading
+
+    src = tmp_path / "app.yaml"
+    src.write_text("logging:\n  level: INFO\n", encoding="utf-8")
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def writer(value: str) -> None:
+        try:
+            barrier.wait()
+            for _ in range(25):
+                write_yaml_value(src, ["logging", "level"], value)
+        except BaseException as exc:  # noqa: BLE001 - recorded for assertion
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=writer, args=("DEBUG",)),
+        threading.Thread(target=writer, args=("WARNING",)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert not errors, errors
+    text = src.read_text(encoding="utf-8")
+    assert text.count("level:") == 1  # one winner, never a corrupted merge
+    assert "level: DEBUG" in text or "level: WARNING" in text
+    assert not list(tmp_path.glob("*.tmp"))  # no temp file left behind

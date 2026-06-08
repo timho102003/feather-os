@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from feather.core.lead_agent import LeadAgent
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.base import BaseAgent
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import ModelTurn, ProviderRequestConfig, RuntimeEvent, ToolCall
 from feather.providers.base import BaseLLMProvider
 from feather.skills.catalog import SkillCatalog
@@ -101,7 +101,7 @@ registered_tools:
         skill_catalog = SkillCatalog(root / ".feather" / "skills")
         tool_registry = ToolRegistry([LoadSkillTool(skill_catalog)])
         prompt_builder = PromptBuilder(skill_catalog, tool_registry)
-        agent = LeadAgent(
+        agent = BaseAgent(
             agent_config=load_agent_config(root, "lead"),
             prompt_builder=prompt_builder,
             provider=provider,
@@ -167,7 +167,7 @@ registered_tools:
         skill_catalog = SkillCatalog(root / ".feather" / "skills")
         tool_registry = ToolRegistry([GrepTool(root), AskUserTool(), LoadSkillTool(skill_catalog)])
         prompt_builder = PromptBuilder(skill_catalog, tool_registry)
-        agent = LeadAgent(
+        agent = BaseAgent(
             agent_config=load_agent_config(root, "lead"),
             prompt_builder=prompt_builder,
             provider=provider,

@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from feather.config import load_app_config
-from feather.core.agent_factory import AgentFactory
-from feather.core.sub_agents import CustomAgent
+from feather.core.agent.factory import AgentFactory
+from feather.core.agent.base import BaseAgent
 from feather.models import ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.skills.catalog import SkillCatalog
@@ -167,9 +167,9 @@ async def test_factory_strips_lead_only_tools_from_non_lead_agent(
         await session_store.close()
 
     warnings = [rec.message for rec in caplog.records]
-    assert any("spawn_agent" in msg and "non-lead" in msg for msg in warnings)
-    assert any("create_cron" in msg and "non-lead" in msg for msg in warnings)
-    assert any("ask_user" in msg and "non-lead" in msg for msg in warnings)
+    assert any("spawn_agent" in msg and "lacks capability can_spawn" in msg for msg in warnings)
+    assert any("create_cron" in msg and "lacks capability can_schedule" in msg for msg in warnings)
+    assert any("ask_user" in msg and "lacks capability can_message_user" in msg for msg in warnings)
 
 
 async def test_factory_routes_role_custom_to_custom_agent(tmp_path: Path) -> None:
@@ -194,7 +194,7 @@ async def test_factory_routes_role_custom_to_custom_agent(tmp_path: Path) -> Non
             skill_catalog=SkillCatalog((tmp_path / ".feather" / "skills").resolve()),
         )
         agent = factory.build("reviewer-custom")
-        assert isinstance(agent, CustomAgent)
+        assert isinstance(agent, BaseAgent) and agent.config.role == "custom"
         assert agent.config.role == "custom"
         assert agent.config.description == "Reviews code for mistakes."
         assert "<reviewer_identity>" in agent.config.inline_prompt

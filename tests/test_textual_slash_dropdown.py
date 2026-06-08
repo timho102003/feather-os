@@ -7,12 +7,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from feather.slash_commands import (
+from feather.tui.slash_commands import (
     SlashCommand,
     SlashCommandRegistry,
     default_registry,
 )
-from feather.textual_tui import (
+from feather.tui.app import (
     FeatherTextualApp,
     SlashCommandDropdown,
     render_dropdown_text,
@@ -240,7 +240,7 @@ def test_app_help_handler_writes_help_block(monkeypatch) -> None:
 
 def test_app_clear_handler_resets_transcript(monkeypatch) -> None:
     app = FeatherTextualApp(root=Path("."), session_id="s1")
-    from feather.textual_tui import _ConversationBlock
+    from feather.tui.app import _ConversationBlock
 
     app._conversation_blocks = [
         _ConversationBlock(
@@ -338,7 +338,7 @@ def test_qdrant_status_subcommand_dispatches_async(monkeypatch) -> None:
 def test_resolve_qdrant_url_falls_back_to_default(monkeypatch) -> None:
     monkeypatch.delenv("QDRANT_URL", raising=False)
 
-    from feather.textual_tui import _resolve_qdrant_url
+    from feather.tui.app import _resolve_qdrant_url
 
     url, source = _resolve_qdrant_url()
     assert url == "http://localhost:6333"
@@ -348,7 +348,7 @@ def test_resolve_qdrant_url_falls_back_to_default(monkeypatch) -> None:
 def test_resolve_qdrant_url_reports_env_source(monkeypatch) -> None:
     monkeypatch.setenv("QDRANT_URL", "https://qdrant.example")
 
-    from feather.textual_tui import _resolve_qdrant_url
+    from feather.tui.app import _resolve_qdrant_url
 
     url, source = _resolve_qdrant_url()
     assert url == "https://qdrant.example"
@@ -364,7 +364,7 @@ def test_is_compose_managed_false_when_env_unset(monkeypatch, tmp_path) -> None:
     # which on a normal dev host is False. We rely on that being the
     # case in the test environment; the assert below documents the
     # contract.
-    from feather.textual_tui import _is_compose_managed_qdrant
+    from feather.tui.app import _is_compose_managed_qdrant
     from pathlib import Path as _Path
 
     if _Path("/.dockerenv").exists():
@@ -380,7 +380,7 @@ def test_is_compose_managed_true_when_env_points_at_remote_host(
 ) -> None:
     monkeypatch.setenv("QDRANT_URL", "http://qdrant:6333")
 
-    from feather.textual_tui import _is_compose_managed_qdrant
+    from feather.tui.app import _is_compose_managed_qdrant
     from pathlib import Path as _Path
 
     if _Path("/.dockerenv").exists():
@@ -394,7 +394,7 @@ def test_is_compose_managed_true_when_env_points_at_remote_host(
 def test_is_compose_managed_false_for_localhost_env(monkeypatch) -> None:
     monkeypatch.setenv("QDRANT_URL", "http://localhost:6333")
 
-    from feather.textual_tui import _is_compose_managed_qdrant
+    from feather.tui.app import _is_compose_managed_qdrant
     from pathlib import Path as _Path
 
     if _Path("/.dockerenv").exists():
@@ -617,7 +617,7 @@ def test_dropdown_resets_selection_when_match_set_changes() -> None:
 def test_dispatch_warns_when_command_has_unexpected_args(monkeypatch) -> None:
     """Regression M1: pasted multi-line body must not silently vanish."""
 
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     recorded: list[tuple[str, str, str]] = []
@@ -640,7 +640,7 @@ def test_dispatch_warns_when_command_has_unexpected_args(monkeypatch) -> None:
 
 
 def test_dispatch_does_not_warn_when_handler_consumes_args(monkeypatch) -> None:
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     consumed: list[str] = []
@@ -669,7 +669,7 @@ def test_dispatch_does_not_warn_when_handler_consumes_args(monkeypatch) -> None:
 def test_dispatch_writes_awaiting_reminder_when_paused(monkeypatch) -> None:
     """Regression N7: slash command while awaiting must remind the user."""
 
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     app._awaiting_event.set()
@@ -695,7 +695,7 @@ def test_dispatch_writes_awaiting_reminder_when_paused(monkeypatch) -> None:
 def test_app_suppresses_change_event_after_tab_completion() -> None:
     """Regression C1: Tab autocomplete must not re-open the dropdown."""
 
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     # Simulate the composer text-area state after Tab handler ran.
@@ -722,7 +722,7 @@ def test_app_suppresses_change_event_after_tab_completion() -> None:
 
 
 def test_app_subsequent_change_after_tab_still_updates(monkeypatch) -> None:
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     dropdown = SlashCommandDropdown(default_registry(), id="slash_dropdown")
@@ -835,7 +835,7 @@ def test_dropdown_render_no_hints_when_window_covers_all() -> None:
 def test_default_registry_handlers_cover_every_command() -> None:
     """Nit 1: every default command must have a bound handler."""
 
-    from feather.textual_tui import FeatherTextualApp
+    from feather.tui.app import FeatherTextualApp
 
     app = FeatherTextualApp(root=Path("."), session_id="s1")
     for cmd in app.slash_registry.all():

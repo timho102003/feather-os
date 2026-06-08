@@ -6,7 +6,8 @@ from pathlib import Path
 
 import pytest
 
-from feather.migration import (
+from feather.setup.migration import (
+    MigrationOutcome,
     detect_legacy_artifacts,
     already_handled,
     maybe_migrate,
@@ -64,6 +65,15 @@ def test_detect_skips_empty_files(paths):
 def test_maybe_migrate_is_no_op_when_nothing_to_migrate(paths):
     rc = maybe_migrate(paths, ask=lambda *_: "y", say=lambda *_: None)
     assert rc == "not-applicable"
+
+
+def test_maybe_migrate_returns_typed_outcome(paths):
+    """maybe_migrate returns a MigrationOutcome (str-Enum: == strings still work)."""
+
+    rc = maybe_migrate(paths, ask=lambda *_: "y", say=lambda *_: None)
+    assert isinstance(rc, MigrationOutcome)
+    assert rc is MigrationOutcome.NOT_APPLICABLE
+    assert rc == "not-applicable"  # str-Enum backward compatibility preserved
 
 
 def test_maybe_migrate_skips_when_already_handled(paths):

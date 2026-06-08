@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from feather.config import load_app_config
-from feather.core.agent_factory import AgentFactory
+from feather.core.agent.factory import AgentFactory
 from feather.models import ModelTurn, ParallelConfig, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.providers.parallel_client import ParallelClient

@@ -280,12 +280,14 @@ class ClaudeMessagesProvider(BaseLLMProvider):
         that ``input_items`` already carries everything the model needs.
         """
 
+        active_config = request_config or ProviderRequestConfig()
         body = translate_request(
             instructions=instructions,
             input_items=input_items,
             tools=tools,
-            request_config=request_config or ProviderRequestConfig(),
+            request_config=active_config,
             cfg=self._cfg,
+            cache_prefix=active_config.cache_prefix,
         )
         logger.info(
             "claude request model=%s tools=%s previous_response_id=%s",

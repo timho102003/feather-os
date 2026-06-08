@@ -101,7 +101,7 @@ Drives the cron tools (see [scheduling.md](scheduling.md)). Set
 ## active_provider
 
 ```yaml
-active_provider: openai           # or: openrouter
+active_provider: openai           # or: openrouter, claude
 ```
 
 Top-level switch. Decides which `*_provider` block the runtime builds.
@@ -166,9 +166,16 @@ openrouter:
       build_sha: abc123
 ```
 
-* `cache_strategy: anthropic_breakpoint`: wraps the system prompt in
-  a content block with `cache_control: ephemeral` for Anthropic-style
-  providers (Claude, Z.ai, DeepSeek, Moonshot).
+* `cache_strategy`: enables prompt-cache breakpoints for caching
+  upstreams. `anthropic_breakpoint` (default) and `gemini_breakpoint`
+  both place a `cache_control: ephemeral` breakpoint at the end of the
+  **static** part of the system prompt (identity, tools, skill/MCP
+  catalogs, dispatch catalog), so the per-turn dynamic part (recalled
+  memory, loaded skill bodies) stays *outside* the cached region and the
+  cached prefix is reused across turns instead of re-billed each turn.
+  `none` disables it. The hint is ignored by upstreams that don't support
+  caching (Gemini uses only the last breakpoint), so it is safe to leave
+  on for Claude, Z.ai, DeepSeek, Moonshot, and Gemini routes.
 * `provider_preferences.require_parameters: true`: strongly
   recommended whenever the agent uses tools.
 * `fallback_models`: tried in order if the primary model is
@@ -190,6 +197,32 @@ openrouter:
 
 The packaged `openrouter-examples/` folder has tested, drop-in blocks
 for popular models. See [providers.md](providers.md).
+
+## claude
+
+Talk to Anthropic's Claude models directly (instead of via OpenRouter).
+Set `ANTHROPIC_API_KEY` in `~/.feather/.env` and `active_provider: claude`.
+
+```yaml
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  model: claude-opus-4-7
+  max_output_tokens: 32000
+  temperature: 1.0
+  parallel_tool_calls: true
+  cache_strategy: anthropic_breakpoint
+  stream_idle_timeout_seconds: 90
+```
+
+* `model`: any Anthropic Messages-API model. `temperature` is dropped
+  automatically for models that reject it (Opus 4.7+).
+* `cache_strategy: anthropic_breakpoint` (default) caches the **static**
+  prefix of the system prompt (identity, tools, skill/MCP catalogs,
+  dispatch catalog), keeping per-turn content (recalled memory, loaded
+  skills) outside the cached prefix. The native Claude provider
+  additionally places a rolling `cache_control` breakpoint on the last
+  message, so the growing conversation history is read from cache instead
+  of reprocessed each turn. `none` disables both.
 
 ## parallel
 

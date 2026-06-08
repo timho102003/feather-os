@@ -1,10 +1,10 @@
 # Providers and Models
 
-Feather can call models through two providers: OpenAI directly, or
+Feather can call models through three providers: OpenAI directly,
 OpenRouter (which gives you access to dozens of models from many vendors
-behind one API key). Pick the one that fits your situation, or run a
-mix where the chat uses one provider and the memory pipeline uses
-another.
+behind one API key), or Anthropic's Claude API directly. Pick the one
+that fits your situation, or run a mix where the chat uses one provider
+and the memory pipeline uses another.
 
 ## Quick decisions
 
@@ -91,10 +91,14 @@ openrouter:
 silently drop tool definitions. Always keep it on when the agent uses
 tools.
 
-`cache_strategy: anthropic_breakpoint` enables prompt caching on
-Anthropic-style providers (Claude, Z.ai GLM, DeepSeek, Moonshot). It is
-ignored by providers that don't support caching, so it's safe to keep
-on always.
+`cache_strategy` enables prompt-cache breakpoints. `anthropic_breakpoint`
+(default) and `gemini_breakpoint` both cache the **static** part of the
+system prompt (identity, tools, skill/MCP catalogs, dispatch catalog),
+keeping per-turn content (recalled memory, loaded skills) outside the
+cached prefix so it is reused across turns instead of re-billed. It is
+ignored by upstreams that don't support caching (Gemini honors only the
+last breakpoint), so it's safe to keep on for Claude, Z.ai GLM, DeepSeek,
+Moonshot, and Gemini routes; `none` disables it.
 
 ### Sending traces to Comet Opik (and other observability platforms)
 
@@ -232,6 +236,40 @@ If you flip to `openrouter` and there is no `openrouter:` block in your
 config, Feather will refuse to start instead of silently falling back.
 Add the block (or copy one of the examples above) and try again.
 
+## Claude (native Anthropic API)
+
+Talk to Anthropic's Claude models directly, without going through
+OpenRouter. Create an API key at
+<https://console.anthropic.com/settings/keys> and put it in
+`~/.feather/.env`:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Switch Feather to Claude by setting `active_provider: claude` in
+`~/.feather/config/app.yaml`. A minimal Claude block:
+
+```yaml
+active_provider: claude
+
+claude:
+  api_key_env: ANTHROPIC_API_KEY
+  model: claude-opus-4-7
+  max_output_tokens: 32000
+  cache_strategy: anthropic_breakpoint
+```
+
+`cache_strategy: anthropic_breakpoint` (the default) caches the **static**
+part of the system prompt — identity, tools, skill/MCP catalogs, dispatch
+catalog — so per-turn content (recalled memory, loaded skills) stays
+outside the cached prefix and is not re-billed each turn. The native
+Claude provider additionally places a **rolling** `cache_control`
+breakpoint on the last message, so the growing conversation history is
+read from cache instead of reprocessed every turn — a large saving on
+long sessions. Set `cache_strategy: none` to disable both. `temperature`
+is dropped automatically for models that reject it (Opus 4.7+).
+
 ## Per-agent and per-task overrides
 
 The shipped agents (lead, explore, research, validate) can each pin
@@ -286,7 +324,7 @@ into `~/.feather/config/app.yaml`.
 
 | Setting | Where | What it does |
 |---|---|---|
-| `active_provider` | `app.yaml` top level | `openai` or `openrouter`. |
+| `active_provider` | `app.yaml` top level | `openai`, `openrouter`, or `claude`. |
 | `openai.model` | `app.yaml` | Model used when `active_provider` is openai. |
 | `openai.reasoning.effort` | `app.yaml` | `minimal`, `low`, `medium`, or `high`. |
 | `openrouter.model` | `app.yaml` | Model slug, e.g. `qwen/qwen3.6-plus`. |

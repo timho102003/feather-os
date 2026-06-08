@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.cli_commands import (
+from feather.cli.commands import (
     init_memory,
     init_project,
     memory_enabled_via_marker,
@@ -79,14 +79,14 @@ def test_init_memory_writes_marker_when_container_starts(
     """When ensure_local_qdrant_container succeeds, marker is written."""
 
     monkeypatch.setattr(
-        "feather.cli_commands.docker_available", lambda **_: True
+        "feather.cli.commands.docker_available", lambda **_: True
     )
     monkeypatch.setattr(
-        "feather.cli_commands.qdrant_container_state",
+        "feather.cli.commands.qdrant_container_state",
         lambda **_: type("S", (), {"state": "absent"})(),
     )
     monkeypatch.setattr(
-        "feather.cli_commands.ensure_local_qdrant_container",
+        "feather.cli.commands.ensure_local_qdrant_container",
         lambda **_: "http://localhost:6333",
     )
     output: list[str] = []
@@ -108,7 +108,7 @@ def test_init_memory_is_no_op_when_marker_exists_and_container_running(
         json.dumps({"url": "http://existing:6333"}), encoding="utf-8"
     )
     monkeypatch.setattr(
-        "feather.cli_commands.qdrant_container_state",
+        "feather.cli.commands.qdrant_container_state",
         lambda **_: type("S", (), {"state": "running"})(),
     )
 
@@ -118,7 +118,7 @@ def test_init_memory_is_no_op_when_marker_exists_and_container_running(
         started.append("called")
         return "should-not-happen"
 
-    monkeypatch.setattr("feather.cli_commands.ensure_local_qdrant_container", _no_call)
+    monkeypatch.setattr("feather.cli.commands.ensure_local_qdrant_container", _no_call)
     output: list[str] = []
     rc = init_memory(isolated_paths, say=output.append)
     assert rc == 0
@@ -128,10 +128,10 @@ def test_init_memory_is_no_op_when_marker_exists_and_container_running(
 
 def test_init_memory_returns_error_when_docker_missing(isolated_paths, monkeypatch):
     monkeypatch.setattr(
-        "feather.cli_commands.docker_available", lambda **_: False
+        "feather.cli.commands.docker_available", lambda **_: False
     )
     monkeypatch.setattr(
-        "feather.cli_commands.qdrant_container_state",
+        "feather.cli.commands.qdrant_container_state",
         lambda **_: type("S", (), {"state": "absent"})(),
     )
     output: list[str] = []
@@ -147,10 +147,10 @@ def test_stop_memory_calls_helper_and_preserves_marker(
     isolated_paths.ensure_global_dirs()
     isolated_paths.memory_marker.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        "feather.cli_commands.docker_available", lambda **_: True
+        "feather.cli.commands.docker_available", lambda **_: True
     )
     monkeypatch.setattr(
-        "feather.cli_commands.stop_local_qdrant_container", lambda **_: "stopped"
+        "feather.cli.commands.stop_local_qdrant_container", lambda **_: "stopped"
     )
     output: list[str] = []
     rc = stop_memory(isolated_paths, say=output.append)
@@ -165,10 +165,10 @@ def test_remove_memory_deletes_container_and_marker(
     isolated_paths.ensure_global_dirs()
     isolated_paths.memory_marker.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        "feather.cli_commands.docker_available", lambda **_: True
+        "feather.cli.commands.docker_available", lambda **_: True
     )
     monkeypatch.setattr(
-        "feather.cli_commands.remove_local_qdrant_container", lambda **_: "removed"
+        "feather.cli.commands.remove_local_qdrant_container", lambda **_: "removed"
     )
     output: list[str] = []
     rc = remove_memory(isolated_paths, purge=False, say=output.append)

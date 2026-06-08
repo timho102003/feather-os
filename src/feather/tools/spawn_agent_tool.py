@@ -37,8 +37,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from feather.core.agent_catalog import AgentCatalog
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.agent.catalog import AgentCatalog
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import (
     TaskRecord,
     TaskRunStatus,
@@ -47,7 +47,7 @@ from feather.models import (
     ToolExecutionResult,
 )
 from feather.storage.task_store import TaskStore
-from feather.subagent_protocol import RESULT_BEGIN, RESULT_END
+from feather.core.subagents.protocol import RESULT_BEGIN, RESULT_END
 from feather.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)

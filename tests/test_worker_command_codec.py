@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from feather.core.worker_command_codec import (
+from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     CommandCodecError,
     ConfigReloadCommand,

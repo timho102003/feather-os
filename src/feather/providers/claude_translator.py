@@ -128,6 +128,75 @@ def _sanitize_node(node: Any) -> Any:
 # that want to add tool/message-level breakpoints later.
 _CACHE_STRATEGY_BREAKPOINT = "anthropic_breakpoint"
 
+
+_CACHEABLE_BLOCK_TYPES: frozenset[str] = frozenset(
+    {"text", "tool_use", "tool_result", "image", "document"}
+)
+
+
+def _mark_rolling_breakpoint(messages: list[dict[str, Any]]) -> None:
+    """Anchor a rolling cache breakpoint at the end of the message history.
+
+    The Messages API is stateless, so Feather re-sends the whole (compacted)
+    conversation every turn. Marking the last content block lets the *next*
+    turn read this turn's entire history from cache (Anthropic walks back up
+    to 20 blocks to find a prior breakpoint) instead of reprocessing it at
+    full input price. Combined with the static-prefix breakpoint this uses 2
+    of the 4 allowed breakpoints.
+
+    Mutates ``messages`` in place on freshly-built blocks. A no-op when the
+    last block is missing or a non-cacheable type (e.g. ``thinking``), so a
+    malformed tail never raises.
+    """
+
+    if not messages:
+        return
+    content = messages[-1].get("content")
+    if not isinstance(content, list) or not content:
+        return
+    last_block = content[-1]
+    if not isinstance(last_block, dict):
+        return
+    if last_block.get("type") not in _CACHEABLE_BLOCK_TYPES:
+        return
+    last_block["cache_control"] = {"type": "ephemeral"}
+
+
+def _system_blocks_with_breakpoint(
+    instructions: str, cache_prefix: str | None
+) -> list[dict[str, Any]]:
+    """Emit the ``system`` field as cache-aware ``text`` blocks.
+
+    When ``cache_prefix`` is a non-empty proper leading substring of
+    ``instructions``, the system prompt is split into two blocks: the stable
+    prefix (carrying the ``cache_control`` breakpoint) and the per-turn
+    dynamic remainder (uncached). This keeps the cached region byte-identical
+    across turns even as the dynamic suffix (loaded skills, recalled memory)
+    changes. Any other case — no prefix, empty, or a fully-stable prompt —
+    falls back to a single cached block (the legacy behavior), so callers that
+    don't thread a prefix are unaffected.
+    """
+
+    if cache_prefix and cache_prefix != instructions and instructions.startswith(cache_prefix):
+        remainder = instructions[len(cache_prefix) :]
+        blocks: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": cache_prefix,
+                "cache_control": {"type": "ephemeral"},
+            }
+        ]
+        if remainder.strip():
+            blocks.append({"type": "text", "text": remainder})
+        return blocks
+    return [
+        {
+            "type": "text",
+            "text": instructions,
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+
 # Anthropic's image-block ``source`` accepts a base64 inline payload or a
 # remote URL. Feather hands every image in as a single URL string; we
 # split ``data:`` URLs into the base64 form because the Messages API
@@ -428,6 +497,7 @@ def translate_request(
     tools: list[dict[str, Any]],
     request_config: ProviderRequestConfig,
     cfg: ClaudeConfig,
+    cache_prefix: str | None = None,
 ) -> dict[str, Any]:
     """Build the Anthropic Messages POST body for one turn.
 
@@ -474,22 +544,23 @@ def translate_request(
     )
 
     if cfg.cache_strategy == _CACHE_STRATEGY_BREAKPOINT:
-        system_field: Any = [
-            {
-                "type": "text",
-                "text": instructions,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ]
+        system_field: Any = _system_blocks_with_breakpoint(instructions, cache_prefix)
     else:
         system_field = instructions
+
+    messages = translate_input_items(input_items)
+    if cfg.cache_strategy == _CACHE_STRATEGY_BREAKPOINT:
+        # Cache the growing conversation too: the next turn reads this turn's
+        # full history from cache instead of reprocessing it (rolling
+        # breakpoint at the end of the message list).
+        _mark_rolling_breakpoint(messages)
 
     body: dict[str, Any] = {
         "model": model,
         "stream": True,
         "max_tokens": desired_max,
         "system": system_field,
-        "messages": translate_input_items(input_items),
+        "messages": messages,
     }
 
     thinking_on = False

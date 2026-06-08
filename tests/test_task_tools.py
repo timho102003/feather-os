@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
-from feather.core.agent_catalog import AgentCatalog, AgentCatalogEntry
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.agent.catalog import AgentCatalog, AgentCatalogEntry
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import TaskRunStatus, TaskStatus, ToolExecutionContext
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.storage.task_store import TaskStore
@@ -25,11 +25,11 @@ from feather.tools.task_tools import (
 
 
 def _lead() -> ToolExecutionContext:
-    return ToolExecutionContext(session_id="lead-sess", agent_name="Lead")
+    return ToolExecutionContext(session_id="lead-sess", agent_name="Lead", is_lead=True)
 
 
 def _research() -> ToolExecutionContext:
-    return ToolExecutionContext(session_id="child-sess", agent_name="Research")
+    return ToolExecutionContext(session_id="child-sess", agent_name="Research", is_lead=False)
 
 
 class _EofStream:

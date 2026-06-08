@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from feather.core.base_agent import BaseAgent
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.base import BaseAgent
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import (
     AgentConfig,
     AgentOutcome,

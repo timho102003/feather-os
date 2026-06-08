@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import AgentMessageStatus, ToolExecutionContext
 from feather.storage.agent_message_store import AgentMessageStore
 from feather.tools.terminate_agent_tool import TerminateAgentTool
@@ -234,9 +234,9 @@ async def test_terminate_escalates_to_kill_on_sigterm_timeout(
 
 
 async def test_terminate_is_lead_only_in_factory(tmp_path: Path) -> None:
-    """terminate_agent must appear in the lead-only set — custom YAMLs
-    that list it should have it stripped by the factory."""
+    """terminate_agent must be gated behind the spawn capability — custom
+    YAMLs that list it on a non-spawning agent should have it stripped."""
 
-    from feather.core.agent_factory import _LEAD_ONLY_TOOLS
+    from feather.core.agent.factory import _CAPABILITY_GATED_TOOLS
 
-    assert "terminate_agent" in _LEAD_ONLY_TOOLS
+    assert _CAPABILITY_GATED_TOOLS["terminate_agent"] == "can_spawn"

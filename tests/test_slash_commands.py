@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from feather.slash_commands import (
+from feather.tui.slash_commands import (
     SlashCommand,
     SlashCommandRegistry,
     default_registry,

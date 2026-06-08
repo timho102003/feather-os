@@ -10,8 +10,8 @@ from typing import Any
 from uuid import uuid4
 
 from feather.config import load_agent_config
-from feather.core.agent_catalog import AgentCatalog
-from feather.core.subagent_registry import LiveSubagent, SubagentRegistry
+from feather.core.agent.catalog import AgentCatalog
+from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import (
     AgentMessage,
     TaskOutputKind,
@@ -990,4 +990,11 @@ def _optional_str(value: object) -> str | None:
 
 
 def _is_lead(context: ToolExecutionContext) -> bool:
-    return context.agent_name.lower() == "lead"
+    """Report whether the calling agent is a lead.
+
+    Reads the capability mirrored onto the context (``is_lead``), so any lead
+    — including custom-named ones like ``Tim``/``Sophia`` — is recognized,
+    not just an agent literally named ``"lead"``.
+    """
+
+    return context.is_lead

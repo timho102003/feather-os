@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from feather.attachments import (
+from feather.integrations.attachments.parse import (
     build_attachment_content_blocks,
     parse_attachment_drops,
     render_attachment_message,

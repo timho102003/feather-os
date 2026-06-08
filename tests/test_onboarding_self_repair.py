@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from feather.onboarding import apply_self_repair_toggle
-from feather.textual_tui import _should_use_lead_worker, _LEAD_WORKER_ENV
+from feather.tui.app import _should_use_lead_worker, _LEAD_WORKER_ENV
 
 
 # --------------------------------------------------------------------- #

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from feather.core.runtime_event_codec import (
+from feather.core.ipc.event_codec import (
     EventCodecError,
     decode_event,
     encode_event,

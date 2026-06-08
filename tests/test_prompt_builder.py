@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from feather.core.prompt_builder import PromptBuilder
+from feather.core.agent.prompt_builder import PromptBuilder
 from feather.models import AgentConfig, MCPServerConfig
 from feather.skills.catalog import SkillCatalog
 from feather.tools.ask_user_tool import AskUserTool
@@ -99,6 +99,81 @@ Loaded skill body.
     assert without_skill.cached_prefix == with_skill.cached_prefix
     assert "Loaded skill body." not in with_skill.cached_prefix
     assert "Loaded skill body." in with_skill.dynamic_suffix
+
+
+def test_cache_prefix_is_leading_substring_of_render(tmp_path: Path) -> None:
+    """The split point the providers slice on must be an exact leading substring.
+
+    The breakpoint translators do ``instructions[len(cache_prefix):]``; if
+    ``cache_prefix`` were not a true prefix of ``render()`` the slice would
+    corrupt the system prompt (and silently fall back to one cached block).
+    """
+
+    builder = _basic_builder(tmp_path)
+    sections = builder.build_sections(
+        _agent("lead"),
+        loaded_skill_names=[],
+        memory_block="## Relevant memory\n- recalled fact",
+        user_profile_block="name: Tim",
+    )
+
+    assert sections.cache_prefix  # non-empty
+    rendered = sections.render()
+    assert rendered.startswith(sections.cache_prefix)
+    assert sections.cache_prefix != rendered  # there IS a dynamic remainder to exclude
+
+
+def test_cached_prefix_byte_identical_across_memory_changes(tmp_path: Path) -> None:
+    """Per-turn memory must never perturb the cached prefix (byte-for-byte)."""
+
+    builder = _basic_builder(tmp_path)
+    cfg = _agent("lead")
+    base = builder.build_sections(cfg, loaded_skill_names=[]).cache_prefix
+    variants = [
+        builder.build_sections(
+            cfg, loaded_skill_names=[], memory_block="## Relevant memory\n- fact A"
+        ).cache_prefix,
+        builder.build_sections(
+            cfg, loaded_skill_names=[], memory_block="completely different recall"
+        ).cache_prefix,
+    ]
+    for prefix in variants:
+        assert prefix.encode("utf-8") == base.encode("utf-8")
+
+
+def test_cached_prefix_is_deterministic(tmp_path: Path) -> None:
+    """Same inputs → identical prefix bytes every build.
+
+    Guards against a future regression that smuggles a timestamp / uuid /
+    unordered-dict render into the cached prefix, which would silently drop the
+    runtime cache-hit rate to zero.
+    """
+
+    builder = _basic_builder(tmp_path)
+    cfg = _agent("lead")
+    prefixes = {
+        builder.build_sections(cfg, loaded_skill_names=[]).cache_prefix for _ in range(20)
+    }
+    assert len(prefixes) == 1
+
+
+def test_static_first_dynamic_last(tmp_path: Path) -> None:
+    """Static content lands before the cache boundary; dynamic content after it."""
+
+    builder = _basic_builder(tmp_path)
+    sections = builder.build_sections(
+        _agent("lead"),
+        loaded_skill_names=[],
+        memory_block="recalled fact xyz",
+        user_profile_block="name: Tim",
+    )
+    rendered = sections.render()
+    boundary = rendered.index("</static_cached_prefix>")
+    # Dynamic content lives strictly after the static boundary.
+    assert rendered.index("recalled fact xyz") > boundary
+    assert rendered.index("<long_term_memory>") > boundary
+    # The user profile is intentionally cached, so it sits before the boundary.
+    assert rendered.index("name: Tim") < boundary
 
 
 def test_prompt_builder_includes_mcp_catalog_metadata_without_connection_details(
@@ -219,3 +294,107 @@ def test_prompt_builder_supports_additional_static_prompt_modules(tmp_path: Path
 
     assert "<additional_static_prompts>" in prompt
     assert '<prompt_module index="3">' in prompt
+
+
+def _basic_builder(tmp_path: Path, agent_catalog=None) -> PromptBuilder:
+    skill_catalog = SkillCatalog(tmp_path / ".feather" / "skills")
+    tool_registry = ToolRegistry([AskUserTool()])
+    return PromptBuilder(skill_catalog, tool_registry, agent_catalog=agent_catalog)
+
+
+def _agent(role: str, **kw) -> AgentConfig:
+    base = dict(
+        name=role.title(),
+        role=role,
+        personality="Decisive",
+        prompt_modules=["feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT"],
+        registered_tools=["ask_user"],
+    )
+    base.update(kw)
+    return AgentConfig(**base)
+
+
+def test_prompt_builder_injects_soul_when_present(tmp_path: Path) -> None:
+    builder = _basic_builder(tmp_path)
+    cfg = _agent("lead", soul="You are Tim, a pragmatic operator.")
+    prompt = builder.build_sections(cfg, loaded_skill_names=[]).render()
+    assert "<agent_soul>" in prompt
+    assert "pragmatic operator" in prompt
+
+
+def test_prompt_builder_omits_soul_when_absent(tmp_path: Path) -> None:
+    builder = _basic_builder(tmp_path)
+    prompt = builder.build_sections(_agent("lead"), loaded_skill_names=[]).render()
+    assert "<agent_soul>" not in prompt
+
+
+def test_dispatch_catalog_gated_by_spawn_capability(tmp_path: Path) -> None:
+    from feather.core.agent.catalog import AgentCatalogEntry
+
+    class _FakeCatalog:
+        def list_entries(self):
+            return [
+                AgentCatalogEntry(name="lead", role="lead", description="", personality=""),
+                AgentCatalogEntry(
+                    name="explore", role="explore", description="Find code", personality=""
+                ),
+            ]
+
+    builder = _basic_builder(tmp_path, agent_catalog=_FakeCatalog())
+
+    # A lead (can_spawn) sees the dispatchable catalog (and not itself).
+    lead_prompt = builder.build_sections(_agent("lead"), loaded_skill_names=[]).render()
+    assert "<dispatchable_agents>" in lead_prompt
+    assert "`explore`" in lead_prompt
+
+    # A sub-agent (no can_spawn) never gets the catalog.
+    sub_prompt = builder.build_sections(_agent("explore"), loaded_skill_names=[]).render()
+    assert "<dispatchable_agents>" not in sub_prompt
+
+
+def test_dispatchable_agents_live_in_cached_prefix(tmp_path: Path) -> None:
+    """The dispatch catalog is static per session → it belongs in the cached prefix.
+
+    Keeping it cached (rather than in the per-turn dynamic suffix) is both
+    correct and a caching win, and the prefix stays byte-stable when per-turn
+    memory changes.
+    """
+
+    from feather.core.agent.catalog import AgentCatalogEntry
+
+    class _FakeCatalog:
+        def list_entries(self):
+            return [
+                AgentCatalogEntry(name="lead", role="lead", description="", personality=""),
+                AgentCatalogEntry(
+                    name="explore", role="explore", description="Find code", personality=""
+                ),
+            ]
+
+    builder = _basic_builder(tmp_path, agent_catalog=_FakeCatalog())
+    sections = builder.build_sections(_agent("lead"), loaded_skill_names=[])
+    assert "<dispatchable_agents>" in sections.cached_prefix
+    assert "<dispatchable_agents>" not in sections.dynamic_suffix
+
+    # Prefix (with the catalog) stays identical when only per-turn memory moves.
+    with_memory = builder.build_sections(
+        _agent("lead"), loaded_skill_names=[], memory_block="recalled fact"
+    )
+    assert with_memory.cached_prefix == sections.cached_prefix
+
+
+def test_dispatch_catalog_follows_capability_override(tmp_path: Path) -> None:
+    """A sub-agent YAML that grants can_spawn DOES get the catalog — the gate
+    is the capability, not the role string."""
+    from feather.core.agent.catalog import AgentCatalogEntry
+
+    class _FakeCatalog:
+        def list_entries(self):
+            return [
+                AgentCatalogEntry(name="explore", role="explore", description="x", personality="")
+            ]
+
+    builder = _basic_builder(tmp_path, agent_catalog=_FakeCatalog())
+    cfg = _agent("explore", capabilities={"can_spawn": True})
+    prompt = builder.build_sections(cfg, loaded_skill_names=[]).render()
+    assert "<dispatchable_agents>" in prompt

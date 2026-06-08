@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from feather.config_schema import (
+from feather.config.schema import (
     ConfigField,
     FieldType,
     ReloadClass,

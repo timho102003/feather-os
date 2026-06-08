@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from feather.config_schema import (
+from feather.config.schema import (
     FieldType,
     REGISTRY,
     WidgetHint,
@@ -15,6 +15,23 @@ def test_lookup_finds_by_exact_path() -> None:
     assert field is not None
     assert field.enum is not None
     assert "openrouter" in field.enum
+
+
+def test_lookup_index_matches_first_registry_match() -> None:
+    """The O(1) path index returns the same field a linear scan would.
+
+    Pins the lookup optimization: ``lookup`` must resolve to the *first*
+    REGISTRY entry for a path (first-occurrence-wins), identical to the
+    previous linear scan, and unknown paths still return ``None``.
+    """
+
+    from feather.config.schema import _REGISTRY_BY_PATH
+
+    for field in REGISTRY:
+        first = next(f for f in REGISTRY if f.path == field.path)
+        assert lookup(field.path) is first
+        assert _REGISTRY_BY_PATH[field.path] is first
+    assert lookup("definitely.not.a.real.path") is None
 
 
 def test_lookup_handles_agent_wildcard() -> None:
@@ -54,7 +71,7 @@ def test_string_list_widget_must_be_list_editor() -> None:
 def test_config_field_supports_hint_attribute() -> None:
     """ConfigField must expose an optional ``hint`` for the modal placeholder."""
 
-    from feather.config_schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
+    from feather.config.schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
 
     f = ConfigField(
         path="x.y",
@@ -71,7 +88,7 @@ def test_config_field_supports_hint_attribute() -> None:
 def test_config_field_supports_choices_attribute() -> None:
     """ConfigField must expose an optional ``choices`` (non-strict suggestions)."""
 
-    from feather.config_schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
+    from feather.config.schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
 
     f = ConfigField(
         path="x.y",
@@ -88,7 +105,7 @@ def test_config_field_supports_choices_attribute() -> None:
 def test_ratio_validator_has_range_hint() -> None:
     """Fields validated by _ratio should advertise the 0.0-1.0 range via hint_for."""
 
-    from feather.config_schema import hint_for
+    from feather.config.schema import hint_for
 
     field = lookup("app.compaction.trigger_ratio")
     assert field is not None
@@ -101,7 +118,7 @@ def test_ratio_validator_has_range_hint() -> None:
 def test_positive_validator_has_positivity_hint() -> None:
     """Fields validated by _positive should advertise > 0 via hint_for."""
 
-    from feather.config_schema import hint_for
+    from feather.config.schema import hint_for
 
     field = lookup("app.compaction.context_window_tokens")
     assert field is not None
@@ -114,7 +131,7 @@ def test_positive_validator_has_positivity_hint() -> None:
 def test_explicit_hint_beats_validator_derived() -> None:
     """When ConfigField.hint is set, hint_for returns it instead of the derived value."""
 
-    from feather.config_schema import (
+    from feather.config.schema import (
         ConfigField,
         FieldType,
         ReloadClass,
@@ -140,7 +157,7 @@ def test_explicit_hint_beats_validator_derived() -> None:
 def test_hint_for_returns_none_when_no_signal() -> None:
     """No validator + no explicit hint → hint_for returns None."""
 
-    from feather.config_schema import (
+    from feather.config.schema import (
         ConfigField,
         FieldType,
         ReloadClass,
@@ -169,7 +186,7 @@ def test_model_catalog_covers_first_party_providers() -> None:
     ``_provider_to_catalog_key``.
     """
 
-    from feather.models_catalog import load_catalog
+    from feather.config.model_catalog import load_catalog
 
     catalog = load_catalog()
     for provider in ("openai", "anthropic", "openrouter"):
@@ -226,7 +243,7 @@ def test_dropdown_without_enum_or_choices_is_invalid() -> None:
 
     import pytest
 
-    from feather.config_schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
+    from feather.config.schema import ConfigField, FieldType, WidgetHint, ReloadClass, Scope
 
     with pytest.raises(ValueError, match="enum, choices, or dynamic_choices"):
         ConfigField(

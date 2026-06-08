@@ -42,7 +42,9 @@ class BaseLLMProvider(ABC):
             tools: Registered tool schemas.
             previous_response_id: Optional stateful response cursor.
             event_handler: Optional runtime event sink.
-            request_config: Optional per-request generation overrides.
+            request_config: Optional per-request generation overrides
+                (including ``cache_prefix``, the prompt-cache breakpoint
+                anchor — see :class:`ProviderRequestConfig`).
 
         Returns:
             Normalized model turn.

@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from feather.core.lead_supervisor import ConfigReloadAckResult
+from feather.core.leads.supervisor import ConfigReloadAckResult
 from feather.models import ModelTurn, ProviderRequestConfig
 from feather.providers.base import BaseLLMProvider
 from feather.runtime import FeatherRuntime
