@@ -52,7 +52,9 @@ class MemoryReader(ABC):
         latest_user_text: str,
         agent_model: str,
         owner: MemoryOwner = MemoryOwner.USER,
-    ) -> str: ...
+    ) -> str:
+        """Return a recalled-memories block to inject into the system prompt."""
+        ...
 
     @abstractmethod
     async def recall(
@@ -63,7 +65,9 @@ class MemoryReader(ABC):
         score_threshold: float,
         session_id: str | None,
         owner: MemoryOwner = MemoryOwner.USER,
-    ) -> list[MemorySearchResult]: ...
+    ) -> list[MemorySearchResult]:
+        """Search stored memories explicitly (the ``recall_memory`` tool path)."""
+        ...
 
 
 class NoOpMemoryReader(MemoryReader):

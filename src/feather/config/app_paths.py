@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
 
 
 _GLOBAL_DIR_NAME = ".feather"
@@ -55,9 +54,9 @@ class FeatherPaths:
 
     def __init__(
         self,
-        project_root: Optional[Path],
+        project_root: Path | None,
         *,
-        home: Optional[Path] = None,
+        home: Path | None = None,
     ) -> None:
         if home is not None:
             self.global_root = Path(home)
@@ -240,9 +239,9 @@ class FeatherPaths:
     @classmethod
     def detect(
         cls,
-        cwd: Optional[Path] = None,
+        cwd: Path | None = None,
         *,
-        home: Optional[Path] = None,
+        home: Path | None = None,
     ) -> "FeatherPaths":
         """Build a :class:`FeatherPaths` by walking up from ``cwd``.
 
@@ -284,12 +283,12 @@ class FeatherPaths:
         cls,
         project_root: Path,
         *,
-        home: Optional[Path] = None,
+        home: Path | None = None,
     ) -> "FeatherPaths":
         """Construct paths pinned to a specific project root."""
         return cls(project_root=Path(project_root), home=home)
 
     @classmethod
-    def global_only(cls, *, home: Optional[Path] = None) -> "FeatherPaths":
+    def global_only(cls, *, home: Path | None = None) -> "FeatherPaths":
         """Construct paths with no project (global-only mode)."""
         return cls(project_root=None, home=home)

@@ -57,6 +57,8 @@ class CreateCronTool(BaseTool):
         )
 
     async def execute(self, arguments: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        """Create a scheduled job (interval or cron expression) for this session."""
+
         job = await self._cron_store.create_job(
             session_id=context.session_id,
             # ``agent_key`` flows into ``to_agent_name`` on the mailbox
@@ -144,6 +146,8 @@ class UpdateCronTool(BaseTool):
         )
 
     async def execute(self, arguments: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        """Modify an existing job's schedule, prompt, or status by name."""
+
         job = await _resolve_job(
             self._cron_store,
             session_id=context.session_id,
@@ -198,6 +202,8 @@ class DeleteCronTool(BaseTool):
         )
 
     async def execute(self, arguments: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        """Delete one of this session's jobs by name."""
+
         job = await _resolve_job(
             self._cron_store,
             session_id=context.session_id,
@@ -257,6 +263,8 @@ class ListCronsTool(BaseTool):
         )
 
     async def execute(self, arguments: dict[str, Any], context: ToolExecutionContext) -> ToolExecutionResult:
+        """List this session's jobs with status and next-run time."""
+
         jobs = await self._cron_store.list_jobs(
             session_id=context.session_id,
             status=CronJobStatus(arguments["status"]) if arguments["status"] is not None else None,

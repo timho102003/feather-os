@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from feather.models import AgentRunResult, EventHandler
 
@@ -72,17 +73,21 @@ class InProcessLeadHandle:
         self._input_queue = input_queue
 
     async def run(self, text: str, on_event: EventHandler | None) -> AgentRunResult:
+        """Run one turn on this lead's session, serialized by the coordinator."""
         return await self._agent.run(self.session_id, text, on_event)
 
     async def resume_on_inbox(self, on_event: EventHandler | None) -> AgentRunResult | None:
+        """Run a turn only if this lead's inbox has pending envelopes."""
         return await self._agent.resume_on_inbox(self.session_id, on_event)
 
     async def enqueue_user_input(self, text: str) -> bool:
+        """Steer an in-flight turn by queueing text for its next iteration."""
         if self._input_queue is None:
             return False
         return await self._input_queue.enqueue(self.session_id, text)
 
     async def shutdown(self) -> None:
+        """No-op: an in-process agent has no worker to stop."""
         return None
 
 
@@ -100,16 +105,20 @@ class SupervisedLeadHandle:
         return self._supervisor
 
     async def run(self, text: str, on_event: EventHandler | None) -> AgentRunResult:
+        """Run one turn in the worker subprocess, streaming events back."""
         return await self._supervisor.run(self.session_id, text, on_event)
 
     async def resume_on_inbox(self, on_event: EventHandler | None) -> AgentRunResult | None:
+        """Run a turn in the worker only if this lead's inbox has pending envelopes."""
         return await self._supervisor.resume_on_inbox(self.session_id, on_event)
 
     async def enqueue_user_input(self, text: str) -> bool:
+        """Forward mid-turn input to the worker's input queue via IPC."""
         await self._supervisor.enqueue_user_input(self.session_id, text)
         return True
 
     async def shutdown(self) -> None:
+        """Stop the worker subprocess (graceful, then SIGTERM on timeout)."""
         await self._supervisor.shutdown()
 
 

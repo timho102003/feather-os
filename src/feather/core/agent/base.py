@@ -609,6 +609,7 @@ class BaseAgent(ABC):
         async def run_one(
             tool_call: ToolCall,
         ) -> tuple[ToolCall, Any | None, Exception | None]:
+            """Execute one tool call under the parallel-tools semaphore."""
             try:
                 async with semaphore:
                     if (

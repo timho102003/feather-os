@@ -113,10 +113,14 @@ class WorkerHandle(Protocol):
     """
 
     @property
-    def pid(self) -> int | None: ...
+    def pid(self) -> int | None:
+        """OS pid of the worker, or ``None`` before spawn."""
+        ...
 
     @property
-    def returncode(self) -> int | None: ...
+    def returncode(self) -> int | None:
+        """Exit code once the worker has died, else ``None``."""
+        ...
 
     async def send_command(self, command: WorkerCommand) -> None:
         """Write one encoded command JSONL line to the worker's stdin."""
@@ -683,14 +687,17 @@ class _SubprocessWorkerHandle:
 
     @property
     def pid(self) -> int | None:
+        """OS pid of the worker, or ``None`` before spawn."""
         return self._process.pid
 
     @property
     def returncode(self) -> int | None:
+        """Exit code once the worker has died, else ``None``."""
         return self._process.returncode
 
     @property
     def stderr_buffer(self) -> bytes:
+        """Everything the worker wrote to stderr so far (crash forensics)."""
         return bytes(self._stderr_buffer)
 
     async def send_command(self, command: WorkerCommand) -> None:

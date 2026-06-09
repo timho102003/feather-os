@@ -101,6 +101,8 @@ class TaskCreateTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Create a durable task row and return its id for later dispatch."""
+
         plan_id = _optional_str(arguments.get("plan_id"))
         plan_filepath = _optional_str(arguments.get("plan_filepath"))
         if plan_id is None and plan_filepath is not None:
@@ -173,6 +175,8 @@ class TaskListTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """List tasks visible to this agent, with status filters."""
+
         # Strict OpenAI tool calling forces every property into `required`,
         # so the model emits `status=""` to signal "no filter". Treat empty
         # string the same as omitted; otherwise TaskStatus("") raises.
@@ -221,6 +225,8 @@ class TaskGetTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Fetch one task's full record (status, owner, events) by id."""
+
         task = await _resolve_task(
             self._task_store, context, _require_str(arguments, "task_id")
         )
@@ -295,6 +301,8 @@ class TaskUpdateTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Update a task's status/fields and append the audit event."""
+
         task = await _resolve_task(
             self._task_store, context, _optional_str(arguments.get("task_id"))
         )
@@ -372,6 +380,8 @@ class TaskOutputTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Append or fetch a task's output payload."""
+
         task = await _resolve_task(
             self._task_store, context, _optional_str(arguments.get("task_id"))
         )
@@ -480,6 +490,8 @@ class RequestInputTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Ask another agent for input and wait for the correlated reply."""
+
         task = await _resolve_task(
             self._task_store, context, _optional_str(arguments.get("task_id"))
         )
@@ -619,6 +631,8 @@ class TaskStopTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Request a running task's sub-agent to stop."""
+
         task = await _resolve_task(
             self._task_store, context, _require_str(arguments, "task_id")
         )
@@ -701,6 +715,8 @@ class TaskResumeTool(BaseTool):
     async def execute(
         self, arguments: dict[str, Any], context: ToolExecutionContext
     ) -> ToolExecutionResult:
+        """Re-dispatch a stopped or failed task."""
+
         task = await _resolve_task(
             self._task_store, context, _require_str(arguments, "task_id")
         )
