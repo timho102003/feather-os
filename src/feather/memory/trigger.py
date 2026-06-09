@@ -2,8 +2,9 @@
 
 After every agent ``run_loop`` invocation, ``BaseAgent`` calls
 ``maybe_schedule`` with the current session/agent. The trigger checks its
-config + closed state and either fires a detached :class:`asyncio.Task` (in
-``background=True`` mode) or runs inline (used by tests).
+config + closed state and fires a tracked, detached :class:`asyncio.Task`
+(regardless of the legacy ``background`` flag, so :meth:`drain` always sees
+in-flight work).
 
 Three guarantees:
 
@@ -91,15 +92,12 @@ class LiveMemoryTrigger(MemoryTrigger):
             logger.debug("memory.trigger.no_loop")
             return
 
-        coro = self._run(session_id, agent_model, owner)
-        if not self._cfg.background:
-            # Inline mode (tests): still schedule on the loop so we don't
-            # block the caller, but do not track for drain — tests await
-            # asyncio.sleep(0) to observe the result.
-            loop.create_task(coro)
-            return
+        # Both modes schedule a detached task; tracking is unconditional so
+        # drain()/cancel_all() always see in-flight work. ``background``
+        # remains accepted in config but no longer changes behavior.
         task = loop.create_task(
-            coro, name=f"memory-extract:{session_id[:8]}"
+            self._run(session_id, agent_model, owner),
+            name=f"memory-extract:{session_id[:8]}",
         )
         self._tasks.add(task)
         task.add_done_callback(self._on_done)
