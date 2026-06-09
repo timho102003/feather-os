@@ -40,9 +40,12 @@ contention it hard-fails.
 - **(A — chosen)** Keep the per-call connection design (it is cross-process
   tolerant and the regression surface of changing it is the whole messaging
   router), but route every open through one private async contextmanager
-  `_connect()` that applies `busy_timeout` + `foreign_keys`. `initialize()`
-  additionally sets `journal_mode=WAL` once (WAL is a persistent DB-file
-  property).
+  `_connect()` that applies `busy_timeout`. `initialize()` additionally sets
+  `journal_mode=WAL` once (WAL is a persistent DB-file property).
+  **Implementation amendment:** `foreign_keys` stays OFF — the existing test
+  helper documents that chat mappings are intentionally written without a
+  matching session row, so enabling FK enforcement would be a behavior
+  change, not hardening.
 - (B) Convert to the house single-long-lived-connection pattern — deferred:
   correct end-state per CLAUDE.md's store rule, but a lifecycle change touching
   every messaging caller; out of scope for a hardening pass.

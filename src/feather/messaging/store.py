@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -37,6 +39,8 @@ logger = logging.getLogger(__name__)
 # the platforms only retry for a few hours so a small window is enough.
 _DEDUP_KEEP_HOURS = 24
 
+_BUSY_TIMEOUT_MS = 5000
+
 
 class MessagingStore:
     """Persist credentials, chat mappings, and inbound dedup keys.
@@ -48,10 +52,28 @@ class MessagingStore:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
 
-    async def initialize(self) -> None:
-        """Run schema migrations on the database."""
+    @asynccontextmanager
+    async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
+        """Open one short-lived connection with the house pragma set.
+
+        This store deliberately opens a connection per call — webhook
+        handlers run in many tasks and there is no long-lived connection
+        to contend over — but each connection still sets an explicit
+        ``busy_timeout`` so a contended write backs off. ``foreign_keys``
+        stays off on purpose: chat mappings may be written before (or
+        outlive) their session row.
+        """
 
         async with aiosqlite.connect(self._db_path) as connection:
+            connection.row_factory = aiosqlite.Row
+            await connection.execute(f"PRAGMA busy_timeout={_BUSY_TIMEOUT_MS};")
+            yield connection
+
+    async def initialize(self) -> None:
+        """Run schema migrations and set the persistent WAL journal mode."""
+
+        async with self._connect() as connection:
+            await connection.execute("PRAGMA journal_mode=WAL;")
             await initialize_database_schema(connection)
             await connection.commit()
 
@@ -68,7 +90,7 @@ class MessagingStore:
 
         config_json = json.dumps(config, sort_keys=True)
         now = _now_iso()
-        async with aiosqlite.connect(self._db_path) as connection:
+        async with self._connect() as connection:
             await connection.execute(
                 """
                 INSERT INTO messaging_credentials
@@ -88,8 +110,7 @@ class MessagingStore:
     ) -> CredentialRecord | None:
         """Return the credential row for ``platform``, or ``None`` if absent."""
 
-        async with aiosqlite.connect(self._db_path) as connection:
-            connection.row_factory = aiosqlite.Row
+        async with self._connect() as connection:
             cursor = await connection.execute(
                 """
                 SELECT platform, config_json, enabled, created_at, updated_at
@@ -111,8 +132,7 @@ class MessagingStore:
     async def list_credentials(self) -> list[CredentialRecord]:
         """Return every credential row (used by service start-up)."""
 
-        async with aiosqlite.connect(self._db_path) as connection:
-            connection.row_factory = aiosqlite.Row
+        async with self._connect() as connection:
             cursor = await connection.execute(
                 """
                 SELECT platform, config_json, enabled, created_at, updated_at
@@ -146,7 +166,7 @@ class MessagingStore:
     async def delete_credentials(self, platform: Platform) -> None:
         """Remove the credential row for ``platform``."""
 
-        async with aiosqlite.connect(self._db_path) as connection:
+        async with self._connect() as connection:
             await connection.execute(
                 "DELETE FROM messaging_credentials WHERE platform = ?",
                 (platform.value,),
@@ -160,8 +180,7 @@ class MessagingStore:
     ) -> ChatMappingRecord | None:
         """Return the mapping for a (platform, chat_id) pair, or ``None``."""
 
-        async with aiosqlite.connect(self._db_path) as connection:
-            connection.row_factory = aiosqlite.Row
+        async with self._connect() as connection:
             cursor = await connection.execute(
                 """
                 SELECT platform, chat_id, session_id, display_name, created_at, updated_at
@@ -184,8 +203,7 @@ class MessagingStore:
         """Insert a new mapping, or refresh the display name if one exists."""
 
         now = _now_iso()
-        async with aiosqlite.connect(self._db_path) as connection:
-            connection.row_factory = aiosqlite.Row
+        async with self._connect() as connection:
             await connection.execute(
                 """
                 INSERT INTO messaging_chats
@@ -212,7 +230,7 @@ class MessagingStore:
     async def count_chats_for_platform(self, platform: Platform) -> int:
         """Return how many chats are currently mapped for ``platform``."""
 
-        async with aiosqlite.connect(self._db_path) as connection:
+        async with self._connect() as connection:
             cursor = await connection.execute(
                 "SELECT COUNT(*) FROM messaging_chats WHERE platform = ?",
                 (platform.value,),
@@ -234,7 +252,7 @@ class MessagingStore:
         """
 
         now = _now_iso()
-        async with aiosqlite.connect(self._db_path) as connection:
+        async with self._connect() as connection:
             try:
                 await connection.execute(
                     """
@@ -262,7 +280,7 @@ class MessagingStore:
         would hit the dedup table and be dropped.
         """
 
-        async with aiosqlite.connect(self._db_path) as connection:
+        async with self._connect() as connection:
             await connection.execute(
                 """
                 DELETE FROM messaging_inbound_dedup
@@ -284,7 +302,7 @@ class MessagingStore:
         cutoff = (
             datetime.now(timezone.utc) - timedelta(hours=hours)
         ).isoformat()
-        async with aiosqlite.connect(self._db_path) as connection:
+        async with self._connect() as connection:
             cursor = await connection.execute(
                 "DELETE FROM messaging_inbound_dedup WHERE seen_at < ?",
                 (cutoff,),
