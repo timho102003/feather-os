@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from feather.core.ipc.event_codec import EventCodecError, decode_event
+from feather.core.ipc.subprocess_env import subprocess_env_with_home
 from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     ConfigReloadCommand,
@@ -643,6 +644,7 @@ class LeadSupervisor:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._project_root),
+            env=subprocess_env_with_home(),
         )
         return _SubprocessWorkerHandle(process)
 
