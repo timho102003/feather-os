@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import tempfile
@@ -128,6 +129,38 @@ class WriteFileTool(BaseTool):
             )
 
         path = self._resolve_path(raw_path)
+        encoded = content.encode("utf-8")
+        existed = await asyncio.to_thread(
+            self._write_sync, path, raw_path, encoded, overwrite, create_parents
+        )
+
+        display = self._display_path(path)
+        logger.info(
+            "tool.write_file agent=%s session_id=%s path=%s bytes=%d created=%s",
+            context.agent_name,
+            context.session_id,
+            display,
+            len(encoded),
+            not existed,
+        )
+        return ToolExecutionResult(
+            output=f"wrote {len(encoded)} bytes to {display} (created={not existed})"
+        )
+
+    def _write_sync(
+        self,
+        path: Path,
+        raw_path: str,
+        encoded: bytes,
+        overwrite: bool,
+        create_parents: bool,
+    ) -> bool:
+        """Run the stat/mkdir/write/fsync/replace sequence on a worker thread.
+
+        Returns:
+            Whether the file existed before the write.
+        """
+
         if path.is_dir():
             raise ValueError(f"Path is a directory, not a file: {raw_path}")
 
@@ -145,7 +178,6 @@ class WriteFileTool(BaseTool):
                 )
             parent.mkdir(parents=True, exist_ok=True)
 
-        encoded = content.encode("utf-8")
         tmp_fd, tmp_name = tempfile.mkstemp(
             prefix=f".{path.name}.", suffix=".tmp", dir=parent
         )
@@ -167,19 +199,7 @@ class WriteFileTool(BaseTool):
                         tmp_path,
                     )
             raise
-
-        display = self._display_path(path)
-        logger.info(
-            "tool.write_file agent=%s session_id=%s path=%s bytes=%d created=%s",
-            context.agent_name,
-            context.session_id,
-            display,
-            len(encoded),
-            not existed,
-        )
-        return ToolExecutionResult(
-            output=f"wrote {len(encoded)} bytes to {display} (created={not existed})"
-        )
+        return existed
 
     def _display_path(self, path: Path) -> str:
         """Return ``path`` rendered for the user in the most readable form.

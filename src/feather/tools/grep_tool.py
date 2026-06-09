@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 from pathlib import Path
 from typing import Any
@@ -61,6 +62,19 @@ class GrepTool(BaseTool):
         flags = 0 if case_sensitive else re.IGNORECASE
         regex = re.compile(pattern, flags)
 
+        matches = await asyncio.to_thread(
+            self._search_sync, search_root, regex, max_results
+        )
+
+        if not matches:
+            return ToolExecutionResult(output="No matches found.")
+        return ToolExecutionResult(output="\n".join(matches))
+
+    def _search_sync(
+        self, search_root: Path, regex: re.Pattern[str], max_results: int
+    ) -> list[str]:
+        """Walk and read files on a worker thread — rglob/read_text block."""
+
         matches: list[str] = []
         for path in sorted(search_root.rglob("*")):
             if len(matches) >= max_results:
@@ -78,10 +92,7 @@ class GrepTool(BaseTool):
                     matches.append(f"{relative}:{line_number}: {line.strip()}")
                     if len(matches) >= max_results:
                         break
-
-        if not matches:
-            return ToolExecutionResult(output="No matches found.")
-        return ToolExecutionResult(output="\n".join(matches))
+        return matches
 
     def _resolve_search_root(self, raw_path: str) -> Path:
         path = (self._workspace_root / raw_path).resolve()

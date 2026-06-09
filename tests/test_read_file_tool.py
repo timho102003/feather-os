@@ -361,3 +361,35 @@ async def test_read_file_rejects_paths_outside_all_roots_with_paths(
             },
             _ctx(),
         )
+
+
+async def test_read_file_does_not_block_event_loop(tmp_path: Path, monkeypatch) -> None:
+    """A slow file read must run off-loop so concurrent tasks keep running."""
+
+    import asyncio
+    import time
+
+    (tmp_path / "file.txt").write_text("hello", encoding="utf-8")
+    tool = ReadFileTool(tmp_path)
+    original_read_text = Path.read_text
+
+    def slow_read_text(self: Path, *args: object, **kwargs: object) -> str:
+        time.sleep(0.2)
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", slow_read_text)
+    order: list[str] = []
+
+    async def run_tool() -> None:
+        await tool.execute(
+            {"path": "file.txt", "start_line": None, "end_line": None, "max_chars": None},
+            ToolExecutionContext(session_id="session-1", agent_name="Lead"),
+        )
+        order.append("tool")
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0.05)
+        order.append("heartbeat")
+
+    await asyncio.gather(run_tool(), heartbeat())
+    assert order == ["heartbeat", "tool"]
