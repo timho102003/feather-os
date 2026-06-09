@@ -266,3 +266,30 @@ async def test_session_store_connection_sets_busy_timeout(tmp_path: Path) -> Non
         assert int(row[0]) == 5000
     finally:
         await store.close()
+
+
+async def test_add_message_sequences_unique_across_connections(tmp_path: Path) -> None:
+    """Two connections to one db (the cross-process shape) must never mint
+    the same sequence — SELECT-MAX-then-INSERT raced here."""
+
+    db_path = tmp_path / "feather.db"
+    store_a = SessionStore(db_path)
+    store_b = SessionStore(db_path)
+    await store_a.initialize()
+    await store_b.initialize()
+    try:
+        session = await store_a.create_session("Lead")
+
+        async def add(store: SessionStore, index: int):
+            return await store.add_message(
+                session.id, MessageRole.USER, f"message-{index}"
+            )
+
+        results = await asyncio.gather(
+            *(add(store_a if i % 2 == 0 else store_b, i) for i in range(20))
+        )
+        sequences = sorted(message.sequence for message in results)
+        assert sequences == list(range(1, 21))
+    finally:
+        await store_a.close()
+        await store_b.close()

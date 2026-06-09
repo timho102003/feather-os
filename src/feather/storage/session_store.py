@@ -135,22 +135,37 @@ class SessionStore:
             The stored message.
         """
 
-        sequence_row = await self._fetchone(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM messages WHERE session_id = ?",
-            (session_id,),
-        )
-        sequence = int(sequence_row["next_sequence"])
         message_id = str(uuid4())
         now = _utc_now()
+        # Allocate the sequence inside the INSERT itself: a single statement
+        # executes atomically under SQLite's write lock, so two connections
+        # (or processes) can never read the same MAX. An aggregate with no
+        # GROUP BY always yields exactly one row.
         await self._execute(
             """
             INSERT INTO messages (id, session_id, role, content, file_ref, is_compact, sequence, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            SELECT ?, ?, ?, ?, ?, ?, COALESCE(MAX(sequence), 0) + 1, ?
+            FROM messages WHERE session_id = ?
             """,
-            (message_id, session_id, role.value, content, file_ref, int(is_compact), sequence, now),
+            (
+                message_id,
+                session_id,
+                role.value,
+                content,
+                file_ref,
+                int(is_compact),
+                now,
+                session_id,
+            ),
         )
         await self._touch_session(session_id)
         await self._connection.commit()
+        # Read the allocated sequence back by primary key — avoids a
+        # RETURNING clause (SQLite >= 3.35 floor).
+        sequence_row = await self._fetchone(
+            "SELECT sequence FROM messages WHERE id = ?", (message_id,)
+        )
+        sequence = int(sequence_row["sequence"])
         return SessionMessage(
             id=message_id,
             session_id=session_id,
