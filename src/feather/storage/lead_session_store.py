@@ -16,6 +16,7 @@ from pathlib import Path
 
 import aiosqlite
 
+from feather.storage.connection import open_store_connection
 from feather.storage.schema import LEAD_SESSIONS_TABLE
 
 __all__ = ("LeadSessionStore",)
@@ -31,11 +32,10 @@ class LeadSessionStore:
     async def initialize(self) -> None:
         """Open the connection and ensure the table exists."""
 
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = await aiosqlite.connect(self._db_path)
-        self._connection.row_factory = aiosqlite.Row
-        await self._connection.execute("PRAGMA busy_timeout=5000;")
-        await self._connection.execute("PRAGMA journal_mode=WAL;")
+        # No foreign_keys pragma: the pointer table references nothing.
+        self._connection = await open_store_connection(
+            self._db_path, foreign_keys=False
+        )
         await self._connection.execute(LEAD_SESSIONS_TABLE.create_sql)
         await self._connection.commit()
 

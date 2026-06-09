@@ -19,6 +19,7 @@ from feather.models import (
     SessionRecord,
     SessionStatus,
 )
+from feather.storage.connection import open_store_connection
 from feather.storage.schema import initialize_database_schema
 
 _UNSET = object()
@@ -35,11 +36,7 @@ class SessionStore:
     async def initialize(self) -> None:
         """Create the database and required tables if missing."""
 
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = await aiosqlite.connect(self._db_path)
-        self._connection.row_factory = aiosqlite.Row
-        await self._connection.execute("PRAGMA foreign_keys=ON;")
-        await self._connection.execute("PRAGMA journal_mode=WAL;")
+        self._connection = await open_store_connection(self._db_path)
         await initialize_database_schema(self._connection)
         await self._connection.commit()
 

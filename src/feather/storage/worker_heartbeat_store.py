@@ -32,6 +32,7 @@ from pathlib import Path
 import aiosqlite
 
 from feather.models import WorkerHeartbeat, WorkerStatus
+from feather.storage.connection import open_store_connection
 from feather.storage.schema import initialize_database_schema
 
 logger = logging.getLogger(__name__)
@@ -47,15 +48,7 @@ class WorkerHeartbeatStore:
     async def initialize(self) -> None:
         """Open the connection and ensure the schema exists."""
 
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = await aiosqlite.connect(self._db_path)
-        self._connection.row_factory = aiosqlite.Row
-        await self._connection.execute("PRAGMA foreign_keys=ON;")
-        await self._connection.execute("PRAGMA journal_mode=WAL;")
-        # Match the busy_timeout used by the other stores so concurrent
-        # writers (worker writing heartbeats while supervisor reads) back
-        # off rather than raising under WAL contention bursts.
-        await self._connection.execute("PRAGMA busy_timeout=5000;")
+        self._connection = await open_store_connection(self._db_path)
         await initialize_database_schema(self._connection)
         await self._connection.commit()
 

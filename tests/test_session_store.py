@@ -253,3 +253,16 @@ async def test_session_store_active_history_starts_at_latest_compact(tmp_path: P
         assert "user: new request" in rendered
     finally:
         await store.close()
+
+
+async def test_session_store_connection_sets_busy_timeout(tmp_path: Path) -> None:
+    """Contended writes must back off instead of failing with 'database is locked'."""
+
+    store = SessionStore(tmp_path / "feather.db")
+    await store.initialize()
+    try:
+        cursor = await store._connection.execute("PRAGMA busy_timeout;")
+        row = await cursor.fetchone()
+        assert int(row[0]) == 5000
+    finally:
+        await store.close()
