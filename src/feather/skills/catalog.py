@@ -20,14 +20,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.resources.abc import Traversable
 from pathlib import Path
-from typing import Sequence, Union
+from collections.abc import Sequence
 
 import yaml
 
 from feather.models import LoadedSkill, SkillMetadata
 
 
-SkillSource = Union[Path, Traversable]
+SkillSource = Path | Traversable
 
 
 @dataclass(slots=True)

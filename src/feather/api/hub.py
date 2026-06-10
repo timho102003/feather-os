@@ -52,6 +52,7 @@ class ApiHub:
         *,
         provider_factory: Callable[[Any], Any] | None = None,
     ) -> "ApiHub":
+        """Build the runtime, start every discovered lead, and open its channel."""
         runtime = await FeatherRuntime.create(root, provider_factory=provider_factory)
         hub = cls(runtime, root)
         await hub._manager.start()
@@ -61,6 +62,7 @@ class ApiHub:
         return hub
 
     def _open_channel(self, name: str) -> LeadChannel:
+        """Wire one lead's handle into a started event fan-out channel."""
         info = self._manager.info(name)
         channel = LeadChannel(
             name=name,
@@ -76,6 +78,7 @@ class ApiHub:
     # --- reads -----------------------------------------------------------
 
     def list_leads(self) -> list[LeadOut]:
+        """Every active lead with identity metadata and live channel status."""
         out: list[LeadOut] = []
         for info in self._manager.list_leads():
             channel = self._channels.get(info.name)
@@ -94,6 +97,7 @@ class ApiHub:
         return out
 
     def channel(self, name: str) -> LeadChannel | None:
+        """The streaming channel for a lead, or ``None`` for unknown names."""
         return self._channels.get(name)
 
     def list_souls(self) -> list[SoulOut]:
@@ -113,6 +117,7 @@ class ApiHub:
         return souls
 
     async def list_subagents(self, name: str) -> list[SubagentOut]:
+        """Live sub-agents whose parent session belongs to this lead."""
         channel = self._channels.get(name)
         if channel is None:
             return []
@@ -128,6 +133,7 @@ class ApiHub:
         ]
 
     async def get_transcript(self, session_id: str) -> TranscriptOut:
+        """Full message history for any session (lead or sub-agent)."""
         messages = await self._runtime.session_store.list_messages(session_id)
         return TranscriptOut(
             session_id=session_id,
@@ -165,6 +171,7 @@ class ApiHub:
         return out
 
     def get_config(self) -> ConfigOut:
+        """The effective merged config, summarized for the console header."""
         config = self._runtime.config
         provider = config.active_provider
         if provider == "openrouter" and config.openrouter is not None:
@@ -215,6 +222,7 @@ class ApiHub:
     async def create_lead(
         self, name: str, soul: str = "", soul_id: str | None = None
     ) -> LeadOut:
+        """Scaffold a lead YAML (optionally from a soul preset) and start it live."""
         if not is_valid_lead_name(name):
             raise ValueError(f"invalid lead name: {name!r}")
         name = name.lower()
@@ -241,6 +249,7 @@ class ApiHub:
         )
 
     async def close(self) -> None:
+        """Stop every channel then the runtime; per-channel errors are logged."""
         for channel in list(self._channels.values()):
             try:
                 await channel.stop()

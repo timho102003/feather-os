@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -122,7 +123,7 @@ class ReadFileTool(BaseTool):
         max_chars = int(arguments.get("max_chars") or 12000)
 
         try:
-            text = path.read_text(encoding="utf-8")
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
         except UnicodeDecodeError as exc:
             raise ValueError(f"File is not valid UTF-8 text: {arguments['path']}") from exc
 

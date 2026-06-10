@@ -177,3 +177,29 @@ async def test_prune_inbound_older_than_removes_old_rows(
     assert await store.claim_inbound(Platform.LINE, "fresh-id") is False
     # Old id is gone (claim succeeds).
     assert await store.claim_inbound(Platform.LINE, "old-id") is True
+
+
+async def test_initialize_sets_persistent_wal_journal_mode(tmp_path: Path) -> None:
+    """WAL must not depend on another store having initialized the db first."""
+
+    db_path = tmp_path / "feather.db"
+    store = MessagingStore(db_path)
+    await store.initialize()
+    async with aiosqlite.connect(db_path) as connection:
+        cursor = await connection.execute("PRAGMA journal_mode;")
+        row = await cursor.fetchone()
+    assert str(row[0]).lower() == "wal"
+
+
+async def test_per_call_connections_apply_house_pragmas(tmp_path: Path) -> None:
+    """Every per-call connection backs off under contention; FK enforcement
+    stays off on purpose — chat mappings may outlive their session row."""
+
+    store = await _store(tmp_path)
+    async with store._connect() as connection:
+        cursor = await connection.execute("PRAGMA busy_timeout;")
+        row = await cursor.fetchone()
+        assert int(row[0]) == 5000
+        cursor = await connection.execute("PRAGMA foreign_keys;")
+        row = await cursor.fetchone()
+        assert int(row[0]) == 0

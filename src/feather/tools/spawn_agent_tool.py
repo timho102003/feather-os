@@ -38,6 +38,7 @@ from typing import Any
 from uuid import uuid4
 
 from feather.core.agent.catalog import AgentCatalog
+from feather.core.ipc.subprocess_env import subprocess_env_with_home
 from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import (
     TaskRecord,
@@ -380,23 +381,9 @@ async def launch_subagent_process(
     ]
     if task_id is not None:
         argv.extend(["--task-id", task_id])
-    # Snapshot the parent env explicitly and patch in fallbacks for the
-    # vars the sub-agent's code actually depends on. ``HOME`` is the
-    # critical one — ``Path.expanduser()`` raises RuntimeError when it
-    # is missing, and the attachment-drop parser calls it on every
-    # inbound user-text token. With the default ``env=None`` asyncio
-    # would inherit the parent env, but we've seen this crash happen in
-    # the field, so we make the propagation explicit AND defend against
-    # an empty value by re-deriving from ``pwd`` (the same source
-    # ``os.path.expanduser`` consults when ``HOME`` is empty).
-    subprocess_env = os.environ.copy()
-    if not subprocess_env.get("HOME"):
-        try:
-            import pwd
-
-            subprocess_env["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
-        except (ImportError, KeyError, OSError):
-            pass
+    # Explicit env propagation; HOME-fallback rationale lives in
+    # subprocess_env_with_home.
+    subprocess_env = subprocess_env_with_home()
 
     try:
         proc = await asyncio.create_subprocess_exec(

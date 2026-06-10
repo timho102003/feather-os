@@ -7,8 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-09
+
+### Added
+
+- **Multiple leads.** Any `role: lead` agent YAML becomes a concurrently
+  running top-level agent with its own durable session (`lead_sessions`
+  table), driven through `LeadManager` + `LeadHandle` (in-process or
+  supervised worker subprocess). `AppConfig.default_lead` selects the
+  bootstrap lead.
+- **Soul library.** 20 packaged working-temperament presets
+  (`config/souls/*.yaml`, layered packaged → global → project) that can be
+  applied to any new lead at scaffold time — pure dispositions, never
+  identities.
+- **FastAPI parity layer** (`[api]` extra). REST + WebSocket re-exposing the
+  full agent experience — streamed thinking/tool events, multi-lead,
+  sub-agent drill-down, souls, config get **and** set, mid-turn input
+  injection — plus a single-file web console. Launch with `feather serve` or
+  `scripts/feather_api_demo.py [port] [--real]`.
+- **`/config` TUI** for live config inspection and editing with per-field
+  reload classes (LIVE / NEXT_TURN / RESTART).
+
 ### Changed
 
+- **`src/` layout restructured** from 32 top-level modules into 9 modules +
+  8 focused sub-packages (`core/agent`, `core/leads`, `core/subagents`,
+  `core/session`, `core/ipc`, `core/scheduling`, `core/prompts`, `api`).
 - **Prompt caching now caches only the stable prefix.** The system-prompt
   cache breakpoint is anchored at the end of the static section (identity,
   tools, skill/MCP catalogs, dispatch catalog) instead of wrapping the whole
@@ -18,12 +42,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the last message. The static dispatchable-agent catalog moved into the
   cached prefix. Per-turn cache read/write/hit-rate is logged (`cache.usage`)
   so caching can be verified at runtime.
+- **SQLite stores share one connection bootstrap.**
+  `storage/connection.py:open_store_connection` applies the house pragma set
+  (foreign keys, WAL, explicit `busy_timeout`) for every long-lived store;
+  `MessagingStore` routes its per-call connections through an equivalent
+  opener.
 
 ### Fixed
 
+- **Message sequence allocation is atomic across processes.**
+  `add_message` computes `MAX(sequence)+1` inside the `INSERT` itself, so a
+  lead and a sub-agent writing the same session can no longer mint duplicate
+  sequence numbers.
+- **`grep` / `read_file` / `write_file` no longer block the event loop.**
+  Their filesystem work (including `write_file`'s fsync barrier) runs in a
+  worker thread via `asyncio.to_thread`, so parallel tool calls keep
+  streaming.
+- **Memory-trigger tasks are always tracked** and drained on shutdown
+  (inline mode previously created untracked tasks).
+- **Per-session run locks are refcount-evicted** instead of accumulating
+  forever in the run coordinator.
+- **Lead-worker subprocesses get the HOME-safe environment** the sub-agent
+  spawn path already had (crash parity fix for `Path.expanduser()`).
 - **`cache_strategy: gemini_breakpoint` now actually enables caching.** It was
   silently treated as "no caching" (only `anthropic_breakpoint` was handled);
   Gemini honors the `cache_control` hint via OpenRouter.
+- **OpenRouter reliability hardening** — retry/timeout behavior on the chat
+  completions path.
 
 ## [0.1.1] - 2026-05-08
 

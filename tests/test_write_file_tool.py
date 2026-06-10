@@ -360,3 +360,33 @@ def test_write_file_prompt_describes_writable_roots(tmp_path: Path) -> None:
     prompt = tool.get_prompt()
     assert "workspace" in prompt
     assert "workspace" in tool.description
+
+
+async def test_write_file_does_not_block_event_loop(tmp_path: Path, monkeypatch) -> None:
+    """The fsync disk barrier must run off-loop so concurrent tasks keep running."""
+
+    import asyncio
+    import os
+    import time
+
+    tool = WriteFileTool(tmp_path)
+
+    def slow_fsync(fd: int) -> None:
+        time.sleep(0.2)
+
+    monkeypatch.setattr(os, "fsync", slow_fsync)
+    order: list[str] = []
+
+    async def run_tool() -> None:
+        await tool.execute(
+            {"path": "out.txt", "content": "hello", "overwrite": None, "create_parents": None},
+            _ctx(),
+        )
+        order.append("tool")
+
+    async def heartbeat() -> None:
+        await asyncio.sleep(0.05)
+        order.append("heartbeat")
+
+    await asyncio.gather(run_tool(), heartbeat())
+    assert order == ["heartbeat", "tool"]

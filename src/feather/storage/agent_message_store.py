@@ -34,6 +34,7 @@ from uuid import uuid4
 import aiosqlite
 
 from feather.models import AgentMessage, AgentMessageStatus
+from feather.storage.connection import open_store_connection
 from feather.storage.schema import initialize_database_schema
 
 logger = logging.getLogger(__name__)
@@ -59,14 +60,7 @@ class AgentMessageStore:
     async def initialize(self) -> None:
         """Open the connection and ensure the schema exists."""
 
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._connection = await aiosqlite.connect(self._db_path)
-        self._connection.row_factory = aiosqlite.Row
-        await self._connection.execute("PRAGMA foreign_keys=ON;")
-        await self._connection.execute("PRAGMA journal_mode=WAL;")
-        # busy_timeout keeps WAL writers backing off for up to 5s instead of
-        # raising OperationalError under multi-process burst contention.
-        await self._connection.execute("PRAGMA busy_timeout=5000;")
+        self._connection = await open_store_connection(self._db_path)
         await initialize_database_schema(self._connection)
         await self._connection.commit()
 

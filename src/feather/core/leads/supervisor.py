@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from feather.core.ipc.event_codec import EventCodecError, decode_event
+from feather.core.ipc.subprocess_env import subprocess_env_with_home
 from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
     ConfigReloadCommand,
@@ -112,10 +113,14 @@ class WorkerHandle(Protocol):
     """
 
     @property
-    def pid(self) -> int | None: ...
+    def pid(self) -> int | None:
+        """OS pid of the worker, or ``None`` before spawn."""
+        ...
 
     @property
-    def returncode(self) -> int | None: ...
+    def returncode(self) -> int | None:
+        """Exit code once the worker has died, else ``None``."""
+        ...
 
     async def send_command(self, command: WorkerCommand) -> None:
         """Write one encoded command JSONL line to the worker's stdin."""
@@ -643,6 +648,7 @@ class LeadSupervisor:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=str(self._project_root),
+            env=subprocess_env_with_home(),
         )
         return _SubprocessWorkerHandle(process)
 
@@ -681,14 +687,17 @@ class _SubprocessWorkerHandle:
 
     @property
     def pid(self) -> int | None:
+        """OS pid of the worker, or ``None`` before spawn."""
         return self._process.pid
 
     @property
     def returncode(self) -> int | None:
+        """Exit code once the worker has died, else ``None``."""
         return self._process.returncode
 
     @property
     def stderr_buffer(self) -> bytes:
+        """Everything the worker wrote to stderr so far (crash forensics)."""
         return bytes(self._stderr_buffer)
 
     async def send_command(self, command: WorkerCommand) -> None:

@@ -730,3 +730,28 @@ async def test_request_config_reload_serializes_against_run_lock() -> None:
     sup._run_lock.release()  # noqa: SLF001
     result = await asyncio.wait_for(task, timeout=1.0)
     assert result == "reached"
+
+
+async def test_default_subprocess_factory_passes_home_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The production worker spawn must get the HOME-safe env, matching the
+    sub-agent spawn path (parity fix)."""
+
+    captured: dict[str, object] = {}
+
+    class _FakeProcess:
+        pid = 4242
+        stdin = None
+        stdout = None
+        stderr = None
+
+    async def fake_exec(*argv: str, **kwargs: object) -> _FakeProcess:
+        captured.update(kwargs)
+        return _FakeProcess()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    supervisor = _make_supervisor(tmp_path, _FakeWorkerHandle())
+    await supervisor._default_subprocess_factory("session-1")
+    env = captured.get("env")
+    assert isinstance(env, dict) and env.get("HOME")

@@ -102,3 +102,16 @@ async def test_cron_store_tracks_due_jobs_success_and_failures(tmp_path: Path) -
     finally:
         await cron_store.close()
         await session_store.close()
+
+
+async def test_cron_store_connection_sets_busy_timeout(tmp_path: Path) -> None:
+    """Contended writes must back off instead of failing with 'database is locked'."""
+
+    store = CronJobStore(tmp_path / "feather.db")
+    await store.initialize()
+    try:
+        cursor = await store._connection.execute("PRAGMA busy_timeout;")
+        row = await cursor.fetchone()
+        assert int(row[0]) == 5000
+    finally:
+        await store.close()

@@ -224,3 +224,22 @@ async def test_noop_trigger_satisfies_protocol_without_doing_anything() -> None:
     )
     await trigger.drain(timeout_s=1.0)
     trigger.cancel_all()
+
+
+async def test_inline_mode_tasks_are_tracked_and_drained() -> None:
+    """Inline (background=False) tasks must be visible to drain() — they were
+    previously created untracked (the documented landmine)."""
+
+    block = asyncio.Event()
+    service = _FakeService(block_event=block)
+    trigger = LiveMemoryTrigger(
+        service=service,  # type: ignore[arg-type]
+        cfg=MemoryTriggerConfig(background=False, enabled=True),
+    )
+    trigger.maybe_schedule(session_id="s1", agent_model="m", owner=MemoryOwner.USER)
+    await asyncio.sleep(0)
+    assert len(trigger._tasks) == 1
+    block.set()
+    await trigger.drain(timeout_s=1.0)
+    assert len(trigger._tasks) == 0
+    assert len(service.calls) == 1

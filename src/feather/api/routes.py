@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api", tags=["feather"])
 
 
 def get_hub(request: Request) -> ApiHub:
+    """Dependency: the app-wide hub, 503 until the lifespan has built it."""
     hub = getattr(request.app.state, "hub", None)
     if hub is None:
         raise HTTPException(status_code=503, detail="server still starting")
@@ -42,16 +43,19 @@ HubDep = Annotated[ApiHub, Depends(get_hub)]
 
 @router.get("/leads")
 async def list_leads(hub: HubDep) -> list[LeadOut]:
+    """GET /api/leads — every active lead with identity + live status."""
     return hub.list_leads()
 
 
 @router.get("/souls")
 async def list_souls(hub: HubDep) -> list[SoulOut]:
+    """GET /api/souls — the reusable temperament presets for lead creation."""
     return hub.list_souls()
 
 
 @router.post("/leads", status_code=201)
 async def create_lead(payload: CreateLeadIn, hub: HubDep) -> LeadOut:
+    """POST /api/leads — scaffold a new lead YAML (optionally from a soul) and start it."""
     try:
         return await hub.create_lead(payload.name, payload.soul, payload.soul_id)
     except ValueError as exc:
@@ -60,6 +64,7 @@ async def create_lead(payload: CreateLeadIn, hub: HubDep) -> LeadOut:
 
 @router.post("/leads/{name}/messages", status_code=202)
 async def send_message(name: str, payload: MessageIn, hub: HubDep) -> dict[str, str]:
+    """POST /api/leads/{name}/messages — queue a user turn for the lead."""
     channel = hub.channel(name)
     if channel is None:
         raise HTTPException(status_code=404, detail=f"unknown lead: {name}")
@@ -79,6 +84,7 @@ async def inject_input(name: str, payload: InputIn, hub: HubDep) -> dict[str, st
 
 @router.get("/leads/{name}/subagents")
 async def list_subagents(name: str, hub: HubDep) -> list[SubagentOut]:
+    """GET /api/leads/{name}/subagents — live sub-agents spawned by this lead."""
     if hub.channel(name) is None:
         raise HTTPException(status_code=404, detail=f"unknown lead: {name}")
     return await hub.list_subagents(name)
@@ -86,6 +92,7 @@ async def list_subagents(name: str, hub: HubDep) -> list[SubagentOut]:
 
 @router.get("/leads/{name}/transcript")
 async def lead_transcript(name: str, hub: HubDep) -> TranscriptOut:
+    """GET /api/leads/{name}/transcript — the lead's session history."""
     channel = hub.channel(name)
     if channel is None:
         raise HTTPException(status_code=404, detail=f"unknown lead: {name}")
@@ -94,21 +101,25 @@ async def lead_transcript(name: str, hub: HubDep) -> TranscriptOut:
 
 @router.get("/sessions/{session_id}/transcript")
 async def session_transcript(session_id: str, hub: HubDep) -> TranscriptOut:
+    """GET /api/sessions/{id}/transcript — any session's history (sub-agent drill-down)."""
     return await hub.get_transcript(session_id)
 
 
 @router.get("/config")
 async def get_config(hub: HubDep) -> ConfigOut:
+    """GET /api/config — the effective merged AppConfig."""
     return hub.get_config()
 
 
 @router.get("/config/fields")
 async def list_config_fields(hub: HubDep) -> list[ConfigFieldOut]:
+    """GET /api/config/fields — editable fields with type + reload class."""
     return hub.list_config_fields()
 
 
 @router.post("/config")
 async def set_config(payload: ConfigSetIn, hub: HubDep) -> ConfigApplyOut:
+    """POST /api/config — write one config value and apply its reload class."""
     try:
         return await hub.set_config(
             payload.path, payload.value, scope=payload.scope, force=payload.force

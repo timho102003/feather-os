@@ -39,10 +39,12 @@ class AgentCatalogEntry:
 
     @property
     def is_lead(self) -> bool:
+        """True when this YAML declares a top-level lead agent."""
         return self.role == "lead"
 
     @property
     def dispatchable(self) -> bool:
+        """True when spawn_agent may dispatch this agent (leads are not)."""
         return self.role != "lead"
 
 
