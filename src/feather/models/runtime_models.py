@@ -16,6 +16,31 @@ class AgentOutcome(str, Enum):
     AWAITING_USER = "awaiting_user"
 
 
+class EventKind(str, Enum):
+    """Public taxonomy of :class:`RuntimeEvent` ``kind`` values.
+
+    ``str``-valued so emitters can pass members anywhere a plain string
+    flowed before: JSON serialization, the IPC event codec, and every
+    ``event.kind == "literal"`` comparison in the frontends see the
+    identical string. IPC-internal control kinds (``_run_complete`` etc.)
+    are deliberately not part of this taxonomy.
+    """
+
+    ASSISTANT_TEXT_DELTA = "assistant_text_delta"
+    TOOL_STARTED = "tool_started"
+    TOOL_FINISHED = "tool_finished"
+    AWAITING_USER = "awaiting_user"
+    USER_MESSAGE_INJECTED = "user_message_injected"
+    AGENT_MESSAGE_RECEIVED = "agent_message_received"
+    USAGE_UPDATED = "usage_updated"
+    COMPACTION_STARTED = "compaction_started"
+    COMPACTION_FINISHED = "compaction_finished"
+    COMPACTION_FAILED = "compaction_failed"
+    SCHEDULED_TASK_TRIGGERED = "scheduled_task_triggered"
+    SCHEDULED_TASK_FAILED = "scheduled_task_failed"
+    COMPLETION_GUARD_INJECTED = "completion_guard_injected"
+
+
 @dataclass(slots=True, frozen=True)
 class TraceContext:
     """Per-turn observability identity threaded through the provider call.
@@ -156,6 +181,7 @@ __all__ = (
     "AgentOutcome",
     "AgentRunResult",
     "EventHandler",
+    "EventKind",
     "ModelTurn",
     "ProviderRequestConfig",
     "RuntimeEvent",
