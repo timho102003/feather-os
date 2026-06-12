@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
+import functools
 import logging
 from abc import ABC
 from typing import Any
@@ -16,6 +16,11 @@ from feather.integrations.attachments.parse import (
 )
 from feather.core.agent.capabilities import CapabilityProfile
 from feather.core.agent.compaction import ContextCompactor
+from feather.core.agent.conversation import (
+    ConversationContext,
+    StatefulConversation,
+    StatelessConversation,
+)
 from feather.core.agent.events import EventEmitter
 from feather.core.session.input_queue import UserInputQueue
 from feather.core.agent.prompt_builder import PromptBuilder
@@ -43,7 +48,6 @@ from feather.models import (
     EventKind,
     MessageRole,
     MCPServerConfig,
-    ModelTurn,
     ProviderRequestConfig,
     RuntimeEvent,
     SessionMessage,
@@ -301,29 +305,15 @@ class BaseAgent(ABC):
                 raise ValueError("Incoming message cannot be empty.")
 
             session = await self._session_store.get_session(session_id)
-            pending_inputs = list(session.pending_inputs)
-            history_input_items: list[dict[str, Any]] = []
-            # Replay full history whenever the provider cursor is reset
-            # (post-compaction, first turn) OR whenever the provider is
-            # stateless (e.g. OpenRouter) — the latter can't rely on
-            # ``previous_response_id`` and needs every turn to carry the
-            # full prior conversation.
-            should_replay_history = (
-                session.last_response_id is None or not self._provider.stateful
-            )
-            if (
-                should_replay_history
-                and not (
-                    not self._provider.stateful
-                    and self._has_stateless_pending_context(pending_inputs)
-                )
-            ):
-                history_input_items = await self._build_history_replay_items(session_id)
+            context = self._conversation_context(session_id)
+            # History replay is computed BEFORE the new user row is persisted
+            # so the replayed transcript never includes the message we are
+            # about to send; the new items are appended afterwards.
+            pending_inputs = await context.initial_input_items(session, [])
             new_input_items, _ = await self._persist_incoming_user_message(
                 session_id,
                 incoming_text,
             )
-            pending_inputs.extend(history_input_items)
             pending_inputs.extend(new_input_items)
             logger.info(
                 "agent run started agent=%s session_id=%s pending_inputs=%s",
@@ -331,13 +321,17 @@ class BaseAgent(ABC):
                 session_id,
                 len(pending_inputs),
             )
-            return await self.run_loop(session_id, pending_inputs, event_handler)
+            return await self.run_loop(
+                session_id, pending_inputs, event_handler, context=context
+            )
 
     async def run_loop(
         self,
         session_id: str,
         input_items: list[dict[str, Any]],
         event_handler: EventHandler | None,
+        *,
+        context: ConversationContext | None = None,
     ) -> AgentRunResult:
         """Execute the shared agent loop until tool-free completion or pause.
 
@@ -345,6 +339,8 @@ class BaseAgent(ABC):
             session_id: Session identifier.
             input_items: Provider input items to send on the next turn.
             event_handler: Optional runtime event sink.
+            context: Conversation strategy reused from :meth:`run`; built
+                fresh here when entered directly (e.g. ``resume_on_inbox``).
 
         Returns:
             Agent run result.
@@ -365,11 +361,8 @@ class BaseAgent(ABC):
         ctx_token = current_session_id.set(session_id)
         agent_ctx_token = current_agent_name.set(self._agent_config.name)
         try:
-            stateless_context_items: list[dict[str, Any]] | None = None
-            if not self._provider.stateful and not input_items:
-                stateless_context_items = await self._build_history_replay_items(
-                    session_id
-                )
+            ctx = context or self._conversation_context(session_id)
+            await ctx.begin(input_items)
             while True:
                 injected = await self._drain_user_input_queue(session_id, emitter)
                 if injected:
@@ -415,24 +408,14 @@ class BaseAgent(ABC):
                     user_profile_block=user_profile_block,
                 )
                 instructions = prompt_sections.render()
-                if not self._provider.stateful:
-                    # Stateless providers (OpenRouter / Chat Completions)
-                    # cannot use previous_response_id as a cursor. Keep an
-                    # in-run structural transcript so assistant tool_calls are
-                    # followed by matching tool-role outputs instead of being
-                    # flattened into prose. New .run() calls still seed this
-                    # list from SessionStore history before adding the latest
-                    # user input.
-                    if stateless_context_items is None:
-                        stateless_context_items = list(input_items)
-                    elif input_items:
-                        stateless_context_items.extend(input_items)
-                    effective_input_items = list(stateless_context_items)
-                    effective_cursor: str | None = None
-                    input_items = []
-                else:
-                    effective_input_items = input_items
-                    effective_cursor = session.last_response_id
+                # The conversation strategy owns how prior context reaches the
+                # provider: stateless folds input_items into an in-run
+                # structural transcript (cursor None); stateful sends only the
+                # new items plus the previous_response_id cursor.
+                effective_input_items, effective_cursor = ctx.provider_request(
+                    session, input_items
+                )
+                input_items = []
                 # ``trace_context`` is cheap and always-on: providers that
                 # consume it (OpenRouter → Opik etc.) gate on their own
                 # tracing config; providers that don't (OpenAI Responses
@@ -470,11 +453,7 @@ class BaseAgent(ABC):
                     pending_inputs=[],
                     status=SessionStatus.ACTIVE,
                 )
-                if not self._provider.stateful:
-                    stateless_context_items = list(effective_input_items)
-                    stateless_context_items.extend(
-                        self._model_turn_input_items(turn)
-                    )
+                ctx.record_turn(effective_input_items, turn)
 
                 if turn.output_text:
                     latest_text = turn.output_text
@@ -551,10 +530,7 @@ class BaseAgent(ABC):
                     allowed_tool_names=set(effective_agent_config.registered_tools),
                 )
                 if question is not None:
-                    pending_inputs = input_items
-                    if not self._provider.stateful:
-                        pending_inputs = list(stateless_context_items or [])
-                        pending_inputs.extend(input_items)
+                    pending_inputs = ctx.pause_payload(input_items)
                     await self._session_store.update_response_state(
                         session_id,
                         pending_inputs=pending_inputs,
@@ -583,6 +559,14 @@ class BaseAgent(ABC):
             except Exception:  # noqa: BLE001
                 logger.debug("log.agent_context.reset_failed")
             self._schedule_memory_extraction(session_id)
+
+    def _conversation_context(self, session_id: str) -> ConversationContext:
+        """Build the per-run strategy for how history reaches the provider."""
+
+        replay = functools.partial(self._build_history_replay_items, session_id)
+        if self._provider.stateful:
+            return StatefulConversation(replay=replay)
+        return StatelessConversation(replay=replay)
 
     def _active_mcp_servers(self, labels: list[str]) -> tuple[MCPServerConfig, ...]:
         """Resolve session-active MCP labels to server configs allowed for this agent."""
@@ -1094,51 +1078,6 @@ class BaseAgent(ABC):
             "saved PDF paths from prior history or when explicit local text "
             "extraction is required."
         )
-
-    def _has_stateless_pending_context(
-        self, pending_inputs: list[dict[str, Any]]
-    ) -> bool:
-        """Return whether pending inputs already contain replay context."""
-
-        return any(
-            item.get("type") in {"message", "function_call"} for item in pending_inputs
-        )
-
-    def _model_turn_input_items(self, turn: ModelTurn) -> list[dict[str, Any]]:
-        """Convert a model turn into replayable provider input items.
-
-        Stateless providers need the assistant side of the transcript to
-        continue a tool loop. Responses-stateful providers do not use these
-        items because ``previous_response_id`` already points at the assistant
-        turn on the provider side.
-        """
-
-        if turn.tool_calls:
-            items: list[dict[str, Any]] = []
-            for index, tool_call in enumerate(turn.tool_calls):
-                item: dict[str, Any] = {
-                    "type": "function_call",
-                    "call_id": tool_call.call_id,
-                    "name": tool_call.name,
-                    "arguments": json.dumps(
-                        tool_call.arguments,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                }
-                if index == 0 and turn.output_text:
-                    item["content"] = turn.output_text
-                items.append(item)
-            return items
-        if turn.output_text:
-            return [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": turn.output_text}],
-                }
-            ]
-        return []
 
     async def _build_outstanding_tasks_warning(
         self, session_id: str
