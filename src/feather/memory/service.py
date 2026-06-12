@@ -104,6 +104,13 @@ class MemoryService:
         """Create the Qdrant collection + indexes if absent (idempotent)."""
         await self._store.ensure_schema()
 
+    async def aclose(self) -> None:
+        """Release resources owned by this service (store client)."""
+        try:
+            await self._store.aclose()
+        except Exception:  # noqa: BLE001
+            logger.exception("memory.service.close_error")
+
     # -- public entry point ---------------------------------------------------
 
     async def extract_and_store(

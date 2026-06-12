@@ -51,7 +51,7 @@ class MemoryStack:
     owned_providers: list["BaseLLMProvider"] = field(default_factory=list)
 
     async def aclose(self) -> None:
-        """Close every alternate provider this stack owns."""
+        """Close alternate providers and the memory service (store client)."""
 
         for provider in self.owned_providers:
             closer = getattr(provider, "aclose", None)
@@ -61,6 +61,12 @@ class MemoryStack:
                 await closer()
             except Exception:  # noqa: BLE001
                 logger.exception("memory.shutdown.alternate_provider_close_error")
+
+        if self.service is not None:
+            try:
+                await self.service.aclose()
+            except Exception:  # noqa: BLE001
+                logger.exception("memory.shutdown.service_close_error")
 
 
 def _resolve_qdrant_url(cfg: MemoryConfig) -> str | None:

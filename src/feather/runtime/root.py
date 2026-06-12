@@ -773,14 +773,6 @@ class FeatherRuntime:
         except Exception:  # noqa: BLE001
             logger.exception("memory.shutdown.drain_error")
         try:
-            if self._memory_stack.service is not None:
-                store = getattr(self._memory_stack.service, "_store", None)
-                client = getattr(store, "_client", None)
-                if client is not None and hasattr(client, "close"):
-                    await client.close()
-        except Exception:  # noqa: BLE001
-            logger.exception("memory.shutdown.qdrant_close_error")
-        try:
             await self._memory_stack.aclose()
         except Exception:  # noqa: BLE001
             logger.exception("memory.shutdown.alternate_providers_close_error")
