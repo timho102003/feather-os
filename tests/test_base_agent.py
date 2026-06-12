@@ -1617,6 +1617,123 @@ async def test_base_agent_passes_user_profile_into_prompt(tmp_path: Path) -> Non
         await session_store.close()
 
 
+async def test_tool_failure_and_success_share_output_contract(
+    tmp_path: Path,
+) -> None:
+    """Error and success tool outcomes must both write an artifact, persist a TOOL
+    message, and emit tool_finished — the unified post-gather loop must honour
+    the same contract for both paths.
+
+    Regression guard: if error handling drops the artifact write, the TOOL
+    message would store a bare string instead of a reference_text, making this
+    assertion fail.
+    """
+
+    (tmp_path / ".feather" / "skills").mkdir(parents=True)
+
+    class BoomTool(BaseTool):
+        name = "tool_a"
+        description = "Always raises."
+        parameters_schema = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+
+        async def execute(
+            self,
+            arguments: dict[str, Any],
+            context: ToolExecutionContext,
+        ) -> ToolExecutionResult:
+            raise ValueError("boom")
+
+    class OkTool(BaseTool):
+        name = "tool_b"
+        description = "Returns ok-result."
+        parameters_schema = {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": False,
+        }
+
+        async def execute(
+            self,
+            arguments: dict[str, Any],
+            context: ToolExecutionContext,
+        ) -> ToolExecutionResult:
+            return ToolExecutionResult(output="ok-result")
+
+    session_store = SessionStore(tmp_path / "feather.db")
+    await session_store.initialize()
+
+    provider = FakeProvider(
+        [
+            ModelTurn(
+                response_id="resp-1",
+                output_text="",
+                tool_calls=[
+                    ToolCall(call_id="call-a", name="tool_a", arguments={}),
+                    ToolCall(call_id="call-b", name="tool_b", arguments={}),
+                ],
+            ),
+            ModelTurn(response_id="resp-2", output_text="done", tool_calls=[]),
+        ]
+    )
+
+    try:
+        tool_registry = ToolRegistry([BoomTool(), OkTool()])
+        agent = BaseAgent(
+            agent_config=AgentConfig(
+                name="Lead",
+                role="lead",
+                personality="Direct",
+                prompt_modules=[
+                    "feather.core.prompts.base_agent_prompt:BASE_AGENT_PROMPT",
+                ],
+                registered_tools=["tool_a", "tool_b"],
+            ),
+            prompt_builder=PromptBuilder(
+                SkillCatalog(tmp_path / ".feather" / "skills"), tool_registry
+            ),
+            provider=provider,
+            session_store=session_store,
+            tool_output_store=ToolOutputStore(tmp_path, ".feather/tmp"),
+            tool_registry=tool_registry,
+        )
+
+        events: list[RuntimeEvent] = []
+        session_id = await agent.create_session()
+        result = await agent.run(session_id, "run tools", events.append)
+
+        assert result.status == AgentOutcome.COMPLETED
+
+        # (a) The second provider call receives both function_call_output items.
+        second_inputs = provider.calls[1]["input_items"]
+        output_items = [
+            item for item in second_inputs if item.get("type") == "function_call_output"
+        ]
+        assert len(output_items) == 2
+        by_call_id = {item["call_id"]: item["output"] for item in output_items}
+        assert by_call_id["call-a"] == "Tool `tool_a` failed: boom"
+        assert by_call_id["call-b"] == "ok-result"
+
+        # (b) Two TOOL-role messages were persisted.
+        messages = await session_store.list_messages(session_id)
+        tool_messages = [m for m in messages if m.role == MessageRole.TOOL]
+        assert len(tool_messages) == 2
+
+        # (c) Exactly two tool_finished events, with tool_name and correct texts.
+        finished_events = [e for e in events if e.kind == "tool_finished"]
+        assert len(finished_events) == 2
+        by_tool_name = {e.tool_name: e.text for e in finished_events}
+        assert by_tool_name["tool_a"] == "Tool `tool_a` failed: boom"
+        assert by_tool_name["tool_b"] == "ok-result"
+    finally:
+        await session_store.close()
+
+
 async def test_drain_failure_does_not_kill_turn(
     tmp_path: Path, caplog
 ) -> None:

@@ -687,39 +687,24 @@ class BaseAgent(ABC):
 
         for tool_call, result, exc in results:
             if exc is not None:
-                result_output = f"Tool `{tool_call.name}` failed: {exc}"
-                artifact = await self._tool_output_store.write(tool_call.name, result_output)
-                outputs.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": tool_call.call_id,
-                        "output": result_output,
-                    }
-                )
-                await self._session_store.add_message(
-                    session_id,
-                    MessageRole.TOOL,
-                    artifact.reference_text,
-                    file_ref=artifact.file_ref,
-                )
-                emitter.emit(
-                    EventKind.TOOL_FINISHED,
-                    tool_name=tool_call.name,
-                    text=result_output,
-                )
+                output_text = f"Tool `{tool_call.name}` failed: {exc}"
+                await_question: str | None = None
+                loaded_skill: str | None = None
+            elif result is None:
                 continue
+            else:
+                output_text = result.output
+                await_question = result.await_user_question
+                loaded_skill = result.loaded_skill_name
 
-            if result is None:
-                continue
-            if result.loaded_skill_name is not None:
-                await self._session_store.append_loaded_skill(session_id, result.loaded_skill_name)
-
-            artifact = await self._tool_output_store.write(tool_call.name, result.output)
+            if loaded_skill is not None:
+                await self._session_store.append_loaded_skill(session_id, loaded_skill)
+            artifact = await self._tool_output_store.write(tool_call.name, output_text)
             outputs.append(
                 {
                     "type": "function_call_output",
                     "call_id": tool_call.call_id,
-                    "output": result.output,
+                    "output": output_text,
                 }
             )
             await self._session_store.add_message(
@@ -728,13 +713,10 @@ class BaseAgent(ABC):
                 artifact.reference_text,
                 file_ref=artifact.file_ref,
             )
-            if result.await_user_question and question is None:
-                question = result.await_user_question
-
+            if await_question and question is None:
+                question = await_question
             emitter.emit(
-                EventKind.TOOL_FINISHED,
-                tool_name=tool_call.name,
-                text=result.output,
+                EventKind.TOOL_FINISHED, tool_name=tool_call.name, text=output_text
             )
 
         return outputs, question
