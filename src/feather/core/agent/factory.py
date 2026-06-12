@@ -31,9 +31,7 @@ from feather.integrations.mcp.client import (
 )
 from feather.models import AgentConfig, AppConfig, MCPServerConfig
 from feather.providers.base import BaseLLMProvider
-from feather.providers.claude_provider import ClaudeMessagesProvider
-from feather.providers.openai_provider import OpenAIResponsesProvider
-from feather.providers.openrouter_provider import OpenRouterChatProvider
+from feather.providers.catalog import provider_spec
 from feather.profile import UserProfileStore
 from feather.providers.parallel_client import ParallelClient
 from feather.skills.catalog import SkillCatalog
@@ -304,28 +302,19 @@ class AgentFactory:
         cached = self._providers_by_name.get(agent_provider)
         if cached is not None:
             return cached
-        if agent_provider == "openai":
-            built: BaseLLMProvider = OpenAIResponsesProvider(self._app_config.openai)
-        elif agent_provider == "openrouter":
-            if self._app_config.openrouter is None:
-                raise ValueError(
-                    f"Agent `{agent_config.name}` requested provider=openrouter "
-                    "but no `openrouter:` block in app.yaml"
-                )
-            built = OpenRouterChatProvider(self._app_config.openrouter)
-        elif agent_provider == "claude":
-            if self._app_config.claude is None:
-                raise ValueError(
-                    f"Agent `{agent_config.name}` requested provider=claude "
-                    "but no `claude:` block in app.yaml"
-                )
-            built = ClaudeMessagesProvider(self._app_config.claude)
-        else:
+        spec = provider_spec(agent_provider)
+        if spec is None:
             raise ValueError(
                 f"Agent `{agent_config.name}` requested unknown provider "
                 f"`{agent_provider}` "
                 "(expected 'openai', 'openrouter', or 'claude')"
             )
+        if spec.config_block(self._app_config) is None:
+            raise ValueError(
+                f"Agent `{agent_config.name}` requested provider={agent_provider} "
+                f"but no `{agent_provider}:` block in app.yaml"
+            )
+        built: BaseLLMProvider = spec.build(self._app_config)
         self._providers_by_name[agent_provider] = built
         return built
 
@@ -340,11 +329,9 @@ class AgentFactory:
         if agent_config.model:
             return agent_config.model
         provider_name = (agent_config.provider or self._default_provider_name()).strip().lower()
-        if provider_name == "openrouter" and self._app_config.openrouter is not None:
-            return self._app_config.openrouter.model
-        if provider_name == "claude" and self._app_config.claude is not None:
-            return self._app_config.claude.model
-        return self._app_config.openai.model
+        spec = provider_spec(provider_name) or provider_spec("openai")
+        assert spec is not None
+        return spec.default_model(self._app_config)
 
     def _resolve_provider_name(self, agent_config: AgentConfig) -> str:
         """Return the provider key that will back ``agent_config``."""
@@ -452,15 +439,9 @@ class AgentFactory:
     def _supports_multimodal_attachments(self, provider_name: str) -> bool:
         """Return whether the selected provider/model accepts image/PDF blocks."""
 
-        if provider_name == "openrouter":
-            if self._app_config.openrouter is None:
-                return False
-            return self._app_config.openrouter.supports_multimodal
-        if provider_name == "claude":
-            if self._app_config.claude is None:
-                return False
-            return self._app_config.claude.supports_multimodal
-        return True
+        spec = provider_spec(provider_name) or provider_spec("openai")
+        assert spec is not None
+        return spec.supports_multimodal(self._app_config)
 
     def _supported_mcp_servers(
         self,
