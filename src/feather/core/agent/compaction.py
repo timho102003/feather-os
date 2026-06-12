@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from feather.core.agent.events import EventEmitter
 from feather.core.prompts.compaction_prompt import COMPACTION_PROMPT
 from feather.models import (
     CompactionConfig,
     EventHandler,
+    EventKind,
     MessageRole,
     ProviderRequestConfig,
-    RuntimeEvent,
     SessionMessage,
 )
 from feather.providers.base import BaseLLMProvider
@@ -58,17 +59,15 @@ class ContextCompactor:
     ) -> bool:
         """Compact the active history if the configured threshold is exceeded."""
 
+        emitter = EventEmitter(event_handler)
         decision = await self.evaluate(session_id, usage=usage)
         if not decision.should_compact:
             return False
 
-        if event_handler is not None:
-            event_handler(
-                RuntimeEvent(
-                    kind="compaction_started",
-                    text=f"Compacting context at {decision.usage_ratio:.1%} of the configured window.",
-                )
-            )
+        emitter.emit(
+            EventKind.COMPACTION_STARTED,
+            text=f"Compacting context at {decision.usage_ratio:.1%} of the configured window.",
+        )
 
         history = await self._session_store.render_history_for_cache(session_id)
         turn = await self._provider.complete(
@@ -112,13 +111,10 @@ class ContextCompactor:
             len(summary),
         )
 
-        if event_handler is not None:
-            event_handler(
-                RuntimeEvent(
-                    kind="compaction_finished",
-                    text="Active history compacted. Future turns will replay from the latest compact summary.",
-                )
-            )
+        emitter.emit(
+            EventKind.COMPACTION_FINISHED,
+            text="Active history compacted. Future turns will replay from the latest compact summary.",
+        )
         return True
 
     async def evaluate(self, session_id: str, *, usage: dict | None) -> CompactionDecision:
