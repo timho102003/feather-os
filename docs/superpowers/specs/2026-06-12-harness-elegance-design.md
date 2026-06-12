@@ -95,7 +95,9 @@ no surviving path may still consult `provider.stateful` inside `run`/`run_loop`.
 
 ### WS2 — `EventKind` + `EventEmitter` (models/runtime_models.py + core/agent/events.py, new)
 
-- `EventKind(str, Enum)` in `models/runtime_models.py`: the 14 public kinds
+- `EventKind(str, Enum)` in `models/runtime_models.py`: the 13 public kinds
+  (`scheduled_task_completed` verified never-emitted and excluded; a tripwire
+  test pins enum ↔ emitted-literal parity)
   (`assistant_text_delta`, `tool_started`, `tool_finished`, `awaiting_user`,
   `user_message_injected`, `agent_message_received`, `usage_updated`,
   `compaction_started/finished/failed`, `scheduled_task_triggered/failed`,
@@ -177,6 +179,11 @@ exception. Adopted by the six SQLite stores; per-store extra constructor params
 (verify each current message during implementation; match exactly).
 `MessagingStore` (per-call connections, FK-off by design), `ToolOutputStore`,
 `AttachmentStore`, `UserProfileStore` are intentionally untouched.
+As-built note: two stores' use-before-init RuntimeError strings harmonized to
+the base template ("AgentMessageStore … must be awaited before use" and
+"LeadSessionStore … must be called first." → "<Class>.initialize() must be
+called before use."); no test or caller consumed either string (grep-verified
+in review).
 
 ### WS9 — Memory shutdown seam (memory/ + runtime/root.py)
 
