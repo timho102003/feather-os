@@ -34,9 +34,7 @@ import asyncio
 import json
 import logging
 import os
-import random
 import time
-from datetime import datetime
 from typing import Any, Iterable
 
 import httpx
@@ -50,6 +48,7 @@ from feather.models import (
 )
 from feather.providers.base import BaseLLMProvider
 from feather.providers.claude_translator import translate_request, translate_response
+from feather.providers.retry_utils import backoff_delay, seconds_from_retry_after
 
 logger = logging.getLogger(__name__)
 
@@ -193,20 +192,10 @@ def _retry_sleep_seconds(
     fallback. Anything malformed falls back to exponential backoff with
     jitter.
     """
-
-    if retry_after_header:
-        hint = retry_after_header.strip()
-        if hint.isdigit():
-            return min(float(hint), _MAX_RETRY_AFTER_SLEEP)
-        try:
-            target = datetime.strptime(hint, "%a, %d %b %Y %H:%M:%S GMT")
-            delta = max(0.0, target.timestamp() - time.time())
-            return min(delta, _MAX_RETRY_AFTER_SLEEP)
-        except ValueError:
-            pass
-    sleep = base_delay * (2 ** attempt)
-    sleep += random.uniform(0, base_delay)
-    return sleep
+    hint = seconds_from_retry_after(retry_after_header, max_wait=_MAX_RETRY_AFTER_SLEEP)
+    if hint is not None:
+        return hint
+    return backoff_delay(attempt, base_delay)
 
 
 # ---------------------------------------------------- ClaudeMessagesProvider

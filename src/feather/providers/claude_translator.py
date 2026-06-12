@@ -51,6 +51,7 @@ from feather.models import (
     ProviderRequestConfig,
     ToolCall,
 )
+from feather.providers.schema_utils import harden_strict_schema as _harden_strict_schema
 
 logger = logging.getLogger(__name__)
 
@@ -640,46 +641,6 @@ def _supports_temperature(model: str) -> bool:
 
     normalized = model.strip().lower()
     return not any(normalized.startswith(p) for p in _TEMPERATURE_UNSUPPORTED_PREFIXES)
-
-
-def _harden_strict_schema(schema: dict[str, Any]) -> None:
-    """Enforce strict-mode invariants on a JSON schema in place.
-
-    Anthropic's ``strict`` flag (and OpenAI's strict mode) require every
-    ``type: "object"`` node to set ``additionalProperties: false`` and
-    list every property name in ``required``. Pydantic emits the root
-    ``additionalProperties`` correctly but not always on nested objects,
-    and it drops fields with defaults from ``required``. This walker
-    fixes both throughout the schema graph (``$defs``, ``properties``,
-    ``items``, ``anyOf`` / ``oneOf`` / ``allOf``).
-    """
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("type") == "object":
-                node.setdefault("additionalProperties", False)
-                props = node.get("properties")
-                if isinstance(props, dict) and props:
-                    node["required"] = list(props.keys())
-            for key in ("properties", "$defs", "definitions", "patternProperties"):
-                sub = node.get(key)
-                if isinstance(sub, dict):
-                    for child in sub.values():
-                        _walk(child)
-            for key in ("items", "additionalItems", "contains"):
-                sub = node.get(key)
-                if isinstance(sub, (dict, list)):
-                    _walk(sub)
-            for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
-                sub = node.get(key)
-                if isinstance(sub, list):
-                    for child in sub:
-                        _walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                _walk(child)
-
-    _walk(schema)
 
 
 # ------------------------------------------------------ reconstruct_tool_calls

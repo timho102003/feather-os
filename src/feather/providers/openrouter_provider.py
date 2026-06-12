@@ -36,9 +36,7 @@ import asyncio
 import json
 import logging
 import os
-import random
 import re
-import time
 from typing import Any, Iterable
 
 import httpx
@@ -55,6 +53,10 @@ from feather.providers.openrouter_translator import (
     reconstruct_tool_calls,
     translate_request,
     translate_response,
+)
+from feather.providers.retry_utils import (
+    backoff_delay,
+    seconds_until_unix_timestamp,
 )
 
 logger = logging.getLogger(__name__)
@@ -238,13 +240,11 @@ def _retry_sleep_seconds_from_headers(
     status: int, attempt: int, base_delay: float, reset_header: str | None
 ) -> float:
     """Compute backoff; honors X-RateLimit-Reset on 429 but clamps to a sane ceiling."""
-
-    if status == 429 and reset_header and reset_header.isdigit():
-        hinted = max(0.0, int(reset_header) - time.time())
-        return min(hinted, _MAX_RATE_LIMIT_RESET_SLEEP)
-    sleep = base_delay * (2 ** attempt)
-    sleep += random.uniform(0, base_delay)
-    return sleep
+    if status == 429:
+        hint = seconds_until_unix_timestamp(reset_header, max_wait=_MAX_RATE_LIMIT_RESET_SLEEP)
+        if hint is not None:
+            return hint
+    return backoff_delay(attempt, base_delay)
 
 
 async def retryable_post(
@@ -338,14 +338,13 @@ def _retry_sleep_seconds(
     status: int, attempt: int, base_delay: float, resp: httpx.Response
 ) -> float:
     """Compute backoff for one retry attempt. Honors X-RateLimit-Reset on 429."""
-
     if status == 429:
         reset = resp.headers.get("X-RateLimit-Reset")
-        if reset and reset.isdigit():
-            return max(0.0, int(reset) - time.time())
-    sleep = base_delay * (2 ** attempt)
-    sleep += random.uniform(0, base_delay)
-    return sleep
+        # No max_wait clamp here — caller already bounds retries by max_attempts.
+        hint = seconds_until_unix_timestamp(reset, max_wait=float("inf"))
+        if hint is not None:
+            return hint
+    return backoff_delay(attempt, base_delay)
 
 
 # ---------------------------------------------------- OpenRouterChatProvider
