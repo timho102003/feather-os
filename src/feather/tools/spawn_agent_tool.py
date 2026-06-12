@@ -38,6 +38,11 @@ from typing import Any
 from uuid import uuid4
 
 from feather.core.agent.catalog import AgentCatalog
+from feather.core.ipc.process import (
+    cancel_drainers,
+    spawn_piped_process,
+    terminate_process,
+)
 from feather.core.ipc.subprocess_env import subprocess_env_with_home
 from feather.core.subagents.registry import LiveSubagent, SubagentRegistry
 from feather.models import (
@@ -386,32 +391,21 @@ async def launch_subagent_process(
     subprocess_env = subprocess_env_with_home()
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        piped = await spawn_piped_process(
+            argv,
             cwd=str(root),
             env=subprocess_env,
+            stdin=asyncio.subprocess.DEVNULL,
+            name=f"subagent-{session_id}",
         )
     except Exception:
         _remove_task_file(task_file)
         raise
-    stdout_buf = bytearray()
-    stderr_buf = bytearray()
-    stdout_drainer = asyncio.create_task(
-        _drain_stream(proc.stdout, stdout_buf),
-        name=f"subagent-stdout-{session_id}",
-    )
-    stderr_drainer = asyncio.create_task(
-        _drain_stream(proc.stderr, stderr_buf),
-        name=f"subagent-stderr-{session_id}",
-    )
     return LaunchedSubagent(
-        process=proc,
-        stdout_buffer=stdout_buf,
-        stderr_buffer=stderr_buf,
-        drainers=(stdout_drainer, stderr_drainer),
+        process=piped.process,
+        stdout_buffer=piped.stdout_buffer,
+        stderr_buffer=piped.stderr_buffer,
+        drainers=piped.drainers,
     )
 
 
@@ -468,54 +462,11 @@ def _optional_str(value: object) -> str | None:
     return stripped
 
 
-async def _drain_stream(
-    stream: asyncio.StreamReader | None, buffer: bytearray
-) -> None:
-    """Continuously read from ``stream`` into ``buffer`` until EOF.
-
-    Failure isolation: any exception (closed stream, cancellation) is
-    swallowed — this coroutine must never raise into the event loop.
-    """
-
-    if stream is None:
-        return
-    try:
-        while True:
-            chunk = await stream.read(8192)
-            if not chunk:
-                return
-            buffer.extend(chunk)
-    except Exception:  # noqa: BLE001
-        return
-
-
 async def _terminate_launched(launched: LaunchedSubagent) -> None:
     """Best-effort cleanup for a launched process not owned by the registry."""
 
-    proc = launched.process
-    if proc.returncode is None:
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            pass
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=2.0)
-            except asyncio.TimeoutError:
-                pass
-    for drainer in launched.drainers:
-        if not drainer.done():
-            drainer.cancel()
-        try:
-            await drainer
-        except (asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+    await terminate_process(launched.process)
+    await cancel_drainers(launched.drainers)
 
 
 def extract_envelope(stdout_text: str) -> dict[str, Any] | None:

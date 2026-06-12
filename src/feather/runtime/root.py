@@ -23,6 +23,7 @@ from feather.config.schema import lookup as _lookup_field
 from feather.core.agent.factory import AgentFactory
 from feather.core.agent.base import BaseAgent
 from feather.core.scheduling.cron_scheduler import CronScheduler
+from feather.core.ipc.process import cancel_drainers, terminate_process
 from feather.core.session.input_queue import UserInputQueue
 from feather.core.session.coordinator import SessionRunCoordinator
 from feather.core.subagents.registry import SubagentRegistry
@@ -799,43 +800,24 @@ class FeatherRuntime:
         inbox anyway. The goal is just to avoid orphaned processes.
         """
 
-        import asyncio as _asyncio
-
         live = await self._subagent_registry.snapshot()
         for entry in live:
             proc = entry.process
-            killed = False
+            # ``killed`` marks that we attempted termination — set the moment
+            # we issue SIGTERM (matches the pre-consolidation semantics), so a
+            # child that was already live is finalized as KILLED/STOPPED.
+            was_live = proc.returncode is None
+            if was_live:
+                await terminate_process(proc)
+            killed = was_live
             if proc.returncode is None:
-                try:
-                    proc.terminate()
-                    killed = True
-                except ProcessLookupError:
-                    pass
-                else:
-                    try:
-                        await _asyncio.wait_for(proc.wait(), timeout=2.0)
-                    except _asyncio.TimeoutError:
-                        try:
-                            proc.kill()
-                        except ProcessLookupError:
-                            pass
-                        else:
-                            try:
-                                await _asyncio.wait_for(proc.wait(), timeout=2.0)
-                            except _asyncio.TimeoutError:
-                                logger.warning(
-                                    "sub-agent %s did not exit after SIGKILL",
-                                    entry.session_id,
-                                )
+                logger.warning(
+                    "sub-agent %s did not exit after SIGKILL",
+                    entry.session_id,
+                )
             await self._finalize_live_subagent_on_shutdown(entry, killed=killed)
         for entry in live:
-            for drainer in entry.drainers:
-                if not drainer.done():
-                    drainer.cancel()
-                try:
-                    await drainer
-                except (_asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+            await cancel_drainers(tuple(entry.drainers))
             await self._subagent_registry.remove(entry.session_id)
 
     async def _finalize_live_subagent_on_shutdown(self, entry: Any, *, killed: bool) -> None:

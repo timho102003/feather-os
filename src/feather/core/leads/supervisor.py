@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from feather.core.ipc.event_codec import EventCodecError, decode_event
+from feather.core.ipc.process import PipedProcess, spawn_piped_process
 from feather.core.ipc.subprocess_env import subprocess_env_with_home
 from feather.core.ipc.command_codec import (
     CONFIG_RELOAD_ACK_KIND,
@@ -76,6 +77,9 @@ _DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 1.0
 _DEFAULT_STALENESS_THRESHOLD_SECONDS = 5.0
 _DEFAULT_SHUTDOWN_GRACE_SECONDS = 2.0
 _DEFAULT_CONFIG_RELOAD_TIMEOUT_SECONDS = 10.0
+# Cap captured worker stderr so crash forensics stay bounded even when a
+# wedged worker spews endlessly; mirrors the reaper's bounded stderr report.
+_STDERR_MAX_BYTES = 1024 * 1024
 
 
 @dataclass(slots=True, frozen=True)
@@ -642,15 +646,16 @@ class LeadSupervisor:
             "--agent-name",
             self._agent_name,
         ]
-        process = await asyncio.create_subprocess_exec(
-            *argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        piped = await spawn_piped_process(
+            argv,
             cwd=str(self._project_root),
             env=subprocess_env_with_home(),
+            stdin=asyncio.subprocess.PIPE,
+            capture_stdout=False,
+            stderr_max_bytes=_STDERR_MAX_BYTES,
+            name="lead-worker",
         )
-        return _SubprocessWorkerHandle(process)
+        return _SubprocessWorkerHandle(piped)
 
 
 def _result_from_payload(payload: dict[str, Any]) -> AgentRunResult:
@@ -673,35 +678,34 @@ def _result_from_payload(payload: dict[str, Any]) -> AgentRunResult:
 
 
 class _SubprocessWorkerHandle:
-    """Production :class:`WorkerHandle` wrapping :class:`asyncio.subprocess.Process`."""
+    """Production :class:`WorkerHandle` wrapping a :class:`PipedProcess`.
 
-    def __init__(self, process: asyncio.subprocess.Process) -> None:
-        self._process = process
-        self._stderr_buffer = bytearray()
-        self._stderr_drainer: asyncio.Task[None] | None = None
-        if process.stderr is not None:
-            self._stderr_drainer = asyncio.create_task(
-                self._drain_stderr(),
-                name="supervisor.stderr_drain",
-            )
+    The stderr drainer is owned by :func:`spawn_piped_process` (capped at
+    ``_STDERR_MAX_BYTES``); this handle only exposes its captured buffer and
+    awaits it on :meth:`wait`.
+    """
+
+    def __init__(self, piped: PipedProcess) -> None:
+        self._piped = piped
 
     @property
     def pid(self) -> int | None:
         """OS pid of the worker, or ``None`` before spawn."""
-        return self._process.pid
+        return self._piped.process.pid
 
     @property
     def returncode(self) -> int | None:
         """Exit code once the worker has died, else ``None``."""
-        return self._process.returncode
+        return self._piped.process.returncode
 
     @property
     def stderr_buffer(self) -> bytes:
         """Everything the worker wrote to stderr so far (crash forensics)."""
-        return bytes(self._stderr_buffer)
+        return bytes(self._piped.stderr_buffer)
 
     async def send_command(self, command: WorkerCommand) -> None:
-        if self._process.stdin is None or self._process.stdin.is_closing():
+        process = self._piped.process
+        if process.stdin is None or process.stdin.is_closing():
             raise BrokenPipeError("worker stdin is closed")
         line = encode_command(command).encode("utf-8")
         # No-await invariant: the line and its terminating newline must be
@@ -711,49 +715,46 @@ class _SubprocessWorkerHandle:
         # a command with the next one and corrupt the worker's stdin.
         # ``StreamWriter.write`` is purely synchronous; the ``drain``
         # below is the only suspension point.
-        self._process.stdin.write(line)
-        self._process.stdin.write(b"\n")
-        await self._process.stdin.drain()
+        process.stdin.write(line)
+        process.stdin.write(b"\n")
+        await process.stdin.drain()
 
     async def read_event_line(self) -> str | None:
-        if self._process.stdout is None:
+        process = self._piped.process
+        if process.stdout is None:
             return None
-        raw = await self._process.stdout.readline()
+        raw = await process.stdout.readline()
         if not raw:
             return None
         return raw.decode("utf-8", errors="replace")
 
     async def close_stdin(self) -> None:
-        if self._process.stdin is None or self._process.stdin.is_closing():
+        process = self._piped.process
+        if process.stdin is None or process.stdin.is_closing():
             return
-        self._process.stdin.close()
+        process.stdin.close()
         with contextlib.suppress(Exception):
-            await self._process.stdin.wait_closed()
+            await process.stdin.wait_closed()
 
     def terminate(self) -> None:
-        if self._process.returncode is not None:
+        process = self._piped.process
+        if process.returncode is not None:
             return
         with contextlib.suppress(ProcessLookupError):
-            self._process.send_signal(signal.SIGTERM)
+            process.send_signal(signal.SIGTERM)
 
     def kill(self) -> None:
-        if self._process.returncode is not None:
+        process = self._piped.process
+        if process.returncode is not None:
             return
         with contextlib.suppress(ProcessLookupError):
-            self._process.kill()
+            process.kill()
 
     async def wait(self) -> int:
-        rc = await self._process.wait()
-        if self._stderr_drainer is not None:
+        rc = await self._piped.process.wait()
+        # Await the spawn-owned stderr drainer so the captured buffer is
+        # complete, but bound it: a wedged drainer must never hang wait().
+        for drainer in self._piped.drainers:
             with contextlib.suppress(Exception):
-                await self._stderr_drainer
+                await asyncio.wait_for(drainer, timeout=2.0)
         return rc
-
-    async def _drain_stderr(self) -> None:
-        assert self._process.stderr is not None
-        with contextlib.suppress(Exception):
-            while True:
-                chunk = await self._process.stderr.read(8192)
-                if not chunk:
-                    return
-                self._stderr_buffer.extend(chunk)
