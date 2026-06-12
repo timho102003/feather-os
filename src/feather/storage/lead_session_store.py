@@ -12,39 +12,25 @@ safe here. Unlike ``session_store``/``cron_store`` this store sets
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 
 import aiosqlite
 
-from feather.storage.connection import open_store_connection
+from feather.storage.base import BaseSQLiteStore
 from feather.storage.schema import LEAD_SESSIONS_TABLE
 
 __all__ = ("LeadSessionStore",)
 
 
-class LeadSessionStore:
+class LeadSessionStore(BaseSQLiteStore):
     """One aiosqlite connection owning the ``lead_sessions`` pointer table."""
 
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
-        self._connection: aiosqlite.Connection | None = None
+    # No foreign_keys pragma: the pointer table references nothing.
+    _FOREIGN_KEYS = False
 
-    async def initialize(self) -> None:
-        """Open the connection and ensure the table exists."""
+    async def _apply_schema(self, connection: aiosqlite.Connection) -> None:
+        """Create only the ``lead_sessions`` table (no full schema)."""
 
-        # No foreign_keys pragma: the pointer table references nothing.
-        self._connection = await open_store_connection(
-            self._db_path, foreign_keys=False
-        )
-        await self._connection.execute(LEAD_SESSIONS_TABLE.create_sql)
-        await self._connection.commit()
-
-    async def close(self) -> None:
-        """Close the SQLite connection."""
-
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
+        await connection.execute(LEAD_SESSIONS_TABLE.create_sql)
 
     async def get(self, lead_name: str) -> str | None:
         """Return the session id recorded for ``lead_name``, or ``None``."""
@@ -80,11 +66,6 @@ class LeadSessionStore:
             "SELECT lead_name, session_id FROM lead_sessions ORDER BY lead_name"
         )
         return [(str(r["lead_name"]), str(r["session_id"])) for r in await cursor.fetchall()]
-
-    def _require_connection(self) -> aiosqlite.Connection:
-        if self._connection is None:
-            raise RuntimeError("LeadSessionStore.initialize() must be called first.")
-        return self._connection
 
 
 def _now_iso() -> str:

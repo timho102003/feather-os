@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import uuid4
 
 import aiosqlite
@@ -20,8 +19,7 @@ from feather.models import (
     TaskRunStatus,
     TaskStatus,
 )
-from feather.storage.connection import open_store_connection
-from feather.storage.schema import initialize_database_schema
+from feather.storage.base import BaseSQLiteStore
 
 _UNSET = object()
 _TERMINAL_STATUSES = {
@@ -33,26 +31,8 @@ _TERMINAL_STATUSES = {
 }
 
 
-class TaskStore:
+class TaskStore(BaseSQLiteStore):
     """Persist durable task management state in SQLite."""
-
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-        self._connection: aiosqlite.Connection | None = None
-
-    async def initialize(self) -> None:
-        """Open the SQLite connection and ensure the schema exists."""
-
-        self._connection = await open_store_connection(self._db_path)
-        await initialize_database_schema(self._connection)
-        await self._connection.commit()
-
-    async def close(self) -> None:
-        """Close the SQLite connection."""
-
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
 
     async def create_plan(
         self,
@@ -578,11 +558,6 @@ class TaskStore:
     ) -> aiosqlite.Row | None:
         cursor = await self._require_connection().execute(query, params)
         return await cursor.fetchone()
-
-    def _require_connection(self) -> aiosqlite.Connection:
-        if self._connection is None:
-            raise RuntimeError("TaskStore.initialize() must be called before use.")
-        return self._connection
 
 
 def _row_to_plan(row: aiosqlite.Row) -> PlanRecord:

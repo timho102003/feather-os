@@ -19,33 +19,17 @@ from feather.models import (
     SessionRecord,
     SessionStatus,
 )
-from feather.storage.connection import open_store_connection
-from feather.storage.schema import initialize_database_schema
+from feather.storage.base import BaseSQLiteStore
 
 _UNSET = object()
 
 
-class SessionStore:
+class SessionStore(BaseSQLiteStore):
     """Persist lead-agent session state in SQLite."""
 
     def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-        self._connection: aiosqlite.Connection | None = None
+        super().__init__(db_path)
         self._active_mcp_lock = asyncio.Lock()
-
-    async def initialize(self) -> None:
-        """Create the database and required tables if missing."""
-
-        self._connection = await open_store_connection(self._db_path)
-        await initialize_database_schema(self._connection)
-        await self._connection.commit()
-
-    async def close(self) -> None:
-        """Close the SQLite connection."""
-
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
 
     async def create_session(
         self,
@@ -651,14 +635,10 @@ class SessionStore:
         )
 
     async def _execute(self, query: str, params: tuple) -> None:
-        if self._connection is None:
-            raise RuntimeError("SessionStore.initialize() must be called before use.")
-        await self._connection.execute(query, params)
+        await self._require_connection().execute(query, params)
 
     async def _fetchone(self, query: str, params: tuple) -> aiosqlite.Row | None:
-        if self._connection is None:
-            raise RuntimeError("SessionStore.initialize() must be called before use.")
-        cursor = await self._connection.execute(query, params)
+        cursor = await self._require_connection().execute(query, params)
         return await cursor.fetchone()
 
 
