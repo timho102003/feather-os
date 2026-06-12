@@ -230,3 +230,8 @@ the regression net and must stay green after every workstream.
 6. Shared subprocess entry-point bootstrap (`lead_worker_entry` vs `subagent_entry`).
 7. Doc drift: `docs/configuration.md` memory `operations.*` grouping;
    prompt-caching strategy section in `docs/providers.md`.
+8. `core/ipc/process.py:cancel_drainers` — found in review: `suppress(BaseException)`
+   around `await drainer` masks the *caller's own* CancelledError (empirically
+   reproduced; byte-equivalent to the pre-refactor per-site code, so matched
+   rather than regressed). Now that the pattern is centralized, the helper could
+   re-raise when the cancellation belongs to the calling task.
