@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import json
+import functools
 import logging
 from abc import ABC
 from typing import Any
@@ -16,6 +16,12 @@ from feather.integrations.attachments.parse import (
 )
 from feather.core.agent.capabilities import CapabilityProfile
 from feather.core.agent.compaction import ContextCompactor
+from feather.core.agent.conversation import (
+    ConversationContext,
+    StatefulConversation,
+    StatelessConversation,
+)
+from feather.core.agent.events import EventEmitter
 from feather.core.session.input_queue import UserInputQueue
 from feather.core.agent.prompt_builder import PromptBuilder
 from feather.core.session.coordinator import SessionRunCoordinator
@@ -39,9 +45,9 @@ from feather.models import (
     AttachmentKind,
     AttachmentRecord,
     EventHandler,
+    EventKind,
     MessageRole,
     MCPServerConfig,
-    ModelTurn,
     ProviderRequestConfig,
     RuntimeEvent,
     SessionMessage,
@@ -66,6 +72,40 @@ _MAX_KEEP_ALIVE_INJECTIONS = 3
 _DEFAULT_MAX_PARALLEL_TOOL_CALLS = 8
 _MAX_HISTORY_REPLAY_IMAGES = 8
 _MAX_HISTORY_REPLAY_IMAGE_BYTES = 20 * 1024 * 1024
+_INBOX_PREVIEW_CHARS = 240
+
+
+def _inbox_received_event(
+    *, sender_agent: str, sender_session: str, messages: list[AgentMessage]
+) -> RuntimeEvent:
+    """Build the agent_message_received event, including human-scan previews."""
+    previews: list[str] = []
+    for msg in messages:
+        body = (msg.body or "").strip()
+        if not body:
+            previews.append("(empty body)")
+            continue
+        head = " ".join(body.split())
+        if len(head) > _INBOX_PREVIEW_CHARS:
+            head = head[:_INBOX_PREVIEW_CHARS] + f"… (+{len(body) - _INBOX_PREVIEW_CHARS} chars)"
+        previews.append(f"[{len(body)} chars] {head}")
+    total_chars = sum(len(msg.body or "") for msg in messages)
+    return RuntimeEvent(
+        kind=EventKind.AGENT_MESSAGE_RECEIVED,
+        text=(
+            f"{sender_agent} ({sender_session}): "
+            f"{len(messages)} message(s), {total_chars} chars\n"
+            f"    {' | '.join(previews)}"
+        ),
+        payload={
+            "from_agent_name": sender_agent,
+            "from_session_id": sender_session,
+            "count": len(messages),
+            "total_chars": total_chars,
+            "previews": previews,
+            "bodies": [msg.body or "" for msg in messages],
+        },
+    )
 
 
 class BaseAgent(ABC):
@@ -265,29 +305,15 @@ class BaseAgent(ABC):
                 raise ValueError("Incoming message cannot be empty.")
 
             session = await self._session_store.get_session(session_id)
-            pending_inputs = list(session.pending_inputs)
-            history_input_items: list[dict[str, Any]] = []
-            # Replay full history whenever the provider cursor is reset
-            # (post-compaction, first turn) OR whenever the provider is
-            # stateless (e.g. OpenRouter) — the latter can't rely on
-            # ``previous_response_id`` and needs every turn to carry the
-            # full prior conversation.
-            should_replay_history = (
-                session.last_response_id is None or not self._provider.stateful
-            )
-            if (
-                should_replay_history
-                and not (
-                    not self._provider.stateful
-                    and self._has_stateless_pending_context(pending_inputs)
-                )
-            ):
-                history_input_items = await self._build_history_replay_items(session_id)
+            context = self._conversation_context(session_id)
+            # History replay is computed BEFORE the new user row is persisted
+            # so the replayed transcript never includes the message we are
+            # about to send; the new items are appended afterwards.
+            pending_inputs = await context.initial_input_items(session, [])
             new_input_items, _ = await self._persist_incoming_user_message(
                 session_id,
                 incoming_text,
             )
-            pending_inputs.extend(history_input_items)
             pending_inputs.extend(new_input_items)
             logger.info(
                 "agent run started agent=%s session_id=%s pending_inputs=%s",
@@ -295,13 +321,17 @@ class BaseAgent(ABC):
                 session_id,
                 len(pending_inputs),
             )
-            return await self.run_loop(session_id, pending_inputs, event_handler)
+            return await self.run_loop(
+                session_id, pending_inputs, event_handler, context=context
+            )
 
     async def run_loop(
         self,
         session_id: str,
         input_items: list[dict[str, Any]],
         event_handler: EventHandler | None,
+        *,
+        context: ConversationContext | None = None,
     ) -> AgentRunResult:
         """Execute the shared agent loop until tool-free completion or pause.
 
@@ -309,11 +339,14 @@ class BaseAgent(ABC):
             session_id: Session identifier.
             input_items: Provider input items to send on the next turn.
             event_handler: Optional runtime event sink.
+            context: Conversation strategy reused from :meth:`run`; built
+                fresh here when entered directly (e.g. ``resume_on_inbox``).
 
         Returns:
             Agent run result.
         """
 
+        emitter = EventEmitter(event_handler)
         latest_text = ""
         keep_alive_injections = 0
         total_tool_calls = 0
@@ -328,16 +361,13 @@ class BaseAgent(ABC):
         ctx_token = current_session_id.set(session_id)
         agent_ctx_token = current_agent_name.set(self._agent_config.name)
         try:
-            stateless_context_items: list[dict[str, Any]] | None = None
-            if not self._provider.stateful and not input_items:
-                stateless_context_items = await self._build_history_replay_items(
-                    session_id
-                )
+            ctx = context or self._conversation_context(session_id)
+            await ctx.begin(input_items)
             while True:
-                injected = await self._drain_user_input_queue(session_id, event_handler)
+                injected = await self._drain_user_input_queue(session_id, emitter)
                 if injected:
                     input_items = list(input_items) + injected
-                inbox_injected = await self._drain_agent_inbox(session_id, event_handler)
+                inbox_injected = await self._drain_agent_inbox(session_id, emitter)
                 if inbox_injected:
                     input_items = list(input_items) + inbox_injected
                     # Cap total per-run turns driven purely by external input
@@ -378,24 +408,14 @@ class BaseAgent(ABC):
                     user_profile_block=user_profile_block,
                 )
                 instructions = prompt_sections.render()
-                if not self._provider.stateful:
-                    # Stateless providers (OpenRouter / Chat Completions)
-                    # cannot use previous_response_id as a cursor. Keep an
-                    # in-run structural transcript so assistant tool_calls are
-                    # followed by matching tool-role outputs instead of being
-                    # flattened into prose. New .run() calls still seed this
-                    # list from SessionStore history before adding the latest
-                    # user input.
-                    if stateless_context_items is None:
-                        stateless_context_items = list(input_items)
-                    elif input_items:
-                        stateless_context_items.extend(input_items)
-                    effective_input_items = list(stateless_context_items)
-                    effective_cursor: str | None = None
-                    input_items = []
-                else:
-                    effective_input_items = input_items
-                    effective_cursor = session.last_response_id
+                # The conversation strategy owns how prior context reaches the
+                # provider: stateless folds input_items into an in-run
+                # structural transcript (cursor None); stateful sends only the
+                # new items plus the previous_response_id cursor.
+                effective_input_items, effective_cursor = ctx.provider_request(
+                    session, input_items
+                )
+                input_items = []
                 # ``trace_context`` is cheap and always-on: providers that
                 # consume it (OpenRouter → Opik etc.) gate on their own
                 # tracing config; providers that don't (OpenAI Responses
@@ -425,7 +445,7 @@ class BaseAgent(ABC):
                     event_handler=event_handler,
                     request_config=request_config,
                 )
-                self._emit_usage_ratio(turn.usage, event_handler)
+                self._emit_usage_ratio(turn.usage, emitter)
                 self._log_cache_usage(turn.usage)
                 await self._session_store.update_response_state(
                     session_id,
@@ -433,11 +453,7 @@ class BaseAgent(ABC):
                     pending_inputs=[],
                     status=SessionStatus.ACTIVE,
                 )
-                if not self._provider.stateful:
-                    stateless_context_items = list(effective_input_items)
-                    stateless_context_items.extend(
-                        self._model_turn_input_items(turn)
-                    )
+                ctx.record_turn(effective_input_items, turn)
 
                 if turn.output_text:
                     latest_text = turn.output_text
@@ -445,8 +461,8 @@ class BaseAgent(ABC):
 
                 if not turn.tool_calls:
                     if keep_alive_injections < _MAX_KEEP_ALIVE_INJECTIONS:
-                        late_injected = await self._drain_user_input_queue(session_id, event_handler)
-                        late_inbox = await self._drain_agent_inbox(session_id, event_handler)
+                        late_injected = await self._drain_user_input_queue(session_id, emitter)
+                        late_inbox = await self._drain_agent_inbox(session_id, emitter)
                         combined_late = late_injected + late_inbox
                         if combined_late:
                             # User or another agent sent input while the model
@@ -455,7 +471,7 @@ class BaseAgent(ABC):
                             # returning to its caller prematurely. Run
                             # auto-compaction first so long injection chains
                             # don't silently grow context unbounded.
-                            await self._maybe_auto_compact(session_id, turn.usage, event_handler)
+                            await self._maybe_auto_compact(session_id, turn.usage, emitter)
                             input_items = combined_late
                             keep_alive_injections += 1
                             logger.info(
@@ -482,20 +498,17 @@ class BaseAgent(ABC):
                         if guard_message is not None:
                             completion_guard_used = True
                             input_items = [self._message_item(guard_message)]
-                            if event_handler is not None:
-                                event_handler(
-                                    RuntimeEvent(
-                                        kind="completion_guard_injected",
-                                        text=guard_message,
-                                    )
-                                )
+                            emitter.emit(
+                                EventKind.COMPLETION_GUARD_INJECTED,
+                                text=guard_message,
+                            )
                             logger.info(
                                 "completion guard injected agent=%s session_id=%s",
                                 self._agent_config.name,
                                 session_id,
                             )
                             continue
-                    await self._maybe_auto_compact(session_id, turn.usage, event_handler)
+                    await self._maybe_auto_compact(session_id, turn.usage, emitter)
                     logger.info(
                         "agent run completed agent=%s session_id=%s total_tool_calls=%s",
                         self._agent_config.name,
@@ -513,21 +526,17 @@ class BaseAgent(ABC):
                 input_items, question = await self._execute_tool_calls(
                     session_id,
                     turn.tool_calls,
-                    event_handler,
+                    emitter,
                     allowed_tool_names=set(effective_agent_config.registered_tools),
                 )
                 if question is not None:
-                    pending_inputs = input_items
-                    if not self._provider.stateful:
-                        pending_inputs = list(stateless_context_items or [])
-                        pending_inputs.extend(input_items)
+                    pending_inputs = ctx.pause_payload(input_items)
                     await self._session_store.update_response_state(
                         session_id,
                         pending_inputs=pending_inputs,
                         status=SessionStatus.AWAITING_USER,
                     )
-                    if event_handler is not None:
-                        event_handler(RuntimeEvent(kind="awaiting_user", text=question))
+                    emitter.emit(EventKind.AWAITING_USER, text=question)
                     logger.info("agent paused for user input agent=%s session_id=%s", self._agent_config.name, session_id)
                     return AgentRunResult(
                         status=AgentOutcome.AWAITING_USER,
@@ -550,6 +559,14 @@ class BaseAgent(ABC):
             except Exception:  # noqa: BLE001
                 logger.debug("log.agent_context.reset_failed")
             self._schedule_memory_extraction(session_id)
+
+    def _conversation_context(self, session_id: str) -> ConversationContext:
+        """Build the per-run strategy for how history reaches the provider."""
+
+        replay = functools.partial(self._build_history_replay_items, session_id)
+        if self._provider.stateful:
+            return StatefulConversation(replay=replay)
+        return StatelessConversation(replay=replay)
 
     def _active_mcp_servers(self, labels: list[str]) -> tuple[MCPServerConfig, ...]:
         """Resolve session-active MCP labels to server configs allowed for this agent."""
@@ -589,7 +606,7 @@ class BaseAgent(ABC):
         self,
         session_id: str,
         tool_calls: list[ToolCall],
-        event_handler: EventHandler | None,
+        emitter: EventEmitter,
         *,
         allowed_tool_names: set[str] | None = None,
     ) -> tuple[list[dict[str, Any]], str | None]:
@@ -598,7 +615,7 @@ class BaseAgent(ABC):
         Args:
             session_id: Session identifier.
             tool_calls: Tool calls emitted by the model.
-            event_handler: Optional runtime event sink.
+            emitter: Event emitter for runtime events.
 
         Returns:
             Provider input items for the next turn and any blocking user question.
@@ -640,14 +657,11 @@ class BaseAgent(ABC):
                 return tool_call, None, exc
 
         for tool_call in tool_calls:
-            if event_handler is not None:
-                event_handler(
-                    RuntimeEvent(
-                        kind="tool_started",
-                        tool_name=tool_call.name,
-                        payload=tool_call.arguments,
-                    )
-                )
+            emitter.emit(
+                EventKind.TOOL_STARTED,
+                tool_name=tool_call.name,
+                payload=tool_call.arguments,
+            )
             logger.info("tool call agent=%s session_id=%s tool=%s", self._agent_config.name, session_id, tool_call.name)
 
         results = await asyncio.gather(*(run_one(tool_call) for tool_call in tool_calls))
@@ -657,42 +671,24 @@ class BaseAgent(ABC):
 
         for tool_call, result, exc in results:
             if exc is not None:
-                result_output = f"Tool `{tool_call.name}` failed: {exc}"
-                artifact = await self._tool_output_store.write(tool_call.name, result_output)
-                outputs.append(
-                    {
-                        "type": "function_call_output",
-                        "call_id": tool_call.call_id,
-                        "output": result_output,
-                    }
-                )
-                await self._session_store.add_message(
-                    session_id,
-                    MessageRole.TOOL,
-                    artifact.reference_text,
-                    file_ref=artifact.file_ref,
-                )
-                if event_handler is not None:
-                    event_handler(
-                        RuntimeEvent(
-                            kind="tool_finished",
-                            tool_name=tool_call.name,
-                            text=result_output,
-                        )
-                    )
+                output_text = f"Tool `{tool_call.name}` failed: {exc}"
+                await_question: str | None = None
+                loaded_skill: str | None = None
+            elif result is None:
                 continue
+            else:
+                output_text = result.output
+                await_question = result.await_user_question
+                loaded_skill = result.loaded_skill_name
 
-            if result is None:
-                continue
-            if result.loaded_skill_name is not None:
-                await self._session_store.append_loaded_skill(session_id, result.loaded_skill_name)
-
-            artifact = await self._tool_output_store.write(tool_call.name, result.output)
+            if loaded_skill is not None:
+                await self._session_store.append_loaded_skill(session_id, loaded_skill)
+            artifact = await self._tool_output_store.write(tool_call.name, output_text)
             outputs.append(
                 {
                     "type": "function_call_output",
                     "call_id": tool_call.call_id,
-                    "output": result.output,
+                    "output": output_text,
                 }
             )
             await self._session_store.add_message(
@@ -701,24 +697,18 @@ class BaseAgent(ABC):
                 artifact.reference_text,
                 file_ref=artifact.file_ref,
             )
-            if result.await_user_question and question is None:
-                question = result.await_user_question
-
-            if event_handler is not None:
-                event_handler(
-                    RuntimeEvent(
-                        kind="tool_finished",
-                        tool_name=tool_call.name,
-                        text=result.output,
-                    )
-                )
+            if await_question and question is None:
+                question = await_question
+            emitter.emit(
+                EventKind.TOOL_FINISHED, tool_name=tool_call.name, text=output_text
+            )
 
         return outputs, question
 
     async def _drain_user_input_queue(
         self,
         session_id: str,
-        event_handler: EventHandler | None,
+        emitter: EventEmitter,
     ) -> list[dict[str, Any]]:
         """Drain queued user messages and prepare them for the next turn.
 
@@ -757,10 +747,7 @@ class BaseAgent(ABC):
                 )
                 continue
             input_items.extend(prepared)
-            if event_handler is not None:
-                event_handler(
-                    RuntimeEvent(kind="user_message_injected", text=display_text)
-                )
+            emitter.emit(EventKind.USER_MESSAGE_INJECTED, text=display_text)
         logger.info(
             "user_input_queue injected agent=%s session_id=%s count=%s",
             self._agent_config.name,
@@ -772,7 +759,7 @@ class BaseAgent(ABC):
     async def _drain_agent_inbox(
         self,
         session_id: str,
-        event_handler: EventHandler | None,
+        emitter: EventEmitter,
     ) -> list[dict[str, Any]]:
         """Read up to one sender-group of inbound agent messages.
 
@@ -852,43 +839,13 @@ class BaseAgent(ABC):
                 session_id,
             )
 
-        if event_handler is not None:
-            # Include a short preview of the message bodies so the human
-            # watching the CLI can see whether a sub-agent actually
-            # delivered substantive content or just a short stub. Without
-            # this, the user only saw "1 message(s)" and had to trust
-            # the lead's narration of whether the sub-agent succeeded.
-            preview_chars = 240
-            previews: list[str] = []
-            for msg in selected:
-                body = (msg.body or "").strip()
-                if not body:
-                    previews.append("(empty body)")
-                    continue
-                head = " ".join(body.split())
-                if len(head) > preview_chars:
-                    head = head[:preview_chars] + f"… (+{len(body) - preview_chars} chars)"
-                previews.append(f"[{len(body)} chars] {head}")
-            preview_text = " | ".join(previews)
-            total_chars = sum(len((msg.body or "")) for msg in selected)
-            event_handler(
-                RuntimeEvent(
-                    kind="agent_message_received",
-                    text=(
-                        f"{sender_agent} ({sender_session}): "
-                        f"{len(selected)} message(s), {total_chars} chars\n"
-                        f"    {preview_text}"
-                    ),
-                    payload={
-                        "from_agent_name": sender_agent,
-                        "from_session_id": sender_session,
-                        "count": len(selected),
-                        "total_chars": total_chars,
-                        "previews": previews,
-                        "bodies": [msg.body or "" for msg in selected],
-                    },
-                )
+        emitter.forward(
+            _inbox_received_event(
+                sender_agent=sender_agent,
+                sender_session=sender_session,
+                messages=selected,
             )
+        )
         logger.info(
             "agent_inbox drained agent=%s session_id=%s from=%s/%s count=%s",
             self._agent_config.name,
@@ -1122,51 +1079,6 @@ class BaseAgent(ABC):
             "extraction is required."
         )
 
-    def _has_stateless_pending_context(
-        self, pending_inputs: list[dict[str, Any]]
-    ) -> bool:
-        """Return whether pending inputs already contain replay context."""
-
-        return any(
-            item.get("type") in {"message", "function_call"} for item in pending_inputs
-        )
-
-    def _model_turn_input_items(self, turn: ModelTurn) -> list[dict[str, Any]]:
-        """Convert a model turn into replayable provider input items.
-
-        Stateless providers need the assistant side of the transcript to
-        continue a tool loop. Responses-stateful providers do not use these
-        items because ``previous_response_id`` already points at the assistant
-        turn on the provider side.
-        """
-
-        if turn.tool_calls:
-            items: list[dict[str, Any]] = []
-            for index, tool_call in enumerate(turn.tool_calls):
-                item: dict[str, Any] = {
-                    "type": "function_call",
-                    "call_id": tool_call.call_id,
-                    "name": tool_call.name,
-                    "arguments": json.dumps(
-                        tool_call.arguments,
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                }
-                if index == 0 and turn.output_text:
-                    item["content"] = turn.output_text
-                items.append(item)
-            return items
-        if turn.output_text:
-            return [
-                {
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": turn.output_text}],
-                }
-            ]
-        return []
-
     async def _build_outstanding_tasks_warning(
         self, session_id: str
     ) -> str | None:
@@ -1363,11 +1275,11 @@ class BaseAgent(ABC):
     def _emit_usage_ratio(
         self,
         usage: dict[str, Any] | None,
-        event_handler: EventHandler | None,
+        emitter: EventEmitter,
     ) -> None:
         """Emit a usage_updated event so the CLI can display a context-% indicator."""
 
-        if event_handler is None or self._compactor is None or not usage:
+        if not emitter.enabled or self._compactor is None or not usage:
             return
         input_tokens = usage.get("input_tokens")
         if input_tokens is None:
@@ -1376,9 +1288,7 @@ class BaseAgent(ABC):
         if window <= 0:
             return
         ratio = float(input_tokens) / float(window)
-        event_handler(
-            RuntimeEvent(kind="usage_updated", payload={"usage_ratio": ratio})
-        )
+        emitter.emit(EventKind.USAGE_UPDATED, payload={"usage_ratio": ratio})
 
     def _log_cache_usage(self, usage: dict[str, Any] | None) -> None:
         """Surface prompt-cache hit/write tokens so caching can be observed.
@@ -1409,27 +1319,24 @@ class BaseAgent(ABC):
         self,
         session_id: str,
         usage: dict[str, Any] | None,
-        event_handler: EventHandler | None,
+        emitter: EventEmitter,
     ) -> None:
         """Run best-effort auto compaction after a completed assistant turn."""
 
         if self._compactor is None:
             return
         try:
-            await self._compactor.maybe_compact(session_id, usage=usage, event_handler=event_handler)
+            await self._compactor.maybe_compact(session_id, usage=usage, event_handler=emitter.handler)
         except Exception:  # noqa: BLE001
             logger.exception(
                 "auto compaction failed agent=%s session_id=%s",
                 self._agent_config.name,
                 session_id,
             )
-            if event_handler is not None:
-                event_handler(
-                    RuntimeEvent(
-                        kind="compaction_failed",
-                        text="Automatic compaction failed. The session stayed on the existing response chain.",
-                    )
-                )
+            emitter.emit(
+                EventKind.COMPACTION_FAILED,
+                text="Automatic compaction failed. The session stayed on the existing response chain.",
+            )
 
 
 def _has_image_attachment(attachments: tuple[Any, ...]) -> bool:

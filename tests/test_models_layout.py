@@ -63,6 +63,7 @@ _EXPECTED = frozenset(
         "AgentOutcome",
         "AgentRunResult",
         "EventHandler",
+        "EventKind",
         "ModelTurn",
         "ProviderRequestConfig",
         "RuntimeEvent",

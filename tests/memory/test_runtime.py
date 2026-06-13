@@ -8,7 +8,7 @@ import pytest
 
 from feather.memory.config import MemoryConfig, MemoryQdrantConfig
 from feather.memory.reader import NoOpMemoryReader
-from feather.memory.runtime import build_memory_stack
+from feather.memory.runtime import MemoryStack, build_memory_stack
 from feather.memory.trigger import NoOpMemoryTrigger
 from feather.models import (
     AppConfig,
@@ -193,3 +193,71 @@ async def test_qdrant_url_env_wins_over_yaml(tmp_path: Path, monkeypatch: pytest
         assert stack.enabled is True
     finally:
         await sess_store.close()
+
+
+# MemoryStack.aclose service delegation --------------------------------------
+
+
+async def test_memory_stack_aclose_closes_service_store_client() -> None:
+    """MemoryStack.aclose() must delegate to service.aclose() exactly once."""
+
+    class _StubService:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        async def aclose(self) -> None:
+            self.close_count += 1
+
+    stub_service = _StubService()
+    stack = MemoryStack(
+        reader=NoOpMemoryReader(),
+        trigger=NoOpMemoryTrigger(),
+        service=stub_service,  # type: ignore[arg-type]
+        enabled=True,
+    )
+    await stack.aclose()
+    assert stub_service.close_count == 1
+
+
+async def test_memory_stack_aclose_survives_service_close_error() -> None:
+    """MemoryStack.aclose() must not propagate a service.aclose() exception."""
+
+    class _BrokenService:
+        async def aclose(self) -> None:
+            raise RuntimeError("store is gone")
+
+    stack = MemoryStack(
+        reader=NoOpMemoryReader(),
+        trigger=NoOpMemoryTrigger(),
+        service=_BrokenService(),  # type: ignore[arg-type]
+        enabled=True,
+    )
+    # Must not raise.
+    await stack.aclose()
+
+
+async def test_memory_stack_aclose_twice_is_safe() -> None:
+    """A second stack.aclose() must not raise (shutdown paths can double-fire).
+
+    The stack has no already-closed guard: each aclose() delegates to
+    service.aclose() again, so the service observes one close per call.
+    """
+
+    class _StubService:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        async def aclose(self) -> None:
+            self.close_count += 1
+
+    stub_service = _StubService()
+    stack = MemoryStack(
+        reader=NoOpMemoryReader(),
+        trigger=NoOpMemoryTrigger(),
+        service=stub_service,  # type: ignore[arg-type]
+        enabled=True,
+    )
+    await stack.aclose()
+    # Second call must not raise.
+    await stack.aclose()
+    assert stub_service.close_count == 2

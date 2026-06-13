@@ -40,6 +40,16 @@ class QdrantVectorStore(BaseVectorStore):
     def client(self) -> AsyncQdrantClient:
         return self._client
 
+    async def aclose(self) -> None:
+        """Close the underlying Qdrant client if it supports ``close``."""
+        closer = getattr(self._client, "close", None)
+        if closer is None:
+            return
+        try:
+            await closer()
+        except Exception:  # noqa: BLE001
+            logger.exception("memory.store.close_error")
+
     # -- ensure_schema --------------------------------------------------------
 
     async def ensure_schema(self) -> None:

@@ -65,3 +65,11 @@ class BaseVectorStore(ABC):
         self, session_id: str
     ) -> MemoryPointPayload | None:
         """Return the most recently ``created_at`` memory for ``session_id``."""
+
+    async def aclose(self) -> None:
+        """Release resources held by this store.
+
+        Concrete no-op — subclasses override when they own a closable client.
+        Defined here (non-abstract) so existing fakes and third-party
+        implementations don't break.
+        """

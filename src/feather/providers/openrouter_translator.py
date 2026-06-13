@@ -35,6 +35,7 @@ from feather.models import (
     ToolCall,
     TraceContext,
 )
+from feather.providers.schema_utils import harden_strict_schema as _harden_strict_schema
 
 
 # OpenRouter trace metadata limits, lifted from the chat-completions API
@@ -616,46 +617,6 @@ def _coerce_trace_value(value: Any) -> str | None:
             out = out[:_OR_TRACE_VALUE_MAX_LEN]
         return out
     return None
-
-
-def _harden_strict_schema(schema: dict[str, Any]) -> None:
-    """Enforce OpenAI-style strict-mode invariants on a JSON schema.
-
-    OpenAI and OpenRouter-routed OpenAI-compatible backends reject
-    ``response_format=json_schema`` with ``strict=True`` unless every
-    ``type: "object"`` node sets ``additionalProperties: false`` and
-    lists every property name in ``required``. Pydantic emits
-    ``additionalProperties`` at the root but not always on nested
-    objects, and it drops fields with defaults from ``required``. We
-    walk the schema in place to fix both.
-    """
-
-    def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            if node.get("type") == "object":
-                node.setdefault("additionalProperties", False)
-                props = node.get("properties")
-                if isinstance(props, dict) and props:
-                    node["required"] = list(props.keys())
-            for key in ("properties", "$defs", "definitions", "patternProperties"):
-                sub = node.get(key)
-                if isinstance(sub, dict):
-                    for child in sub.values():
-                        _walk(child)
-            for key in ("items", "additionalItems", "contains"):
-                sub = node.get(key)
-                if isinstance(sub, (dict, list)):
-                    _walk(sub)
-            for key in ("anyOf", "oneOf", "allOf", "prefixItems"):
-                sub = node.get(key)
-                if isinstance(sub, list):
-                    for child in sub:
-                        _walk(child)
-        elif isinstance(node, list):
-            for child in node:
-                _walk(child)
-
-    _walk(schema)
 
 
 # ------------------------------------------------------ reconstruct_tool_calls

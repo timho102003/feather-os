@@ -34,15 +34,14 @@ from uuid import uuid4
 import aiosqlite
 
 from feather.models import AgentMessage, AgentMessageStatus
-from feather.storage.connection import open_store_connection
-from feather.storage.schema import initialize_database_schema
+from feather.storage.base import BaseSQLiteStore
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_INBOX_CAP = 50
 
 
-class AgentMessageStore:
+class AgentMessageStore(BaseSQLiteStore):
     """Persist and query the inter-agent message mailbox."""
 
     def __init__(
@@ -53,21 +52,8 @@ class AgentMessageStore:
     ) -> None:
         if inbox_cap <= 0:
             raise ValueError("inbox_cap must be positive")
-        self._db_path = db_path
+        super().__init__(db_path)
         self._inbox_cap = inbox_cap
-        self._connection: aiosqlite.Connection | None = None
-
-    async def initialize(self) -> None:
-        """Open the connection and ensure the schema exists."""
-
-        self._connection = await open_store_connection(self._db_path)
-        await initialize_database_schema(self._connection)
-        await self._connection.commit()
-
-    async def close(self) -> None:
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
 
     async def send(
         self,
@@ -401,13 +387,6 @@ class AgentMessageStore:
             oldest_id,
             self._inbox_cap,
         )
-
-    def _require_connection(self) -> aiosqlite.Connection:
-        if self._connection is None:
-            raise RuntimeError(
-                "AgentMessageStore.initialize() must be awaited before use"
-            )
-        return self._connection
 
 
 def _utc_now() -> str:

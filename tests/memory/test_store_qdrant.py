@@ -228,3 +228,57 @@ def test_qdrant_store_is_base_vector_store() -> None:
 
     store = QdrantVectorStore(client=_StubClient(), cfg=_cfg())
     assert isinstance(store, BaseVectorStore)
+
+
+# aclose ---------------------------------------------------------------------
+
+
+async def test_aclose_closes_underlying_client() -> None:
+    """aclose() must await close() on the underlying client exactly once."""
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    stub = _StubClient()
+    store = QdrantVectorStore(client=stub, cfg=_cfg())  # type: ignore[arg-type]
+    await store.aclose()
+    assert stub.close_count == 1
+
+
+async def test_aclose_without_closable_client_is_noop() -> None:
+    """aclose() must not raise when the client has no close method."""
+
+    class _NoCloseClient:
+        pass
+
+    store = QdrantVectorStore(client=_NoCloseClient(), cfg=_cfg())  # type: ignore[arg-type]
+    # Must not raise.
+    await store.aclose()
+
+
+async def test_aclose_twice_is_safe() -> None:
+    """A second aclose() must not raise (shutdown paths can double-fire).
+
+    There is no already-closed guard in the store: each aclose() delegates to
+    ``client.close()`` again, so the client observes one close per call. The
+    safety guarantee is the swallow-and-log boundary, not idempotent
+    delegation — pin both behaviors here.
+    """
+
+    class _StubClient:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        async def close(self) -> None:
+            self.close_count += 1
+
+    stub = _StubClient()
+    store = QdrantVectorStore(client=stub, cfg=_cfg())  # type: ignore[arg-type]
+    await store.aclose()
+    # Second call must not raise.
+    await store.aclose()
+    assert stub.close_count == 2

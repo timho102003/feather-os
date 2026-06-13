@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from pathlib import Path
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,32 +10,13 @@ import aiosqlite
 from croniter import croniter
 
 from feather.models import CronJobRecord, CronJobStatus, CronScheduleType
-from feather.storage.connection import open_store_connection
-from feather.storage.schema import initialize_database_schema
+from feather.storage.base import BaseSQLiteStore
 
 _UNSET = object()
 
 
-class CronJobStore:
+class CronJobStore(BaseSQLiteStore):
     """Persist cron jobs and their schedule state in SQLite."""
-
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-        self._connection: aiosqlite.Connection | None = None
-
-    async def initialize(self) -> None:
-        """Open the SQLite connection and ensure the schema exists."""
-
-        self._connection = await open_store_connection(self._db_path)
-        await initialize_database_schema(self._connection)
-        await self._connection.commit()
-
-    async def close(self) -> None:
-        """Close the SQLite connection."""
-
-        if self._connection is not None:
-            await self._connection.close()
-            self._connection = None
 
     async def create_job(
         self,
@@ -302,14 +282,10 @@ class CronJobStore:
         await self._connection.commit()
 
     async def _execute(self, query: str, params: tuple[object, ...]) -> None:
-        if self._connection is None:
-            raise RuntimeError("CronJobStore.initialize() must be called before use.")
-        await self._connection.execute(query, params)
+        await self._require_connection().execute(query, params)
 
     async def _fetchone(self, query: str, params: tuple[object, ...]) -> aiosqlite.Row | None:
-        if self._connection is None:
-            raise RuntimeError("CronJobStore.initialize() must be called before use.")
-        cursor = await self._connection.execute(query, params)
+        cursor = await self._require_connection().execute(query, params)
         return await cursor.fetchone()
 
     def _row_to_record(self, row: aiosqlite.Row) -> CronJobRecord:
